@@ -5,16 +5,14 @@ services:
     build: .
     container_name: soundbox_web
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      - DJANGO_DEBUG=False
-      - DJANGO_SECRET
-      - DB_NAME
-      - DB_USER
-      - DB_PASSWORD
-      - DB_HOST
-      - DB_PORT
+      DJANGO_DEBUG: 'False'
+      DJANGO_SECRET: 'replace-with-a-long-random-secret'
+      DB_NAME: 'soundbox_db'
+      DB_USER: 'soundbox_user'
+      DB_PASSWORD: 'postgres'
+      DB_HOST: 'db'
+      DB_PORT: '5432'
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -23,6 +21,23 @@ services:
       - static_volume:/app/static
     networks:
       - soundbox_network
+  db:
+    image: postgres:15
+    container_name: soundbox_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: 'soundbox_db'
+      POSTGRES_USER: 'soundbox_user'
+      POSTGRES_PASSWORD: 'postgres'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - soundbox_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h 0.0.0.0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   static_volume:
