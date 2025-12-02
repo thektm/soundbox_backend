@@ -5,9 +5,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET', 'changeme-in-production')
 
-DEBUG = True
+# Read debug flag from environment (defaults to True for local development)
+DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('1', 'true', 'yes')
 
-ALLOWED_HOSTS = []
+# Allow setting ALLOWED_HOSTS via comma-separated env var
+ALLOWED_HOSTS = [h for h in os.environ.get('ALLOWED_HOSTS', '').split(',') if h]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -56,15 +58,15 @@ WSGI_APPLICATION = 'soundbox.wsgi.application'
 
 
 DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'soundbox_db',
-            'USER': 'soundbox_user',
-            'PASSWORD': 'postgres',
-            'HOST': '127.0.0.1',
-            'PORT': '5432',
-        }
+    'default': {
+        'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.postgresql'),
+        'NAME': os.environ.get('DB_NAME', 'soundbox_db'),
+        'USER': os.environ.get('DB_USER', 'soundbox_user'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', 'postgres'),
+        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
     }
+}
 
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -88,6 +90,8 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+# Directory where collectstatic will gather files inside the container
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST framework defaults
