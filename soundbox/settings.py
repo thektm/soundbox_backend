@@ -9,7 +9,7 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET', 'changeme-in-production')
 DEBUG = True
 
 # Allow setting ALLOWED_HOSTS via comma-separated env var
-ALLOWED_HOSTS = [h for h in os.environ.get('ALLOWED_HOSTS', '').split(',') if h]
+ALLOWED_HOSTS = ['141.11.123.238:8000', 'localhost']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
