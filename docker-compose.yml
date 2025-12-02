@@ -41,6 +41,7 @@ services:
 
 volumes:
   static_volume:
+  db_data:
 
 networks:
   soundbox_network:
