@@ -13,6 +13,7 @@ services:
       DB_PASSWORD: 'postgres'
       DB_HOST: 'db'
       DB_PORT: '5432'
+      ALLOWED_HOSTS: '141.11.123.238,localhost'
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
