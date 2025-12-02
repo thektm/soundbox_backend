@@ -15,6 +15,8 @@ services:
       - DB_PASSWORD
       - DB_HOST
       - DB_PORT
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:
