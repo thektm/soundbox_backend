@@ -9,7 +9,7 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET', 'changeme-in-production')
 DEBUG = True
 
 # Allow setting ALLOWED_HOSTS via comma-separated env var
-_env_allowed = os.environ.get('ALLOWED_HOSTS')
+
 ALLOWED_HOSTS = [
         '141.11.123.238',
         'localhost',
