@@ -4,6 +4,7 @@ from django.contrib.auth.models import (
     BaseUserManager,
     PermissionsMixin,
 )
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class UserManager(BaseUserManager):
@@ -203,13 +204,13 @@ class Song(models.Model):
 
     # Audio features (0-100 or boolean)
     tempo = models.PositiveSmallIntegerField(null=True, blank=True, help_text="BPM")
-    energy = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
-    danceability = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
-    valence = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
-    acousticness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
-    instrumentalness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    energy = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
+    danceability = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
+    valence = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
+    acousticness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
+    instrumentalness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
     live_performed = models.BooleanField(default=False)
-    speechiness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    speechiness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(100)])
 
     # Legal / credits
     label = models.CharField(max_length=255, blank=True)
