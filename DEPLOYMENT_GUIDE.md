@@ -5,36 +5,43 @@
 After deploying the code to your server, run these commands:
 
 ### 1. Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2. Run Migrations
+
 ```bash
 python manage.py migrate
 ```
 
 ### 3. Create Initial Data
+
 ```bash
 python manage.py create_initial_data
 ```
 
 This will create:
+
 - 10 main genres with 4 sub-genres each (50 total)
 - 15 moods
 - 20 tags
 
 ### 4. Create Superuser (Optional)
+
 ```bash
 python manage.py createsuperuser
 ```
 
 ### 5. Collect Static Files (For Production)
+
 ```bash
 python manage.py collectstatic --noinput
 ```
 
 ### 6. Run Server
+
 ```bash
 # Development
 python manage.py runserver

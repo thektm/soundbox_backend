@@ -93,6 +93,10 @@ class Album(models.Model):
     cover_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for album cover")
     release_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
+    # Classification: albums can also be tagged with genres, sub-genres and moods
+    genres = models.ManyToManyField('Genre', blank=True, related_name="albums")
+    sub_genres = models.ManyToManyField('SubGenre', blank=True, related_name="albums")
+    moods = models.ManyToManyField('Mood', blank=True, related_name="albums")
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:

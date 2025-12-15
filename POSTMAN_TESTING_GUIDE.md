@@ -7,11 +7,13 @@ Base URL: `https://api.sedabox.com`
 Before testing the API, run these Django management commands on your server to create initial data:
 
 ### Create All Initial Data (Recommended)
+
 ```bash
 python manage.py create_initial_data
 ```
 
 ### Or Run Individual Commands:
+
 ```bash
 # Create genres and sub-genres
 python manage.py create_genres
@@ -26,6 +28,7 @@ python manage.py create_tags
 ### What Gets Created:
 
 **Genres (10 main genres):**
+
 - پاپ (Pop) - with sub-genres: پاپ ایرانی, پاپ غربی, سینث پاپ, پاپ راک
 - راک (Rock) - with sub-genres: راک کلاسیک, راک آلترناتیو, پانک راک, هارد راک
 - سنتی (Traditional) - with sub-genres: سنتی ایرانی, مقام, آواز, سنتی کردی
@@ -375,8 +378,8 @@ python manage.py create_tags
    - sub_genre_ids: [1]
    - mood_ids: [1]
    - tag_ids: [1]
-9. **List Songs** → Verify your upload
-10. **Update Song Status** → Change to "published"
+7. **List Songs** → Verify your upload
+8. **Update Song Status** → Change to "published"
 
 ---
 
