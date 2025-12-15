@@ -47,6 +47,9 @@ class RegisterSerializer(serializers.ModelSerializer):
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
-        # attach user profile
-        data['user'] = UserSerializer(self.user).data
+        # attach user profile but exclude internal flags from the login response
+        user_data = UserSerializer(self.user).data
+        # remove `is_staff` so it doesn't appear in the token response
+        user_data.pop('is_staff', None)
+        data['user'] = user_data
         return data
