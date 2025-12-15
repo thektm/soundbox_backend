@@ -114,6 +114,13 @@ REST_FRAMEWORK = {
 # CORS - allow all origins for now (change in production)
 CORS_ALLOW_ALL_ORIGINS = True
 
+# CSRF trusted origins for admin panel
+CSRF_TRUSTED_ORIGINS = [
+    'https://api.sedabox.com',
+    'https://www.sedabox.com',
+    'https://sedabox.com',
+]
+
 # Use custom user model
 AUTH_USER_MODEL = 'api.User'
 
