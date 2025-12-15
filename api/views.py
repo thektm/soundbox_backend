@@ -61,13 +61,14 @@ class R2UploadView(APIView):
 
         f = serializer.validated_data['file']
         folder = serializer.validated_data.get('folder', '').strip().strip('/')
-        filename = serializer.validated_data.get('filename') or getattr(f, 'name', None)
+        filename = serializer.validated_data.get('filename')
+        
+        # use exact filename provided by user, or fall back to uploaded file's name
         if not filename:
-            filename = 'upload'
+            filename = getattr(f, 'name', None) or 'upload'
 
-        # create a short unique prefix to avoid filename collisions
-        unique = uuid.uuid4().hex[:8]
-        key = f"{folder + '/' if folder else ''}{unique}-{filename}"
+        # build key: folder/filename (no unique prefix, use exact filename)
+        key = f"{folder + '/' if folder else ''}{filename}"
 
         # Build boto3 client kwargs and avoid sending an empty session token
         client_kwargs = {
