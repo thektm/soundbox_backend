@@ -14,6 +14,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.conf import settings
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 import uuid
 import os
 
@@ -67,17 +69,37 @@ class R2UploadView(APIView):
         unique = uuid.uuid4().hex[:8]
         key = f"{folder + '/' if folder else ''}{unique}-{filename}"
 
-        s3 = boto3.client(
-            's3',
-            endpoint_url=getattr(settings, 'R2_ENDPOINT_URL', None),
-            aws_access_key_id=getattr(settings, 'R2_ACCESS_KEY_ID', None),
-            aws_secret_access_key=getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
-            aws_session_token=getattr(settings, 'R2_SESSION_TOKEN', None),
-        )
+        # Build boto3 client kwargs and avoid sending an empty session token
+        client_kwargs = {
+            'service_name': 's3',
+            'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
+            'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
+            'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
+            # Cloudflare R2 requires signature v4
+            'config': Config(signature_version='s3v4'),
+        }
+        session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
+        if session_token:
+            client_kwargs['aws_session_token'] = session_token
+
+        # remove None values to avoid boto3 sending invalid headers
+        client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
+
+        s3 = boto3.client(**client_kwargs)
 
         try:
             # upload_fileobj streams the file directly
             s3.upload_fileobj(f, getattr(settings, 'R2_BUCKET_NAME'), key)
+        except ClientError as e:
+            # Return a clearer error and include AWS error code/message
+            err = e.response.get('Error', {})
+            code = err.get('Code')
+            msg = err.get('Message') or str(e)
+            detail = f"{code}: {msg}" if code else str(e)
+            # common cause: invalid/extra session token (X-Amz-Security-Token)
+            if 'Security-Token' in detail or 'X-Amz-Security-Token' in detail:
+                detail += ' — check R2_SESSION_TOKEN: remove it unless you are using temporary credentials.'
+            return Response({'detail': detail}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
