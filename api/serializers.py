@@ -86,30 +86,6 @@ class AlbumSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
-class PlaylistSerializer(serializers.ModelSerializer):
-    """Serializer for Playlist model"""
-    # Read-only nested representations
-    genres = GenreSerializer(many=True, read_only=True)
-    moods = MoodSerializer(many=True, read_only=True)
-    tags = TagSerializer(many=True, read_only=True)
-    songs = SongSerializer(many=True, read_only=True)
-
-    # Write fields: accept lists of primary keys
-    genre_ids = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False)
-    mood_ids = serializers.PrimaryKeyRelatedField(queryset=Mood.objects.all(), many=True, source='moods', required=False)
-    tag_ids = serializers.PrimaryKeyRelatedField(queryset=Tag.objects.all(), many=True, source='tags', required=False)
-    song_ids = serializers.PrimaryKeyRelatedField(queryset=Song.objects.all(), many=True, source='songs', required=False)
-
-    class Meta:
-        model = Playlist
-        fields = [
-            'id', 'title', 'description', 'created_at', 'created_by',
-            'genres', 'moods', 'tags', 'songs',
-            'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
-        ]
-        read_only_fields = ['id', 'created_at']
-
-
 class GenreSerializer(serializers.ModelSerializer):
     """Serializer for Genre model"""
     class Meta:
@@ -295,3 +271,28 @@ class SongUploadSerializer(serializers.Serializer):
         if value and not Album.objects.filter(id=value).exists():
             raise serializers.ValidationError("Album not found")
         return value
+
+
+
+class PlaylistSerializer(serializers.ModelSerializer):
+    """Serializer for Playlist model"""
+    # Read-only nested representations
+    genres = GenreSerializer(many=True, read_only=True)
+    moods = MoodSerializer(many=True, read_only=True)
+    tags = TagSerializer(many=True, read_only=True)
+    songs = SongSerializer(many=True, read_only=True)
+
+    # Write fields: accept lists of primary keys
+    genre_ids = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False)
+    mood_ids = serializers.PrimaryKeyRelatedField(queryset=Mood.objects.all(), many=True, source='moods', required=False)
+    tag_ids = serializers.PrimaryKeyRelatedField(queryset=Tag.objects.all(), many=True, source='tags', required=False)
+    song_ids = serializers.PrimaryKeyRelatedField(queryset=Song.objects.all(), many=True, source='songs', required=False)
+
+    class Meta:
+        model = Playlist
+        fields = [
+            'id', 'title', 'description', 'created_at', 'created_by',
+            'genres', 'moods', 'tags', 'songs',
+            'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
+        ]
+        read_only_fields = ['id', 'created_at']
