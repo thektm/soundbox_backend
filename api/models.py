@@ -34,10 +34,31 @@ class User(AbstractBaseUser, PermissionsMixin):
     ]
 
     phone_number = models.CharField(max_length=20, unique=True)
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+    email = models.EmailField(blank=True, null=True)
     roles = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_AUDIENCE)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True)
+
+    # users this user follows; reverse accessor 'followers' gives users following this user
+    followings = models.ManyToManyField('self', symmetrical=False, related_name='followers', blank=True)
+
+    # playlists: store as JSON (list of playlist objects or ids); can be replaced with real Playlist model later
+    playlists = models.JSONField(default=list, blank=True)
+
+    # current plan for user
+    PLAN_FREE = 'free'
+    PLAN_PREMIUM = 'premium'
+    PLAN_CHOICES = [
+        (PLAN_FREE, 'Free'),
+        (PLAN_PREMIUM, 'Premium'),
+    ]
+    plan = models.CharField(max_length=30, choices=PLAN_CHOICES, default=PLAN_FREE)
+
+    # user-specific settings stored as JSON
+    settings = models.JSONField(default=dict, blank=True)
 
     objects = UserManager()
 

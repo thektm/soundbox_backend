@@ -1,3 +1,4 @@
+# Base URL is : https://api.sedabox.com/
 from django.urls import path
 from .views import (
     RegisterView,

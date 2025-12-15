@@ -5,18 +5,33 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
 class UserSerializer(serializers.ModelSerializer):
+    followers = serializers.SerializerMethodField()
+    followings = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all(), many=True, required=False)
+    playlists = serializers.JSONField()
+    settings = serializers.JSONField()
     class Meta:
         model = get_user_model()
-        fields = ['id', 'phone_number', 'roles', 'is_active', 'is_staff', 'date_joined']
-        read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined']
+        fields = [
+            'id', 'phone_number', 'first_name', 'last_name', 'email',
+            'roles', 'is_active', 'is_staff', 'date_joined',
+            'followers', 'followings', 'playlists', 'plan', 'settings'
+        ]
+        read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined', 'followers']
+
+    def get_followers(self, obj):
+        # return minimal follower info: id and phone_number
+        return [{'id': u.id, 'phone_number': u.phone_number} for u in obj.followers.all()]
 
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
 
+    playlists = serializers.JSONField(required=False)
+    settings = serializers.JSONField(required=False)
+
     class Meta:
         model = User
-        fields = ['phone_number', 'password', 'roles']
+        fields = ['phone_number', 'password', 'roles', 'first_name', 'last_name', 'email', 'playlists', 'plan', 'settings']
 
     def validate_phone_number(self, value):
         if User.objects.filter(phone_number=value).exists():
