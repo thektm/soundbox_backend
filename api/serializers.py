@@ -53,3 +53,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         user_data.pop('is_staff', None)
         data['user'] = user_data
         return data
+
+
+class UploadSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    folder = serializers.CharField(required=False, allow_blank=True)
+    filename = serializers.CharField(required=False, allow_blank=True)

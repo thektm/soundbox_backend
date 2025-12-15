@@ -126,3 +126,14 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
+
+# Cloudflare R2 (S3-compatible) configuration
+# For development you can place values directly here, but
+# it's recommended to use environment variables in production.
+R2_ENDPOINT_URL = 'https://3d69ac7dfa7e78d81da2bd72904fa0a2.r2.cloudflarestorage.com'
+R2_ACCESS_KEY_ID = '97a14ac8fa46143cf97744793babd0b3'
+R2_SECRET_ACCESS_KEY = '8d458c9a3ec31490a533230ec43a3988d5aabdbb6a6d1f45fa169d04d6054f16'
+R2_SESSION_TOKEN = 'CDQN3-MSNOIkb9ZGzkt6VlNrsvfGzQa7HvbzfiQ6'
+R2_BUCKET_NAME = 'sedabox'
+# CDN base used to build final download URLs. Ensure this matches your CDN configuration.
+R2_CDN_BASE = 'https://cdn.sedabox.com'
