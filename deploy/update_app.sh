@@ -34,6 +34,33 @@ echo "Checking out branch $BRANCH and hard-reset to origin/$BRANCH"
 git checkout "$BRANCH"
 git reset --hard "origin/$BRANCH"
 
+echo "Generating Django migrations (makemigrations) so they are included in the image..."
+# try to run makemigrations on host Python; if not available, try an ephemeral docker container
+set +e
+if command -v python >/dev/null 2>&1; then
+  echo "Running: python manage.py makemigrations --noinput"
+  python manage.py makemigrations --noinput
+  MSTATUS=$?
+else
+  echo "Host python not found; attempting ephemeral docker container to run makemigrations"
+  if command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$REPO_DIR":/app -w /app python:3.11-slim bash -eux -c \
+      "apt-get update && apt-get install -y gcc libpq-dev build-essential || true; \
+       pip install --no-cache-dir -r requirements.txt; \
+       python manage.py makemigrations --noinput"
+    MSTATUS=$?
+  else
+    echo "No docker available to run makemigrations; skipping makemigrations." >&2
+    MSTATUS=0
+  fi
+fi
+set -e
+if [ "$MSTATUS" -ne 0 ]; then
+  echo "makemigrations returned non-zero status $MSTATUS. The script will continue, but migrations may be missing." >&2
+else
+  echo "makemigrations completed (exit $MSTATUS)."
+fi
+
 echo "Stopping and removing existing web container (if any)"
 set +e
 $COMPOSE_CMD stop "$WEB_SERVICE" >/dev/null 2>&1
