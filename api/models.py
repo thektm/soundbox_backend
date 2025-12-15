@@ -67,3 +67,176 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.phone_number
+
+
+class Artist(models.Model):
+    """Artist model - can be linked to a user account or standalone"""
+    name = models.CharField(max_length=255, unique=True)
+    user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='artist_profile')
+    bio = models.TextField(blank=True)
+    profile_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for profile image")
+    verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['name']
+    
+    def __str__(self):
+        return self.name
+
+
+class Album(models.Model):
+    """Album model for grouping songs"""
+    title = models.CharField(max_length=400)
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name="albums")
+    cover_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for album cover")
+    release_date = models.DateField(null=True, blank=True)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-release_date']
+    
+    def __str__(self):
+        return f"{self.title} - {self.artist.name}"
+
+
+class Genre(models.Model):
+    """Music genre classification"""
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True)
+    
+    class Meta:
+        ordering = ['name']
+    
+    def __str__(self):
+        return self.name
+
+
+class Mood(models.Model):
+    """Mood/vibe classification for songs"""
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True)
+    
+    class Meta:
+        ordering = ['name']
+    
+    def __str__(self):
+        return self.name
+
+
+class Tag(models.Model):
+    """Generic tags for songs"""
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True)
+    
+    class Meta:
+        ordering = ['name']
+    
+    def __str__(self):
+        return self.name
+
+
+class Song(models.Model):
+    """Main song model with comprehensive metadata"""
+    
+    # Status choices
+    STATUS_DRAFT = 'draft'
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_PUBLISHED = 'published'
+    
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Draft'),
+        (STATUS_PENDING, 'Pending Review'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+        (STATUS_PUBLISHED, 'Published'),
+    ]
+    
+    # Basic info
+    title = models.CharField(max_length=400)
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name="songs")
+    featured_artists = models.JSONField(default=list, blank=True, help_text="List of featured artist names")
+    album = models.ForeignKey(Album, on_delete=models.SET_NULL, null=True, blank=True, related_name="songs")
+    is_single = models.BooleanField(default=False)
+
+    # Files (R2 CDN URLs)
+    audio_file = models.URLField(max_length=500, help_text="R2 CDN URL for audio file")
+    cover_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for cover image")
+    original_format = models.CharField(max_length=10, blank=True, help_text="Original upload format (mp3, wav, etc.)")
+
+    # Playback/display
+    duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+    plays = models.BigIntegerField(default=0)
+
+    # Status / Moderation
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+
+    # Metadata
+    release_date = models.DateField(null=True, blank=True)
+    language = models.CharField(max_length=10, default="fa")
+
+    # Classification
+    genres = models.ManyToManyField(Genre, blank=True, related_name="songs")
+    sub_genres = models.JSONField(default=list, blank=True, help_text="List of sub-genre strings")
+    moods = models.ManyToManyField(Mood, blank=True, related_name="songs")
+    tags = models.ManyToManyField(Tag, blank=True, related_name="songs")
+
+    # Description & lyrics
+    description = models.TextField(blank=True)
+    lyrics = models.TextField(blank=True)
+
+    # Audio features (0-100 or boolean)
+    tempo = models.PositiveSmallIntegerField(null=True, blank=True, help_text="BPM")
+    energy = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    danceability = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    valence = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    acousticness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    instrumentalness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+    live_performed = models.BooleanField(default=False)
+    speechiness = models.PositiveSmallIntegerField(null=True, blank=True, validators=[models.MinValueValidator(0), models.MaxValueValidator(100)])
+
+    # Legal / credits
+    label = models.CharField(max_length=255, blank=True)
+    producers = models.JSONField(default=list, blank=True, help_text="List of producer names")
+    composers = models.JSONField(default=list, blank=True, help_text="List of composer names")
+    lyricists = models.JSONField(default=list, blank=True, help_text="List of lyricist names")
+    credits = models.TextField(blank=True)
+
+    # Ownership + audit
+    uploader = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploaded_songs", help_text="User who uploaded the song")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status"]),
+            models.Index(fields=["release_date"]),
+            models.Index(fields=["created_at"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        featured = f" (feat. {', '.join(self.featured_artists)})" if self.featured_artists else ""
+        return f"{self.title}{featured} — {self.artist.name}"
+
+    @property
+    def duration_display(self) -> str:
+        """Return duration in H:MM:SS or M:SS format if duration_seconds set."""
+        if not self.duration_seconds:
+            return "0:00"
+        s = int(self.duration_seconds)
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        if h:
+            return f"{h}:{m:02d}:{sec:02d}"
+        return f"{m}:{sec:02d}"
+    
+    @property
+    def display_title(self) -> str:
+        """Return formatted title with featured artists if any."""
+        if self.featured_artists:
+            return f"{self.title} (feat. {', '.join(self.featured_artists)})"
+        return self.title

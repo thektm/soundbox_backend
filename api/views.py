@@ -1,13 +1,20 @@
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .models import User
+from rest_framework.decorators import action
+from .models import User, Artist, Album, Genre, Mood, Tag, Song
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
     CustomTokenObtainPairSerializer,
-    UploadSerializer,
+    ArtistSerializer,
+    AlbumSerializer,
+    GenreSerializer,
+    MoodSerializer,
+    TagSerializer,
+    SongSerializer,
+    SongUploadSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -18,6 +25,9 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 import uuid
 import os
+import mimetypes
+from mutagen.mp3 import MP3
+from mutagen.wave import WAVE
 
 
 class RegisterView(APIView):
@@ -133,3 +143,316 @@ class R2UploadView(APIView):
         cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
         url = f"{cdn_base}/{key}"
         return Response({'key': key, 'url': url}, status=status.HTTP_201_CREATED)
+
+
+def upload_file_to_r2(file_obj, folder='', custom_filename=None):
+    """
+    Helper function to upload a file to R2 and return the CDN URL.
+    
+    Args:
+        file_obj: Django UploadedFile object
+        folder: Optional folder path in bucket
+        custom_filename: Optional custom filename (will preserve extension)
+    
+    Returns:
+        tuple: (cdn_url, original_format) or raises Exception
+    """
+    original_filename = getattr(file_obj, 'name', None) or 'upload'
+    
+    if custom_filename:
+        _, original_ext = os.path.splitext(original_filename)
+        _, custom_ext = os.path.splitext(custom_filename)
+        if custom_ext:
+            filename = custom_filename
+        else:
+            filename = f"{custom_filename}{original_ext}"
+    else:
+        filename = original_filename
+    
+    # Get original format
+    _, ext = os.path.splitext(original_filename)
+    original_format = ext.lstrip('.').lower()
+    
+    # Build key
+    key = f"{folder + '/' if folder else ''}{filename}"
+    
+    # Build boto3 client
+    client_kwargs = {
+        'service_name': 's3',
+        'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
+        'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
+        'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
+        'config': Config(signature_version='s3v4'),
+    }
+    session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
+    if session_token:
+        client_kwargs['aws_session_token'] = session_token
+    
+    client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
+    s3 = boto3.client(**client_kwargs)
+    
+    # Detect content type
+    content_type, _ = mimetypes.guess_type(filename)
+    if not content_type:
+        content_type = 'application/octet-stream'
+    
+    # Upload
+    s3.upload_fileobj(
+        file_obj,
+        getattr(settings, 'R2_BUCKET_NAME'),
+        key,
+        ExtraArgs={'ContentType': content_type}
+    )
+    
+    # Build CDN URL
+    cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+    url = f"{cdn_base}/{key}"
+    
+    return url, original_format
+
+
+def get_audio_duration(file_obj, format_ext):
+    """
+    Extract duration from audio file.
+    
+    Args:
+        file_obj: Django UploadedFile object
+        format_ext: File extension (mp3, wav, etc.)
+    
+    Returns:
+        int: Duration in seconds or None
+    """
+    try:
+        # Save to temporary file to read metadata
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{format_ext}') as tmp_file:
+            for chunk in file_obj.chunks():
+                tmp_file.write(chunk)
+            tmp_path = tmp_file.name
+        
+        # Reset file pointer
+        file_obj.seek(0)
+        
+        # Read duration based on format
+        duration = None
+        if format_ext == 'mp3':
+            audio = MP3(tmp_path)
+            duration = int(audio.info.length)
+        elif format_ext == 'wav':
+            audio = WAVE(tmp_path)
+            duration = int(audio.info.length)
+        
+        # Clean up temp file
+        os.unlink(tmp_path)
+        
+        return duration
+    except Exception as e:
+        print(f"Error extracting audio duration: {e}")
+        return None
+
+
+class SongUploadView(APIView):
+    """
+    Upload song with audio file and metadata.
+    Accepts mp3 and wav files, uploads to R2, and creates Song record.
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def post(self, request, *args, **kwargs):
+        serializer = SongUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        
+        try:
+            # Get artist
+            artist = Artist.objects.get(id=data['artist_id'])
+            
+            # Build filename: "Artist - Title (feat. X)" or "Artist - Title"
+            title = data['title']
+            featured = data.get('featured_artists', [])
+            if featured:
+                filename_base = f"{artist.name} - {title} (feat. {', '.join(featured)})"
+            else:
+                filename_base = f"{artist.name} - {title}"
+            
+            # Upload audio file
+            audio_file = data['audio_file']
+            audio_filename = f"{filename_base}.{audio_file.name.split('.')[-1]}"
+            audio_url, original_format = upload_file_to_r2(
+                audio_file,
+                folder='songs',
+                custom_filename=audio_filename
+            )
+            
+            # Get audio duration
+            duration = get_audio_duration(audio_file, original_format)
+            
+            # Upload cover image if provided
+            cover_url = ""
+            if data.get('cover_image'):
+                cover_file = data['cover_image']
+                cover_filename = f"{filename_base}_cover.{cover_file.name.split('.')[-1]}"
+                cover_url, _ = upload_file_to_r2(
+                    cover_file,
+                    folder='covers',
+                    custom_filename=cover_filename
+                )
+            
+            # Create song record
+            song_data = {
+                'title': title,
+                'artist': artist,
+                'featured_artists': featured,
+                'audio_file': audio_url,
+                'cover_image': cover_url,
+                'original_format': original_format,
+                'duration_seconds': duration,
+                'uploader': request.user,
+                'is_single': data.get('is_single', False),
+                'release_date': data.get('release_date'),
+                'language': data.get('language', 'fa'),
+                'description': data.get('description', ''),
+                'lyrics': data.get('lyrics', ''),
+                'sub_genres': data.get('sub_genres', []),
+                'tempo': data.get('tempo'),
+                'energy': data.get('energy'),
+                'danceability': data.get('danceability'),
+                'valence': data.get('valence'),
+                'acousticness': data.get('acousticness'),
+                'instrumentalness': data.get('instrumentalness'),
+                'speechiness': data.get('speechiness'),
+                'live_performed': data.get('live_performed', False),
+                'label': data.get('label', ''),
+                'producers': data.get('producers', []),
+                'composers': data.get('composers', []),
+                'lyricists': data.get('lyricists', []),
+                'credits': data.get('credits', ''),
+            }
+            
+            # Add album if provided
+            if data.get('album_id'):
+                song_data['album'] = Album.objects.get(id=data['album_id'])
+            
+            song = Song.objects.create(**song_data)
+            
+            # Add many-to-many relationships
+            if data.get('genre_ids'):
+                song.genres.set(Genre.objects.filter(id__in=data['genre_ids']))
+            if data.get('mood_ids'):
+                song.moods.set(Mood.objects.filter(id__in=data['mood_ids']))
+            if data.get('tag_ids'):
+                song.tags.set(Tag.objects.filter(id__in=data['tag_ids']))
+            
+            return Response(
+                SongSerializer(song).data,
+                status=status.HTTP_201_CREATED
+            )
+            
+        except Artist.DoesNotExist:
+            return Response(
+                {'error': 'Artist not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Album.DoesNotExist:
+            return Response(
+                {'error': 'Album not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ArtistViewSet(viewsets.ModelViewSet):
+    """ViewSet for Artist CRUD operations"""
+    queryset = Artist.objects.all()
+    serializer_class = ArtistSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+
+
+class AlbumViewSet(viewsets.ModelViewSet):
+    """ViewSet for Album CRUD operations"""
+    queryset = Album.objects.all()
+    serializer_class = AlbumSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+
+
+class GenreViewSet(viewsets.ModelViewSet):
+    """ViewSet for Genre CRUD operations"""
+    queryset = Genre.objects.all()
+    serializer_class = GenreSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+
+
+class MoodViewSet(viewsets.ModelViewSet):
+    """ViewSet for Mood CRUD operations"""
+    queryset = Mood.objects.all()
+    serializer_class = MoodSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+
+
+class TagViewSet(viewsets.ModelViewSet):
+    """ViewSet for Tag CRUD operations"""
+    queryset = Tag.objects.all()
+    serializer_class = TagSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+
+
+class SongViewSet(viewsets.ModelViewSet):
+    """ViewSet for Song CRUD operations"""
+    queryset = Song.objects.all()
+    serializer_class = SongSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+    
+    def get_queryset(self):
+        """Filter songs by status for non-staff users"""
+        queryset = Song.objects.all()
+        
+        # Non-authenticated or non-staff users only see published songs
+        if not self.request.user.is_authenticated or not self.request.user.is_staff:
+            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
+        
+        return queryset
+    
+    @action(detail=True, methods=['post'])
+    def increment_plays(self, request, pk=None):
+        """Increment play count for a song"""
+        song = self.get_object()
+        song.plays += 1
+        song.save(update_fields=['plays'])
+        return Response({'plays': song.plays})
