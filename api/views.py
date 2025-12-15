@@ -61,11 +61,26 @@ class R2UploadView(APIView):
 
         f = serializer.validated_data['file']
         folder = serializer.validated_data.get('folder', '').strip().strip('/')
-        filename = serializer.validated_data.get('filename')
+        custom_filename = serializer.validated_data.get('filename')
         
-        # use exact filename provided by user, or fall back to uploaded file's name
-        if not filename:
-            filename = getattr(f, 'name', None) or 'upload'
+        # get original filename and extension from uploaded file
+        original_filename = getattr(f, 'name', None) or 'upload'
+        
+        if custom_filename:
+            # if user provided custom filename, preserve extension from original file
+            import os
+            _, original_ext = os.path.splitext(original_filename)
+            # check if custom filename already has an extension
+            _, custom_ext = os.path.splitext(custom_filename)
+            if custom_ext:
+                # use custom filename as-is (user provided extension)
+                filename = custom_filename
+            else:
+                # append original extension to custom filename
+                filename = f"{custom_filename}{original_ext}"
+        else:
+            # no custom filename, use original
+            filename = original_filename
 
         # build key: folder/filename (no unique prefix, use exact filename)
         key = f"{folder + '/' if folder else ''}{filename}"
