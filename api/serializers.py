@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, Song
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -110,6 +110,16 @@ class TagSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+class SubGenreSerializer(serializers.ModelSerializer):
+    """Serializer for SubGenre model"""
+    parent_genre_name = serializers.CharField(source='parent_genre.name', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = SubGenre
+        fields = ['id', 'name', 'slug', 'parent_genre', 'parent_genre_name']
+        read_only_fields = ['id']
+
+
 class SongSerializer(serializers.ModelSerializer):
     """Serializer for Song model with full details"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
@@ -123,6 +133,12 @@ class SongSerializer(serializers.ModelSerializer):
         queryset=Genre.objects.all(), 
         many=True, 
         source='genres', 
+        required=False
+    )
+    sub_genre_ids = serializers.PrimaryKeyRelatedField(
+        queryset=SubGenre.objects.all(), 
+        many=True, 
+        source='sub_genres', 
         required=False
     )
     mood_ids = serializers.PrimaryKeyRelatedField(
@@ -144,7 +160,7 @@ class SongSerializer(serializers.ModelSerializer):
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
             'album', 'album_title', 'is_single', 'audio_file', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
-            'status', 'release_date', 'language', 'genre_ids', 'sub_genres',
+            'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
             'mood_ids', 'tag_ids', 'description', 'lyrics', 'tempo', 'energy',
             'danceability', 'valence', 'acousticness', 'instrumentalness',
             'live_performed', 'speechiness', 'label', 'producers', 'composers',
@@ -185,8 +201,8 @@ class SongUploadSerializer(serializers.Serializer):
         allow_empty=True,
         default=list
     )
-    sub_genres = serializers.ListField(
-        child=serializers.CharField(max_length=100),
+    sub_genre_ids = serializers.ListField(
+        child=serializers.IntegerField(),
         required=False,
         allow_empty=True,
         default=list

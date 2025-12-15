@@ -137,6 +137,19 @@ class Tag(models.Model):
         return self.name
 
 
+class SubGenre(models.Model):
+    """Sub-genre classification for songs"""
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True)
+    parent_genre = models.ForeignKey(Genre, on_delete=models.CASCADE, related_name='sub_genres', null=True, blank=True)
+    
+    class Meta:
+        ordering = ['name']
+    
+    def __str__(self):
+        return self.name
+
+
 class Song(models.Model):
     """Main song model with comprehensive metadata"""
     
@@ -180,7 +193,7 @@ class Song(models.Model):
 
     # Classification
     genres = models.ManyToManyField(Genre, blank=True, related_name="songs")
-    sub_genres = models.JSONField(default=list, blank=True, help_text="List of sub-genre strings")
+    sub_genres = models.ManyToManyField(SubGenre, blank=True, related_name="songs")
     moods = models.ManyToManyField(Mood, blank=True, related_name="songs")
     tags = models.ManyToManyField(Tag, blank=True, related_name="songs")
 

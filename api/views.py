@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, Song
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -13,6 +13,7 @@ from .serializers import (
     GenreSerializer,
     MoodSerializer,
     TagSerializer,
+    SubGenreSerializer,
     SongSerializer,
     SongUploadSerializer,
 )
@@ -316,7 +317,6 @@ class SongUploadView(APIView):
                 'language': data.get('language', 'fa'),
                 'description': data.get('description', ''),
                 'lyrics': data.get('lyrics', ''),
-                'sub_genres': data.get('sub_genres', []),
                 'tempo': data.get('tempo'),
                 'energy': data.get('energy'),
                 'danceability': data.get('danceability'),
@@ -341,6 +341,8 @@ class SongUploadView(APIView):
             # Add many-to-many relationships
             if data.get('genre_ids'):
                 song.genres.set(Genre.objects.filter(id__in=data['genre_ids']))
+            if data.get('sub_genre_ids'):
+                song.sub_genres.set(SubGenre.objects.filter(id__in=data['sub_genre_ids']))
             if data.get('mood_ids'):
                 song.moods.set(Mood.objects.filter(id__in=data['mood_ids']))
             if data.get('tag_ids'):
@@ -420,6 +422,18 @@ class TagViewSet(viewsets.ModelViewSet):
     """ViewSet for Tag CRUD operations"""
     queryset = Tag.objects.all()
     serializer_class = TagSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_permissions(self):
+        if self.action == 'list' or self.action == 'retrieve':
+            return [AllowAny()]
+        return super().get_permissions()
+
+
+class SubGenreViewSet(viewsets.ModelViewSet):
+    """ViewSet for SubGenre CRUD operations"""
+    queryset = SubGenre.objects.all()
+    serializer_class = SubGenreSerializer
     permission_classes = [IsAuthenticated]
     
     def get_permissions(self):

@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, Song
+from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song
 
 User = get_user_model()
 
@@ -73,6 +73,15 @@ class TagAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'slug')
     search_fields = ('name', 'slug')
     prepopulated_fields = {'slug': ('name',)}
+
+
+@admin.register(SubGenre)
+class SubGenreAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'slug', 'parent_genre')
+    list_filter = ('parent_genre',)
+    search_fields = ('name', 'slug')
+    prepopulated_fields = {'slug': ('name',)}
+    autocomplete_fields = ['parent_genre']
 
 
 @admin.register(Song)

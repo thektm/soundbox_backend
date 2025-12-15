@@ -13,6 +13,7 @@ from .views import (
     GenreViewSet,
     MoodViewSet,
     TagViewSet,
+    SubGenreViewSet,
     SongViewSet,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -24,6 +25,7 @@ router.register(r'albums', AlbumViewSet, basename='album')
 router.register(r'genres', GenreViewSet, basename='genre')
 router.register(r'moods', MoodViewSet, basename='mood')
 router.register(r'tags', TagViewSet, basename='tag')
+router.register(r'subgenres', SubGenreViewSet, basename='subgenre')
 router.register(r'songs', SongViewSet, basename='song')
 
 urlpatterns = [
