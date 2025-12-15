@@ -274,6 +274,7 @@ class Playlist(models.Model):
 
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    cover_image = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for playlist cover")
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.CharField(max_length=30, choices=CREATED_BY_CHOICES, default=CREATED_BY_AUDIENCE,
                                   help_text="Who created this playlist")

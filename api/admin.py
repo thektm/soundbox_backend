@@ -172,13 +172,13 @@ class SongAdmin(admin.ModelAdmin):
 
 @admin.register(Playlist)
 class PlaylistAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'created_by', 'created_at')
+    list_display = ('id', 'title', 'cover_image', 'created_by', 'created_at')
     list_filter = ('created_by', 'created_at', 'genres', 'moods')
     search_fields = ('title',)
     readonly_fields = ('created_at',)
     filter_horizontal = ('genres', 'moods', 'tags', 'songs')
     fieldsets = (
-        ('Basic Info', {'fields': ('title', 'description', 'created_by')}),
+        ('Basic Info', {'fields': ('title', 'description', 'cover_image', 'created_by')}),
         ('Classification', {'fields': ('genres', 'moods', 'tags'), 'classes': ('collapse',)}),
         ('Songs', {'fields': ('songs',)}),
         ('Metadata', {'fields': ('created_at',)}),
