@@ -88,9 +88,20 @@ class R2UploadView(APIView):
 
         s3 = boto3.client(**client_kwargs)
 
+        # Detect content type from file extension to preserve format
+        import mimetypes
+        content_type, _ = mimetypes.guess_type(filename)
+        if not content_type:
+            content_type = 'application/octet-stream'
+
         try:
-            # upload_fileobj streams the file directly
-            s3.upload_fileobj(f, getattr(settings, 'R2_BUCKET_NAME'), key)
+            # upload_fileobj streams the file directly with content type
+            s3.upload_fileobj(
+                f, 
+                getattr(settings, 'R2_BUCKET_NAME'), 
+                key,
+                ExtraArgs={'ContentType': content_type}
+            )
         except ClientError as e:
             # Return a clearer error and include AWS error code/message
             err = e.response.get('Error', {})
