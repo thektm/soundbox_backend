@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song
+from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist
 
 User = get_user_model()
 
@@ -168,3 +168,18 @@ class SongAdmin(admin.ModelAdmin):
         count = queryset.update(status=Song.STATUS_PENDING)
         self.message_user(request, f'{count} song(s) marked as pending review.')
     mark_as_pending.short_description = 'Mark selected as Pending Review'
+
+
+@admin.register(Playlist)
+class PlaylistAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'created_by', 'created_at')
+    list_filter = ('created_by', 'created_at', 'genres', 'moods')
+    search_fields = ('title',)
+    readonly_fields = ('created_at',)
+    filter_horizontal = ('genres', 'moods', 'tags', 'songs')
+    fieldsets = (
+        ('Basic Info', {'fields': ('title', 'description', 'created_by')}),
+        ('Classification', {'fields': ('genres', 'moods', 'tags'), 'classes': ('collapse',)}),
+        ('Songs', {'fields': ('songs',)}),
+        ('Metadata', {'fields': ('created_at',)}),
+    )

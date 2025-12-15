@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -83,6 +83,30 @@ class AlbumSerializer(serializers.ModelSerializer):
     class Meta:
         model = Album
         fields = ['id', 'title', 'artist', 'artist_name', 'cover_image', 'release_date', 'description', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class PlaylistSerializer(serializers.ModelSerializer):
+    """Serializer for Playlist model"""
+    # Read-only nested representations
+    genres = GenreSerializer(many=True, read_only=True)
+    moods = MoodSerializer(many=True, read_only=True)
+    tags = TagSerializer(many=True, read_only=True)
+    songs = SongSerializer(many=True, read_only=True)
+
+    # Write fields: accept lists of primary keys
+    genre_ids = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False)
+    mood_ids = serializers.PrimaryKeyRelatedField(queryset=Mood.objects.all(), many=True, source='moods', required=False)
+    tag_ids = serializers.PrimaryKeyRelatedField(queryset=Tag.objects.all(), many=True, source='tags', required=False)
+    song_ids = serializers.PrimaryKeyRelatedField(queryset=Song.objects.all(), many=True, source='songs', required=False)
+
+    class Meta:
+        model = Playlist
+        fields = [
+            'id', 'title', 'description', 'created_at', 'created_by',
+            'genres', 'moods', 'tags', 'songs',
+            'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
+        ]
         read_only_fields = ['id', 'created_at']
 
 

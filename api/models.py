@@ -258,3 +258,36 @@ class Song(models.Model):
         if self.featured_artists:
             return f"{self.title} (feat. {', '.join(self.featured_artists)})"
         return self.title
+
+
+class Playlist(models.Model):
+    """Playlist model containing songs and metadata"""
+    CREATED_BY_ADMIN = 'admin'
+    CREATED_BY_AUDIENCE = 'audience'
+    CREATED_BY_SYSTEM = 'system'
+
+    CREATED_BY_CHOICES = [
+        (CREATED_BY_ADMIN, 'Admin'),
+        (CREATED_BY_AUDIENCE, 'Audience'),
+        (CREATED_BY_SYSTEM, 'System'),
+    ]
+
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.CharField(max_length=30, choices=CREATED_BY_CHOICES, default=CREATED_BY_AUDIENCE,
+                                  help_text="Who created this playlist")
+
+    # Classification
+    genres = models.ManyToManyField(Genre, blank=True, related_name='playlists')
+    moods = models.ManyToManyField(Mood, blank=True, related_name='playlists')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='playlists')
+
+    # Songs in the playlist
+    songs = models.ManyToManyField(Song, blank=True, related_name='playlists')
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.created_at.date()})"
