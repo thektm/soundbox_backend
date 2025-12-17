@@ -146,8 +146,26 @@ class AuthRegisterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
-        if User.objects.filter(phone_number=phone).exists():
-            return Response({'error': {'code': 'USER_EXISTS', 'message': 'Phone already registered'}}, status=status.HTTP_409_CONFLICT)
+        # If user exists
+        existing = User.objects.filter(phone_number=phone).first()
+        if existing:
+            # If already verified, block registration
+            if existing.is_verified:
+                return Response({'error': {'code': 'USER_EXISTS', 'message': 'Phone already registered'}}, status=status.HTTP_409_CONFLICT)
+            # Not verified: allow resend but rate-limit to 1 minute since last verify OTP
+            last_otp = OtpCode.objects.filter(user=existing, purpose=OtpCode.PURPOSE_VERIFY).order_by('-created_at').first()
+            if last_otp:
+                elapsed = timezone.now() - last_otp.created_at
+                if elapsed < timedelta(minutes=1):
+                    # Too soon to resend
+                    retry_after = int((timedelta(minutes=1) - elapsed).total_seconds())
+                    return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            # send new OTP to existing unverified user
+            otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
+            if sent:
+                return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+            return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         # create user with is_verified False
         user = User.objects.create_user(phone_number=phone, password=password)
         user.is_verified = False
