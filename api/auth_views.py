@@ -152,12 +152,12 @@ class AuthRegisterView(APIView):
         user = User.objects.create_user(phone_number=phone, password=password)
         user.is_verified = False
         user.save(update_fields=['is_verified'])
-            # create OTP and attempt to send SMS
-            otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
-            if sent:
-                return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
-            # SMS failed: return error with details
-            return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # create OTP and attempt to send SMS
+        otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
+        if sent:
+            return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+        # SMS failed: return error with details
+        return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AuthVerifyView(APIView):
