@@ -35,6 +35,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     ]
 
     phone_number = models.CharField(max_length=20, unique=True)
+    # Phone verification flag
+    is_verified = models.BooleanField(default=False)
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
     email = models.EmailField(blank=True, null=True)
@@ -42,6 +44,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True)
+    # Additional auth/audit fields
+    last_login_at = models.DateTimeField(null=True, blank=True)
+    failed_login_attempts = models.IntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
 
     # users this user follows; reverse accessor 'followers' gives users following this user
     followings = models.ManyToManyField('self', symmetrical=False, related_name='followers', blank=True)
@@ -68,6 +74,45 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.phone_number
+
+
+class OtpCode(models.Model):
+    PURPOSE_VERIFY = 'verify_account'
+    PURPOSE_LOGIN = 'login'
+    PURPOSE_RESET = 'reset_password'
+
+    PURPOSE_CHOICES = [
+        (PURPOSE_VERIFY, 'Verify Account'),
+        (PURPOSE_LOGIN, 'Login'),
+        (PURPOSE_RESET, 'Reset Password'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='otp_codes')
+    code_hash = models.CharField(max_length=255)
+    purpose = models.CharField(max_length=50, choices=PURPOSE_CHOICES)
+    expires_at = models.DateTimeField()
+    attempts = models.IntegerField(default=0)
+    consumed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['purpose', 'created_at']), models.Index(fields=['expires_at'])]
+
+    def __str__(self):
+        return f"OTP({self.purpose}) for user={self.user_id} consumed={self.consumed}"
+
+
+class RefreshToken(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='refresh_tokens')
+    token_hash = models.CharField(max_length=255)
+    user_agent = models.CharField(max_length=512, blank=True)
+    ip = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"RefreshToken(user={self.user_id} expires={self.expires_at} revoked={self.revoked_at is not None})"
 
 
 class Artist(models.Model):

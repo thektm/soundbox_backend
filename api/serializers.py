@@ -61,6 +61,55 @@ class UploadSerializer(serializers.Serializer):
     filename = serializers.CharField(required=False, allow_blank=True)
 
 
+# --- Auth related serializers ---
+class PhoneSerializer(serializers.Serializer):
+    phone = serializers.CharField()
+
+
+class RegisterRequestSerializer(serializers.Serializer):
+    phone = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+
+class VerifySerializer(serializers.Serializer):
+    phone = serializers.CharField()
+    otp = serializers.CharField()
+    context = serializers.CharField(required=False, allow_blank=True)
+
+
+class LoginPasswordSerializer(serializers.Serializer):
+    phone = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+
+class LoginOtpRequestSerializer(serializers.Serializer):
+    phone = serializers.CharField()
+
+
+class LoginOtpVerifySerializer(serializers.Serializer):
+    phone = serializers.CharField()
+    otp = serializers.CharField()
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    phone = serializers.CharField()
+
+
+class PasswordResetSerializer(serializers.Serializer):
+    phone = serializers.CharField(required=False)
+    otp = serializers.CharField(required=False)
+    newPassword = serializers.CharField(write_only=True)
+    resetToken = serializers.CharField(required=False)
+
+
+class TokenRefreshRequestSerializer(serializers.Serializer):
+    refreshToken = serializers.CharField()
+
+
+class LogoutSerializer(serializers.Serializer):
+    refreshToken = serializers.CharField()
+
+
 class ArtistSerializer(serializers.ModelSerializer):
     """Serializer for Artist model"""
     user_id = serializers.PrimaryKeyRelatedField(
