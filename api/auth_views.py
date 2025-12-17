@@ -1,6 +1,8 @@
 from django.utils import timezone
 from django.conf import settings
 from django.shortcuts import get_object_or_404
+import logging
+import requests
 from django.contrib.auth.hashers import make_password, check_password
 from django.db import transaction
 from rest_framework.views import APIView
@@ -57,14 +59,61 @@ def check_code_hash(raw: str, hashed: str) -> bool:
 
 
 def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
-    # Simple pluggable SMS sender. For now, use settings.SMS_PROVIDER == 'console' to log.
+    # Pluggable SMS sender. Supported providers: 'console' and 'kavenegar'.
     provider = getattr(settings, 'SMS_PROVIDER', 'console')
     app_name = getattr(settings, 'APP_NAME', 'App')
+    logger = logging.getLogger(__name__)
+
     if provider == 'console':
         # non-blocking: just print to console/logs
-        print(f"[SMS:{purpose}] To {phone}: Your {app_name} code is {code} (expires in {minutes} minutes)")
+        logger.info(f"[SMS:{purpose}] To {phone}: Your {app_name} code is {code} (expires in {minutes} minutes)")
         return True
-    # Placeholder: implement real provider integration (Twilio, Nexmo, etc.) in future
+
+    if provider == 'kavenegar':
+        # Kavenegar API: POST form-encoded to https://api.kavenegar.com/v1/{API_KEY}/verify/lookup.json
+        # Use configured key if present, otherwise fall back to the provided key literal
+        api_key = getattr(settings, 'KAVENEGAR_API_KEY', '705A6B6B64733841377A564A3934726A746E747A547477547233656643624F343467776B572F54315476733D')
+
+        # Map purpose to template names expected by Kavenegar
+        template_map = {
+            'login': 'login',
+            'register': 'register',
+            'forgot-pass': 'forgot-pass',
+            OtpCode.PURPOSE_LOGIN: 'login',
+            OtpCode.PURPOSE_VERIFY: 'register',
+            OtpCode.PURPOSE_RESET: 'forgot-pass',
+        }
+
+        template_name = template_map.get(purpose, 'login')
+
+        # Ensure phone is in local format (09xxxxxxxxx)
+        receptor = normalize_phone(phone)
+
+        url = f"https://api.kavenegar.com/v1/{api_key}/verify/lookup.json"
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        data = {
+            'receptor': receptor,
+            'token': code,
+            'template': template_name,
+        }
+
+        try:
+            resp = requests.post(url, data=data, headers=headers, timeout=5)
+            if resp.status_code != 200:
+                logger.error('Kavenegar returned non-200 status: %s %s', resp.status_code, resp.text)
+                return False
+            # parse response to check for success
+            j = resp.json()
+            # Kavenegar returns a 'return' dict with 'status' and 'message' for success
+            # treat any successful HTTP response as success; log details
+            logger.info('Kavenegar sent SMS to %s (template=%s): %s', receptor, template_name, j)
+            return True
+        except Exception as e:
+            logger.exception('Error sending SMS via Kavenegar: %s', e)
+            return False
+
+    # Unknown provider
+    logging.error('Unknown SMS_PROVIDER configured: %s', provider)
     return False
 
 
