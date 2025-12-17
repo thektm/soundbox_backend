@@ -254,11 +254,13 @@ class LoginOtpRequestView(APIView):
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
             return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
-        # rate limit: max 3 sends in last hour
-        one_hour_ago = timezone.now() - timedelta(hours=1)
-        sends = OtpCode.objects.filter(user=user, created_at__gte=one_hour_ago).count()
-        if sends >= 3:
-            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Too many OTP requests'}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        # rate limit: require at least 60 seconds since last login OTP
+        last_otp = OtpCode.objects.filter(user=user, purpose=OtpCode.PURPOSE_LOGIN).order_by('-created_at').first()
+        if last_otp:
+            elapsed = timezone.now() - last_otp.created_at
+            if elapsed < timedelta(seconds=60):
+                retry_after = int((timedelta(seconds=60) - elapsed).total_seconds())
+                return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_LOGIN)
         if sent:
             return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
