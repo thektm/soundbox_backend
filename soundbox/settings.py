@@ -143,3 +143,17 @@ R2_SECRET_ACCESS_KEY = '8d458c9a3ec31490a533230ec43a3988d5aabdbb6a6d1f45fa169d04
 R2_BUCKET_NAME = 'sedabox'
 # CDN base used to build final download URLs. Ensure this matches your CDN configuration.
 R2_CDN_BASE = 'https://cdn.sedabox.com'
+
+# SMS / Kavenegar settings
+SMS_PROVIDER = 'kavenegar'
+# Kavenegar API key (set to your production key)
+KAVENEGAR_API_KEY = '705A6B6B64733841377A564A3934726A746E747A547477547233656643624F343467776B572F54315476733D'
+APP_NAME = 'Sedabox'
+
+# Logging: ensure INFO logs are visible (so OTP send attempts are logged)
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {'console': {'class': 'logging.StreamHandler'}},
+    'root': {'handlers': ['console'], 'level': 'INFO'},
+}

@@ -59,62 +59,52 @@ def check_code_hash(raw: str, hashed: str) -> bool:
 
 
 def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
-    # Pluggable SMS sender. Supported providers: 'console' and 'kavenegar'.
-    provider = getattr(settings, 'SMS_PROVIDER', 'console')
-    app_name = getattr(settings, 'APP_NAME', 'App')
+    # Only Kavenegar is supported (no fallbacks). Fail if not configured.
     logger = logging.getLogger(__name__)
+    provider = getattr(settings, 'SMS_PROVIDER', None)
+    if provider != 'kavenegar':
+        logger.error('SMS_PROVIDER must be set to "kavenegar" in settings')
+        return False
 
-    if provider == 'console':
-        # non-blocking: just print to console/logs
-        logger.info(f"[SMS:{purpose}] To {phone}: Your {app_name} code is {code} (expires in {minutes} minutes)")
-        return True
+    api_key = getattr(settings, 'KAVENEGAR_API_KEY', None)
+    if not api_key:
+        logger.error('KAVENEGAR_API_KEY is not configured in settings')
+        return False
 
-    if provider == 'kavenegar':
-        # Kavenegar API: POST form-encoded to https://api.kavenegar.com/v1/{API_KEY}/verify/lookup.json
-        # Use configured key if present, otherwise fall back to the provided key literal
-        api_key = getattr(settings, 'KAVENEGAR_API_KEY', '705A6B6B64733841377A564A3934726A746E747A547477547233656643624F343467776B572F54315476733D')
+    # Map purpose to template names expected by Kavenegar
+    template_map = {
+        'login': 'login',
+        'register': 'register',
+        'forgot-pass': 'forgot-pass',
+        OtpCode.PURPOSE_LOGIN: 'login',
+        OtpCode.PURPOSE_VERIFY: 'register',
+        OtpCode.PURPOSE_RESET: 'forgot-pass',
+    }
 
-        # Map purpose to template names expected by Kavenegar
-        template_map = {
-            'login': 'login',
-            'register': 'register',
-            'forgot-pass': 'forgot-pass',
-            OtpCode.PURPOSE_LOGIN: 'login',
-            OtpCode.PURPOSE_VERIFY: 'register',
-            OtpCode.PURPOSE_RESET: 'forgot-pass',
-        }
+    template_name = template_map.get(purpose, 'login')
 
-        template_name = template_map.get(purpose, 'login')
+    # Ensure phone is in local format (09xxxxxxxxx)
+    receptor = normalize_phone(phone)
 
-        # Ensure phone is in local format (09xxxxxxxxx)
-        receptor = normalize_phone(phone)
+    url = f"https://api.kavenegar.com/v1/{api_key}/verify/lookup.json"
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    data = {
+        'receptor': receptor,
+        'token': code,
+        'template': template_name,
+    }
 
-        url = f"https://api.kavenegar.com/v1/{api_key}/verify/lookup.json"
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        data = {
-            'receptor': receptor,
-            'token': code,
-            'template': template_name,
-        }
-
-        try:
-            resp = requests.post(url, data=data, headers=headers, timeout=5)
-            if resp.status_code != 200:
-                logger.error('Kavenegar returned non-200 status: %s %s', resp.status_code, resp.text)
-                return False
-            # parse response to check for success
-            j = resp.json()
-            # Kavenegar returns a 'return' dict with 'status' and 'message' for success
-            # treat any successful HTTP response as success; log details
-            logger.info('Kavenegar sent SMS to %s (template=%s): %s', receptor, template_name, j)
-            return True
-        except Exception as e:
-            logger.exception('Error sending SMS via Kavenegar: %s', e)
+    try:
+        resp = requests.post(url, data=data, headers=headers, timeout=5)
+        if resp.status_code != 200:
+            logger.error('Kavenegar returned non-200 status: %s %s', resp.status_code, resp.text)
             return False
-
-    # Unknown provider
-    logging.error('Unknown SMS_PROVIDER configured: %s', provider)
-    return False
+        j = resp.json()
+        logger.info('Kavenegar sent SMS to %s (template=%s): %s', receptor, template_name, j)
+        return True
+    except Exception as e:
+        logger.exception('Error sending SMS via Kavenegar: %s', e)
+        return False
 
 
 def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5) -> OtpCode:
@@ -122,8 +112,14 @@ def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5)
     hashed = hash_code(otp)
     expires = timezone.now() + timedelta(minutes=minutes)
     otp_obj = OtpCode.objects.create(user=user, code_hash=hashed, purpose=purpose, expires_at=expires)
-    send_sms(phone, otp, purpose, minutes)
-    return otp_obj
+    # send SMS and log result to help debugging in development
+    sent = send_sms(phone, otp, purpose, minutes)
+    logger = logging.getLogger(__name__)
+    if sent:
+        logger.info("OTP created and SMS send attempt succeeded for phone=%s purpose=%s", phone, purpose)
+    else:
+        logger.warning("OTP created but SMS send attempt failed for phone=%s purpose=%s", phone, purpose)
+    return otp_obj, sent
 
 
 def issue_tokens_for_user(user: User, request) -> dict:
@@ -156,9 +152,12 @@ class AuthRegisterView(APIView):
         user = User.objects.create_user(phone_number=phone, password=password)
         user.is_verified = False
         user.save(update_fields=['is_verified'])
-        # create OTP
-        create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
-        return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_201_CREATED)
+            # create OTP and attempt to send SMS
+            otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
+            if sent:
+                return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+            # SMS failed: return error with details
+            return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AuthVerifyView(APIView):
@@ -242,8 +241,10 @@ class LoginOtpRequestView(APIView):
         sends = OtpCode.objects.filter(user=user, created_at__gte=one_hour_ago).count()
         if sends >= 3:
             return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Too many OTP requests'}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-        create_and_send_otp(user, phone, OtpCode.PURPOSE_LOGIN)
-        return Response({'status': 'otp_sent'})
+        otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_LOGIN)
+        if sent:
+            return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
+        return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class LoginOtpVerifyView(APIView):
@@ -293,8 +294,10 @@ class ForgotPasswordView(APIView):
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
             return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
-        create_and_send_otp(user, phone, OtpCode.PURPOSE_RESET)
-        return Response({'status': 'otp_sent'})
+        otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_RESET)
+        if sent:
+            return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
+        return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class PasswordResetView(APIView):
