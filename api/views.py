@@ -810,6 +810,7 @@ def get_client_ip(request):
 class PlayCountView(APIView):
     """Endpoint to record play counts for songs."""
     permission_classes = [IsAuthenticated]
+    http_method_names = ['post']
 
     def post(self, request):
         unique_otplay_id = request.data.get('unique_otplay_id')
