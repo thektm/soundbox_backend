@@ -74,7 +74,7 @@ urlpatterns = [
             name='stream-access'),
     
     # Play count endpoint
-    path('play_count/', PlayCountView.as_view(), name='play_count'),
+    path('play/count/', PlayCountView.as_view(), name='play_count'),
     
     # Include router URLs
     path('', include(router.urls)),
