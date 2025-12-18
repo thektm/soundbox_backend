@@ -481,13 +481,16 @@ class SongStreamListView(generics.ListAPIView):
     List songs with wrapper stream URLs that require unwrapping.
     Returns songs with stream_url field that points to unwrap endpoint.
     """
-    queryset = Song.objects.filter(status=Song.STATUS_PUBLISHED)
     serializer_class = SongStreamSerializer
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Optionally filter by genre, mood, artist, etc."""
-        queryset = super().get_queryset()
+        """Filter songs by status for non-staff users"""
+        queryset = Song.objects.all()
+        
+        # Non-staff users only see published songs
+        if not self.request.user.is_staff:
+            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
         
         # Filter by artist
         artist_id = self.request.query_params.get('artist')
