@@ -176,6 +176,7 @@ class SongSerializer(serializers.ModelSerializer):
     uploader_phone = serializers.CharField(source='uploader.phone_number', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
+    plays = serializers.SerializerMethodField()
     
     # For write operations
     genre_ids = serializers.PrimaryKeyRelatedField(
@@ -217,6 +218,12 @@ class SongSerializer(serializers.ModelSerializer):
             'updated_at', 'display_title'
         ]
         read_only_fields = ['id', 'plays', 'created_at', 'updated_at', 'duration_display', 'display_title']
+
+    def get_plays(self, obj):
+        try:
+            return obj.play_counts.count()
+        except Exception:
+            return 0
 
 
 class SongUploadSerializer(serializers.Serializer):
@@ -354,6 +361,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
     stream_url = serializers.SerializerMethodField()
+    plays = serializers.SerializerMethodField()
     
     class Meta:
         model = Song
@@ -413,3 +421,9 @@ class SongStreamSerializer(serializers.ModelSerializer):
                 url = url.replace('http://', 'https://', 1)
             return url
         return None
+
+    def get_plays(self, obj):
+        try:
+            return obj.play_counts.count()
+        except Exception:
+            return 0
