@@ -602,14 +602,17 @@ class UnwrapStreamView(APIView):
             audio_url = stream_access.song.audio_file
             cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
             
-            # Extract key from CDN URL
+            # Extract key from CDN URL and decode it properly
             if audio_url.startswith(cdn_base):
                 object_key = audio_url.replace(cdn_base + '/', '')
+                # URL decode the key to handle encoded characters
+                from urllib.parse import unquote
+                object_key = unquote(object_key)
             else:
-                # Fallback: try to extract path
-                from urllib.parse import urlparse
+                # Fallback: try to extract path and decode
+                from urllib.parse import urlparse, unquote
                 parsed = urlparse(audio_url)
-                object_key = parsed.path.lstrip('/')
+                object_key = unquote(parsed.path.lstrip('/'))
             
             # Generate signed URL (valid for 1 hour)
             signed_url = generate_signed_r2_url(object_key, expiration=3600)
