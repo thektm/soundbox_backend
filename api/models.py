@@ -304,6 +304,9 @@ class Song(models.Model):
             return f"{self.title} (feat. {', '.join(self.featured_artists)})"
         return self.title
 
+    # Play counts
+    play_counts = models.ManyToManyField('PlayCount', blank=True, related_name='songs')
+
 
 class Playlist(models.Model):
     """Playlist model containing songs and metadata"""
@@ -340,24 +343,18 @@ class Playlist(models.Model):
 
 
 class PlayCount(models.Model):
-    """Track individual song plays with geographical data"""
+    """Track individual play counts for songs"""
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='play_counts')
-    song = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='play_counts')
-    country = models.CharField(max_length=100, blank=True)
-    city = models.CharField(max_length=100, blank=True)
-    ip = models.CharField(max_length=64, blank=True)
+    country = models.CharField(max_length=100)
+    city = models.CharField(max_length=100)
+    ip = models.GenericIPAddressField()
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['song', 'created_at']),
-            models.Index(fields=['user', 'created_at']),
-            models.Index(fields=['country', 'city']),
-        ]
-    
+
     def __str__(self):
-        return f"PlayCount(user={self.user_id}, song={self.song_id}, country={self.country}, city={self.city})"
+        return f"PlayCount(user={self.user_id}, {self.city}, {self.country}, {self.created_at})"
 
 
 class StreamAccess(models.Model):
@@ -371,9 +368,7 @@ class StreamAccess(models.Model):
     one_time_token = models.CharField(max_length=128, unique=True, db_index=True, null=True, blank=True, help_text="One-time access token returned by unwrap")
     one_time_used = models.BooleanField(default=False, help_text="Whether the one-time token was already used")
     one_time_expires_at = models.DateTimeField(null=True, blank=True, help_text="Expiry timestamp for the one-time token")
-    # unique one-time play ID for tracking play count submission
-    unique_otplay_id = models.CharField(max_length=128, unique=True, db_index=True, null=True, blank=True, help_text="Unique one-time play ID for play count tracking")
-    otplay_id_used = models.BooleanField(default=False, help_text="Whether the unique_otplay_id was already used to record a play")
+    unique_otplay_id = models.CharField(max_length=64, unique=True, db_index=True, null=True, blank=True, help_text="Unique one-time play ID for play count tracking")
     unwrapped = models.BooleanField(default=False, help_text="Whether this token has been unwrapped")
     unwrapped_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -384,7 +379,6 @@ class StreamAccess(models.Model):
             models.Index(fields=['user', 'unwrapped', 'created_at']),
             models.Index(fields=['unwrap_token']),
             models.Index(fields=['short_token']),
-            models.Index(fields=['unique_otplay_id']),
         ]
     
     def __str__(self):

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, PlayCount
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -372,16 +372,12 @@ class SongStreamSerializer(serializers.ModelSerializer):
         This endpoint MUST ONLY return short wrapper URLs that require unwrapping.
         The actual signed streaming URLs are ONLY returned by the unwrap endpoint.
         DO NOT CHANGE THIS - EVER!
-        
-        Returns a dictionary with stream details including unique_otplay_id.
         """
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             # Generate unique short token (8 characters) and avoid collisions
             import secrets
             from uuid import uuid4
-            from django.urls import reverse
-            
             short_token = None
             for _ in range(6):
                 candidate = secrets.token_urlsafe(6)[:8]
@@ -390,19 +386,19 @@ class SongStreamSerializer(serializers.ModelSerializer):
                     break
             if not short_token:
                 short_token = uuid4().hex[:8]
-            
+
             # Generate unique one-time play ID
             unique_otplay_id = None
             for _ in range(6):
-                candidate = secrets.token_urlsafe(32)
+                candidate = secrets.token_urlsafe(16)
                 if not StreamAccess.objects.filter(unique_otplay_id=candidate).exists():
                     unique_otplay_id = candidate
                     break
             if not unique_otplay_id:
                 unique_otplay_id = uuid4().hex
 
-            # Create StreamAccess record with unique_otplay_id
-            stream_access = StreamAccess.objects.create(
+            # Create StreamAccess record
+            StreamAccess.objects.create(
                 user=request.user,
                 song=obj,
                 short_token=short_token,
@@ -410,27 +406,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
             )
             
             # Return short URL (UNWRAP LINK ONLY - NOT THE FINAL SIGNED URL!)
+            from django.urls import reverse
             short_path = reverse('stream-short', kwargs={'token': short_token})
-            return {
-                'type': 'stream',
-                'url': request.build_absolute_uri(short_path),
-                'song_id': obj.id,
-                'song_title': obj.title,
-                'unique_otplay_id': unique_otplay_id
-            }
+            return request.build_absolute_uri(short_path)
         return None
-
-
-class PlayCountSerializer(serializers.ModelSerializer):
-    """Serializer for PlayCount model"""
-    class Meta:
-        model = PlayCount
-        fields = ['id', 'user', 'song', 'country', 'city', 'ip', 'created_at']
-        read_only_fields = ['id', 'created_at', 'ip']
-
-
-class RecordPlaySerializer(serializers.Serializer):
-    """Serializer for recording play count"""
-    unique_otplay_id = serializers.CharField(required=True)
-    country = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    city = serializers.CharField(max_length=100, required=False, allow_blank=True)
