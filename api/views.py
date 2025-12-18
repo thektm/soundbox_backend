@@ -701,7 +701,7 @@ class StreamShortRedirectView(APIView):
                     'unwrap_count': unwrapped_count
                 })
             
-            # Generate signed URL and redirect
+            # Generate object key for R2
             audio_url = stream_access.song.audio_file
             cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
             
@@ -718,11 +718,30 @@ class StreamShortRedirectView(APIView):
                 object_key = unquote(parsed.path.lstrip('/'))
             
             # Generate signed URL and return it
-            signed_url = generate_signed_r2_url(object_key, expiration=3600)
-            
+            # Instead of returning the presigned R2 URL directly (which would be reusable),
+            # create a one-time server-controlled access token and return a link to it.
+            import secrets
+            from django.urls import reverse
+            # create unique one-time token (avoid collisions)
+            for _ in range(5):
+                one_time_token = secrets.token_urlsafe(32)
+                if not StreamAccess.objects.filter(one_time_token=one_time_token).exists():
+                    break
+            else:
+                # fallback to uuid
+                one_time_token = uuid.uuid4().hex
+
+            stream_access.one_time_token = one_time_token
+            stream_access.one_time_used = False
+            stream_access.one_time_expires_at = timezone.now() + timedelta(seconds=3600)
+            stream_access.save(update_fields=['one_time_token', 'one_time_used', 'one_time_expires_at'])
+
+            access_path = reverse('stream-access', kwargs={'token': one_time_token})
+            access_url = request.build_absolute_uri(access_path)
+
             return Response({
                 'type': 'stream',
-                'url': signed_url,
+                'url': access_url,
                 'song_id': stream_access.song.id,
                 'song_title': stream_access.song.display_title,
                 'expires_in': 3600,
@@ -734,3 +753,44 @@ class StreamShortRedirectView(APIView):
                 {'error': 'Invalid or unauthorized stream URL'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+class StreamAccessView(APIView):
+    """One-time access endpoint: redirects once to a presigned R2 URL and then becomes invalid."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, token):
+        try:
+            stream_access = StreamAccess.objects.select_related('song', 'user').get(
+                one_time_token=token,
+                user=request.user
+            )
+
+            # Check token expiry and usage
+            if stream_access.one_time_used:
+                return Response({'error': 'This one-time access URL has already been used'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if stream_access.one_time_expires_at and timezone.now() > stream_access.one_time_expires_at:
+                return Response({'error': 'This one-time access URL has expired'}, status=status.HTTP_410_GONE)
+
+            # Mark used before redirecting (best-effort; race-conditions remain small)
+            stream_access.one_time_used = True
+            stream_access.save(update_fields=['one_time_used'])
+
+            # Build presigned R2 URL and redirect
+            audio_url = stream_access.song.audio_file
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            if audio_url.startswith(cdn_base):
+                from urllib.parse import unquote
+                object_key = unquote(audio_url.replace(cdn_base + '/', ''))
+            else:
+                from urllib.parse import urlparse, unquote
+                parsed = urlparse(audio_url)
+                object_key = unquote(parsed.path.lstrip('/'))
+
+            signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            from django.http import HttpResponseRedirect
+            return HttpResponseRedirect(signed_url)
+
+        except StreamAccess.DoesNotExist:
+            return Response({'error': 'Invalid or unauthorized one-time token'}, status=status.HTTP_404_NOT_FOUND)

@@ -375,10 +375,18 @@ class SongStreamSerializer(serializers.ModelSerializer):
         """
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            # Generate unique short token (8 characters)
+            # Generate unique short token (8 characters) and avoid collisions
             import secrets
-            short_token = secrets.token_urlsafe(6)[:8]  # 8 char token
-            
+            from uuid import uuid4
+            short_token = None
+            for _ in range(6):
+                candidate = secrets.token_urlsafe(6)[:8]
+                if not StreamAccess.objects.filter(short_token=candidate).exists():
+                    short_token = candidate
+                    break
+            if not short_token:
+                short_token = uuid4().hex[:8]
+
             # Create StreamAccess record
             StreamAccess.objects.create(
                 user=request.user,

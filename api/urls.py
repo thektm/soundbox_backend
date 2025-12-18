@@ -66,7 +66,11 @@ urlpatterns = [
     # Stream endpoints
     path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),
     path('stream/unwrap/<str:token>/', UnwrapStreamView.as_view(), name='unwrap-stream'),
-    path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
+        path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
+        path('stream/access/<str:token>/',
+            # one-time access endpoint (redirects once to presigned R2 URL)
+            __import__('api.views', fromlist=['StreamAccessView']).StreamAccessView.as_view(),
+            name='stream-access'),
     
     # Include router URLs
     path('', include(router.urls)),

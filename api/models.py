@@ -345,6 +345,11 @@ class StreamAccess(models.Model):
     song = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='stream_accesses')
     unwrap_token = models.CharField(max_length=64, unique=True, db_index=True, null=True, blank=True, help_text="Unique token for this unwrap request (legacy)")
     short_token = models.CharField(max_length=16, unique=True, db_index=True, null=True, blank=True, help_text="Short token for URL shortening")
+    # one-time access token: created when user unwraps; this token is returned to client
+    # and must be used exactly once to fetch the real presigned URL (or be redirected).
+    one_time_token = models.CharField(max_length=128, unique=True, db_index=True, null=True, blank=True, help_text="One-time access token returned by unwrap")
+    one_time_used = models.BooleanField(default=False, help_text="Whether the one-time token was already used")
+    one_time_expires_at = models.DateTimeField(null=True, blank=True, help_text="Expiry timestamp for the one-time token")
     unwrapped = models.BooleanField(default=False, help_text="Whether this token has been unwrapped")
     unwrapped_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
