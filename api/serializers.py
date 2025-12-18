@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamRequest
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -347,25 +347,42 @@ class PlaylistSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
-class StreamRequestSerializer(serializers.Serializer):
-    """Serializer for requesting a container link"""
-    song_id = serializers.IntegerField(required=True)
-
-
-class ContainerLinkResponseSerializer(serializers.Serializer):
-    """Response serializer for container link"""
-    container_token = serializers.CharField()
-    expires_at = serializers.DateTimeField()
-
-
-class StreamUnlockSerializer(serializers.Serializer):
-    """Serializer for unlocking a stream URL"""
-    container_token = serializers.CharField(required=True)
-
-
-class StreamUrlResponseSerializer(serializers.Serializer):
-    """Response serializer for stream URL or ad"""
-    type = serializers.ChoiceField(choices=['stream', 'ad'])
-    url = serializers.URLField(required=False)
-    ad_data = serializers.DictField(required=False)
-    expires_in = serializers.IntegerField(required=False, help_text="Seconds until URL expires")
+class SongStreamSerializer(serializers.ModelSerializer):
+    """Serializer for songs with wrapper stream URLs instead of direct URLs"""
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+    album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    duration_display = serializers.ReadOnlyField()
+    display_title = serializers.ReadOnlyField()
+    stream_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Song
+        fields = [
+            'id', 'title', 'artist', 'artist_name', 'featured_artists',
+            'album', 'album_title', 'is_single', 'stream_url', 'cover_image',
+            'duration_seconds', 'duration_display', 'plays',
+            'status', 'release_date', 'language', 'description',
+            'created_at', 'display_title'
+        ]
+        read_only_fields = ['id', 'plays', 'created_at', 'duration_display', 'display_title']
+    
+    def get_stream_url(self, obj):
+        """Return wrapper URL that requires unwrapping to get actual signed URL"""
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            # Generate unique unwrap token
+            import secrets
+            unwrap_token = secrets.token_urlsafe(32)
+            
+            # Create StreamAccess record
+            StreamAccess.objects.create(
+                user=request.user,
+                song=obj,
+                unwrap_token=unwrap_token
+            )
+            
+            # Return unwrap URL
+            from django.urls import reverse
+            unwrap_path = reverse('unwrap-stream', kwargs={'token': unwrap_token})
+            return request.build_absolute_uri(unwrap_path)
+        return None

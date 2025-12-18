@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamRequest
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -16,10 +16,7 @@ from .serializers import (
     SubGenreSerializer,
     SongSerializer,
     SongUploadSerializer,
-    StreamRequestSerializer,
-    ContainerLinkResponseSerializer,
-    StreamUnlockSerializer,
-    StreamUrlResponseSerializer,
+    SongStreamSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -35,7 +32,7 @@ from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
 from datetime import timedelta
-import secrets
+from django.db.models import Q
 
 
 class RegisterView(APIView):
@@ -479,139 +476,53 @@ class SongViewSet(viewsets.ModelViewSet):
         return Response({'plays': song.plays})
 
 
-class GetStreamContainerView(APIView):
+class SongStreamListView(generics.ListAPIView):
     """
-    Get a container token for streaming a song.
-    This doesn't give the actual URL yet, just a token to exchange later.
+    List songs with wrapper stream URLs that require unwrapping.
+    Returns songs with stream_url field that points to unwrap endpoint.
     """
+    queryset = Song.objects.filter(status=Song.STATUS_PUBLISHED)
+    serializer_class = SongStreamSerializer
     permission_classes = [IsAuthenticated]
     
-    def post(self, request):
-        serializer = StreamRequestSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    def get_queryset(self):
+        """Optionally filter by genre, mood, artist, etc."""
+        queryset = super().get_queryset()
         
-        song_id = serializer.validated_data['song_id']
+        # Filter by artist
+        artist_id = self.request.query_params.get('artist')
+        if artist_id:
+            queryset = queryset.filter(artist_id=artist_id)
         
-        try:
-            song = Song.objects.get(id=song_id)
-        except Song.DoesNotExist:
-            return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Filter by album
+        album_id = self.request.query_params.get('album')
+        if album_id:
+            queryset = queryset.filter(album_id=album_id)
         
-        # Generate unique container token
-        container_token = secrets.token_urlsafe(32)
+        # Filter by genre
+        genre_id = self.request.query_params.get('genre')
+        if genre_id:
+            queryset = queryset.filter(genres__id=genre_id)
         
-        # Container link expires in 5 minutes
-        expires_at = timezone.now() + timedelta(minutes=5)
+        # Filter by mood
+        mood_id = self.request.query_params.get('mood')
+        if mood_id:
+            queryset = queryset.filter(moods__id=mood_id)
         
-        # Create stream request record
-        stream_request = StreamRequest.objects.create(
-            user=request.user,
-            song=song,
-            container_token=container_token,
-            expires_at=expires_at
-        )
-        
-        response_serializer = ContainerLinkResponseSerializer({
-            'container_token': container_token,
-            'expires_at': expires_at
-        })
-        
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+        return queryset.distinct()
 
 
-class UnlockStreamView(APIView):
+def generate_signed_r2_url(object_key, expiration=3600):
     """
-    Exchange a container token for actual stream URL.
-    Every 15th unlock returns an ad instead of the stream URL.
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def post(self, request):
-        serializer = StreamUnlockSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        container_token = serializer.validated_data['container_token']
-        
-        try:
-            stream_request = StreamRequest.objects.get(
-                container_token=container_token,
-                user=request.user
-            )
-        except StreamRequest.DoesNotExist:
-            return Response({'error': 'Invalid container token'}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Check if already consumed
-        if stream_request.consumed:
-            return Response({'error': 'Container token already used'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Check if expired
-        if timezone.now() > stream_request.expires_at:
-            return Response({'error': 'Container token expired'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Mark as consumed
-        stream_request.consumed = True
-        stream_request.consumed_at = timezone.now()
-        stream_request.save()
-        
-        # Count consumed stream requests for this user (including this one)
-        consumed_count = StreamRequest.objects.filter(
-            user=request.user,
-            consumed=True
-        ).count()
-        
-        # Every 15th request gets an ad
-        if consumed_count % 15 == 0:
-            response_data = {
-                'type': 'ad',
-                'ad_data': {
-                    'message': 'Please watch this ad',
-                    'duration': 15,
-                    'ad_url': getattr(settings, 'AD_URL', 'https://example.com/ad'),
-                }
-            }
-            response_serializer = StreamUrlResponseSerializer(response_data)
-            return Response(response_serializer.data)
-        
-        # Generate signed URL for the song
-        try:
-            signed_url = generate_signed_url(stream_request.song.audio_file)
-            
-            response_data = {
-                'type': 'stream',
-                'url': signed_url,
-                'expires_in': 3600  # 1 hour
-            }
-            response_serializer = StreamUrlResponseSerializer(response_data)
-            return Response(response_serializer.data)
-            
-        except Exception as e:
-            return Response(
-                {'error': f'Failed to generate stream URL: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-
-def generate_signed_url(r2_url, expiration=3600):
-    """
-    Generate a presigned URL for R2 object.
+    Generate a short-lived signed URL for R2 object.
     
     Args:
-        r2_url: Full CDN URL (e.g., https://cdn.sedabox.com/songs/file.mp3)
+        object_key: The key of the object in R2 bucket (e.g., 'songs/artist-title.mp3')
         expiration: URL expiration time in seconds (default 1 hour)
     
     Returns:
-        Presigned URL string
+        str: Signed URL
     """
-    # Extract the key from CDN URL
-    cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-    if not r2_url.startswith(cdn_base):
-        raise ValueError(f"URL doesn't match CDN base: {r2_url}")
-    
-    key = r2_url[len(cdn_base):].lstrip('/')
-    
-    # Build boto3 client
     client_kwargs = {
         'service_name': 's3',
         'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
@@ -626,14 +537,91 @@ def generate_signed_url(r2_url, expiration=3600):
     client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
     s3 = boto3.client(**client_kwargs)
     
+    bucket_name = getattr(settings, 'R2_BUCKET_NAME')
+    
     # Generate presigned URL
     signed_url = s3.generate_presigned_url(
         'get_object',
-        Params={
-            'Bucket': getattr(settings, 'R2_BUCKET_NAME'),
-            'Key': key
-        },
+        Params={'Bucket': bucket_name, 'Key': object_key},
         ExpiresIn=expiration
     )
     
     return signed_url
+
+
+class UnwrapStreamView(APIView):
+    """
+    Unwrap a stream URL token to get the actual signed URL.
+    Tracks unwraps and injects ad URLs every 15 unwraps.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, token):
+        try:
+            # Get the stream access record
+            stream_access = StreamAccess.objects.select_related('song', 'user').get(
+                unwrap_token=token,
+                user=request.user
+            )
+            
+            # Check if already unwrapped
+            if stream_access.unwrapped:
+                return Response(
+                    {'error': 'This stream token has already been used'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Mark as unwrapped
+            stream_access.unwrapped = True
+            stream_access.unwrapped_at = timezone.now()
+            stream_access.save(update_fields=['unwrapped', 'unwrapped_at'])
+            
+            # Count unwrapped streams for this user (last 24 hours for fairness)
+            cutoff_time = timezone.now() - timedelta(hours=24)
+            unwrapped_count = StreamAccess.objects.filter(
+                user=request.user,
+                unwrapped=True,
+                unwrapped_at__gte=cutoff_time
+            ).count()
+            
+            # Every 15th unwrap gets an ad
+            if unwrapped_count % 15 == 0:
+                ad_url = getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
+                return Response({
+                    'type': 'ad',
+                    'url': ad_url,
+                    'message': 'Please listen to this brief advertisement',
+                    'duration': 30,  # ad duration in seconds
+                    'unwrap_count': unwrapped_count
+                })
+            
+            # Extract object key from audio_file URL
+            audio_url = stream_access.song.audio_file
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            
+            # Extract key from CDN URL
+            if audio_url.startswith(cdn_base):
+                object_key = audio_url.replace(cdn_base + '/', '')
+            else:
+                # Fallback: try to extract path
+                from urllib.parse import urlparse
+                parsed = urlparse(audio_url)
+                object_key = parsed.path.lstrip('/')
+            
+            # Generate signed URL (valid for 1 hour)
+            signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            
+            return Response({
+                'type': 'stream',
+                'url': signed_url,
+                'song_id': stream_access.song.id,
+                'song_title': stream_access.song.display_title,
+                'expires_in': 3600,
+                'unwrap_count': unwrapped_count
+            })
+            
+        except StreamAccess.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or unauthorized stream token'},
+                status=status.HTTP_404_NOT_FOUND
+            )

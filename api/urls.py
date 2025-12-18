@@ -15,8 +15,8 @@ from .views import (
     TagViewSet,
     SubGenreViewSet,
     SongViewSet,
-    GetStreamContainerView,
-    UnlockStreamView,
+    SongStreamListView,
+    UnwrapStreamView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -62,9 +62,9 @@ urlpatterns = [
     path('upload/', R2UploadView.as_view(), name='r2_upload'),
     path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
     
-    # Streaming endpoints
-    path('stream/container/', GetStreamContainerView.as_view(), name='get_stream_container'),
-    path('stream/unlock/', UnlockStreamView.as_view(), name='unlock_stream'),
+    # Stream endpoints
+    path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),
+    path('stream/unwrap/<str:token>/', UnwrapStreamView.as_view(), name='unwrap-stream'),
     
     # Include router URLs
     path('', include(router.urls)),
