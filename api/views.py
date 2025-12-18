@@ -810,7 +810,9 @@ def get_client_ip(request):
 class PlayCountView(APIView):
     """Endpoint to record play counts for songs."""
     permission_classes = [IsAuthenticated]
-    http_method_names = ['post']
+
+    def get(self, request):
+        return Response({'error': 'Method GET not allowed. Please use POST.'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def post(self, request):
         unique_otplay_id = request.data.get('unique_otplay_id')
