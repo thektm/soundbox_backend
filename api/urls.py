@@ -17,6 +17,7 @@ from .views import (
     SongViewSet,
     SongStreamListView,
     UnwrapStreamView,
+    StreamShortRedirectView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -65,6 +66,7 @@ urlpatterns = [
     # Stream endpoints
     path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),
     path('stream/unwrap/<str:token>/', UnwrapStreamView.as_view(), name='unwrap-stream'),
+    path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
     
     # Include router URLs
     path('', include(router.urls)),

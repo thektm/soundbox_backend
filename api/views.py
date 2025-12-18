@@ -631,3 +631,80 @@ class UnwrapStreamView(APIView):
                 {'error': 'Invalid or unauthorized stream token'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+class StreamShortRedirectView(APIView):
+    """
+    Short URL redirect that generates signed URL on-the-fly.
+    Much shorter URLs while maintaining security and ad injection.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, token):
+        try:
+            # Get the stream access record
+            stream_access = StreamAccess.objects.select_related('song', 'user').get(
+                short_token=token,
+                user=request.user
+            )
+            
+            # Check if already unwrapped
+            if stream_access.unwrapped:
+                return Response(
+                    {'error': 'This stream URL has already been used'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Mark as unwrapped
+            stream_access.unwrapped = True
+            stream_access.unwrapped_at = timezone.now()
+            stream_access.save(update_fields=['unwrapped', 'unwrapped_at'])
+            
+            # Count unwrapped streams for this user (last 24 hours for fairness)
+            cutoff_time = timezone.now() - timedelta(hours=24)
+            unwrapped_count = StreamAccess.objects.filter(
+                user=request.user,
+                unwrapped=True,
+                unwrapped_at__gte=cutoff_time
+            ).count()
+            
+            # Every 15th unwrap gets an ad
+            if unwrapped_count % 15 == 0:
+                ad_url = getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
+                # Return JSON response for ad (can't redirect to ad)
+                return Response({
+                    'type': 'ad',
+                    'url': ad_url,
+                    'message': 'Please listen to this brief advertisement',
+                    'duration': 30,
+                    'unwrap_count': unwrapped_count
+                })
+            
+            # Generate signed URL and redirect
+            audio_url = stream_access.song.audio_file
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            
+            # Extract key from CDN URL and decode it properly
+            if audio_url.startswith(cdn_base):
+                object_key = audio_url.replace(cdn_base + '/', '')
+                # URL decode the key to handle encoded characters
+                from urllib.parse import unquote
+                object_key = unquote(object_key)
+            else:
+                # Fallback: try to extract path and decode
+                from urllib.parse import urlparse, unquote
+                parsed = urlparse(audio_url)
+                object_key = unquote(parsed.path.lstrip('/'))
+            
+            # Generate signed URL (valid for 1 hour)
+            signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            
+            # Redirect to the signed URL
+            from django.http import HttpResponseRedirect
+            return HttpResponseRedirect(signed_url)
+            
+        except StreamAccess.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or unauthorized stream URL'},
+                status=status.HTTP_404_NOT_FOUND
+            )
