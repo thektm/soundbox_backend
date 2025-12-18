@@ -343,7 +343,7 @@ class StreamAccess(models.Model):
     """Track stream URL unwraps for ad injection logic"""
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='stream_accesses')
     song = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='stream_accesses')
-    unwrap_token = models.CharField(max_length=64, unique=True, db_index=True, help_text="Unique token for this unwrap request")
+    unwrap_token = models.CharField(max_length=64, unique=True, db_index=True, null=True, blank=True, help_text="Unique token for this unwrap request (legacy)")
     short_token = models.CharField(max_length=16, unique=True, db_index=True, null=True, blank=True, help_text="Short token for URL shortening")
     unwrapped = models.BooleanField(default=False, help_text="Whether this token has been unwrapped")
     unwrapped_at = models.DateTimeField(null=True, blank=True)
