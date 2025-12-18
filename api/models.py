@@ -337,3 +337,24 @@ class Playlist(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.created_at.date()})"
+
+
+class StreamRequest(models.Model):
+    """Track user stream requests for ad insertion logic"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='stream_requests')
+    song = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='stream_requests')
+    container_token = models.CharField(max_length=255, unique=True, help_text="Unique token for this stream request")
+    created_at = models.DateTimeField(auto_now_add=True)
+    consumed = models.BooleanField(default=False, help_text="Whether this container link has been exchanged for signed URL")
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(help_text="Container link expiration time")
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'consumed', 'consumed_at']),
+            models.Index(fields=['container_token']),
+        ]
+    
+    def __str__(self):
+        return f"StreamRequest(user={self.user.phone_number}, song={self.song.title}, consumed={self.consumed})"

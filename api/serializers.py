@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamRequest
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -345,3 +345,27 @@ class PlaylistSerializer(serializers.ModelSerializer):
             'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
         ]
         read_only_fields = ['id', 'created_at']
+
+
+class StreamRequestSerializer(serializers.Serializer):
+    """Serializer for requesting a container link"""
+    song_id = serializers.IntegerField(required=True)
+
+
+class ContainerLinkResponseSerializer(serializers.Serializer):
+    """Response serializer for container link"""
+    container_token = serializers.CharField()
+    expires_at = serializers.DateTimeField()
+
+
+class StreamUnlockSerializer(serializers.Serializer):
+    """Serializer for unlocking a stream URL"""
+    container_token = serializers.CharField(required=True)
+
+
+class StreamUrlResponseSerializer(serializers.Serializer):
+    """Response serializer for stream URL or ad"""
+    type = serializers.ChoiceField(choices=['stream', 'ad'])
+    url = serializers.URLField(required=False)
+    ad_data = serializers.DictField(required=False)
+    expires_in = serializers.IntegerField(required=False, help_text="Seconds until URL expires")

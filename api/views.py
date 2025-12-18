@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamRequest
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -16,6 +16,10 @@ from .serializers import (
     SubGenreSerializer,
     SongSerializer,
     SongUploadSerializer,
+    StreamRequestSerializer,
+    ContainerLinkResponseSerializer,
+    StreamUnlockSerializer,
+    StreamUrlResponseSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -29,6 +33,9 @@ import os
 import mimetypes
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
+from django.utils import timezone
+from datetime import timedelta
+import secrets
 
 
 class RegisterView(APIView):
@@ -470,3 +477,163 @@ class SongViewSet(viewsets.ModelViewSet):
         song.plays += 1
         song.save(update_fields=['plays'])
         return Response({'plays': song.plays})
+
+
+class GetStreamContainerView(APIView):
+    """
+    Get a container token for streaming a song.
+    This doesn't give the actual URL yet, just a token to exchange later.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        serializer = StreamRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        song_id = serializer.validated_data['song_id']
+        
+        try:
+            song = Song.objects.get(id=song_id)
+        except Song.DoesNotExist:
+            return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Generate unique container token
+        container_token = secrets.token_urlsafe(32)
+        
+        # Container link expires in 5 minutes
+        expires_at = timezone.now() + timedelta(minutes=5)
+        
+        # Create stream request record
+        stream_request = StreamRequest.objects.create(
+            user=request.user,
+            song=song,
+            container_token=container_token,
+            expires_at=expires_at
+        )
+        
+        response_serializer = ContainerLinkResponseSerializer({
+            'container_token': container_token,
+            'expires_at': expires_at
+        })
+        
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class UnlockStreamView(APIView):
+    """
+    Exchange a container token for actual stream URL.
+    Every 15th unlock returns an ad instead of the stream URL.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        serializer = StreamUnlockSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        container_token = serializer.validated_data['container_token']
+        
+        try:
+            stream_request = StreamRequest.objects.get(
+                container_token=container_token,
+                user=request.user
+            )
+        except StreamRequest.DoesNotExist:
+            return Response({'error': 'Invalid container token'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if already consumed
+        if stream_request.consumed:
+            return Response({'error': 'Container token already used'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if expired
+        if timezone.now() > stream_request.expires_at:
+            return Response({'error': 'Container token expired'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Mark as consumed
+        stream_request.consumed = True
+        stream_request.consumed_at = timezone.now()
+        stream_request.save()
+        
+        # Count consumed stream requests for this user (including this one)
+        consumed_count = StreamRequest.objects.filter(
+            user=request.user,
+            consumed=True
+        ).count()
+        
+        # Every 15th request gets an ad
+        if consumed_count % 15 == 0:
+            response_data = {
+                'type': 'ad',
+                'ad_data': {
+                    'message': 'Please watch this ad',
+                    'duration': 15,
+                    'ad_url': getattr(settings, 'AD_URL', 'https://example.com/ad'),
+                }
+            }
+            response_serializer = StreamUrlResponseSerializer(response_data)
+            return Response(response_serializer.data)
+        
+        # Generate signed URL for the song
+        try:
+            signed_url = generate_signed_url(stream_request.song.audio_file)
+            
+            response_data = {
+                'type': 'stream',
+                'url': signed_url,
+                'expires_in': 3600  # 1 hour
+            }
+            response_serializer = StreamUrlResponseSerializer(response_data)
+            return Response(response_serializer.data)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to generate stream URL: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+def generate_signed_url(r2_url, expiration=3600):
+    """
+    Generate a presigned URL for R2 object.
+    
+    Args:
+        r2_url: Full CDN URL (e.g., https://cdn.sedabox.com/songs/file.mp3)
+        expiration: URL expiration time in seconds (default 1 hour)
+    
+    Returns:
+        Presigned URL string
+    """
+    # Extract the key from CDN URL
+    cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+    if not r2_url.startswith(cdn_base):
+        raise ValueError(f"URL doesn't match CDN base: {r2_url}")
+    
+    key = r2_url[len(cdn_base):].lstrip('/')
+    
+    # Build boto3 client
+    client_kwargs = {
+        'service_name': 's3',
+        'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
+        'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
+        'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
+        'config': Config(signature_version='s3v4'),
+    }
+    session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
+    if session_token:
+        client_kwargs['aws_session_token'] = session_token
+    
+    client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
+    s3 = boto3.client(**client_kwargs)
+    
+    # Generate presigned URL
+    signed_url = s3.generate_presigned_url(
+        'get_object',
+        Params={
+            'Bucket': getattr(settings, 'R2_BUCKET_NAME'),
+            'Key': key
+        },
+        ExpiresIn=expiration
+    )
+    
+    return signed_url

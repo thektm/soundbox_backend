@@ -15,6 +15,8 @@ from .views import (
     TagViewSet,
     SubGenreViewSet,
     SongViewSet,
+    GetStreamContainerView,
+    UnlockStreamView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -40,12 +42,9 @@ router.register(r'subgenres', SubGenreViewSet, basename='subgenre')
 router.register(r'songs', SongViewSet, basename='song')
 
 urlpatterns = [
-    # Legacy / simple auth endpoints (kept for compatibility)
-    path('register/', RegisterView.as_view(), name='register'),
-    path('login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
+    
 
-    # New auth endpoints under /auth/
+    #auth endpoints
     path('auth/register/', AuthRegisterView.as_view(), name='auth_register'),
     path('auth/verify/', AuthVerifyView.as_view(), name='auth_verify'),
     path('auth/login/password/', LoginPasswordView.as_view(), name='auth_login_password'),
@@ -62,6 +61,10 @@ urlpatterns = [
     # Upload endpoints
     path('upload/', R2UploadView.as_view(), name='r2_upload'),
     path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
+    
+    # Streaming endpoints
+    path('stream/container/', GetStreamContainerView.as_view(), name='get_stream_container'),
+    path('stream/unlock/', UnlockStreamView.as_view(), name='unlock_stream'),
     
     # Include router URLs
     path('', include(router.urls)),
