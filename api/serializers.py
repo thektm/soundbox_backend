@@ -367,22 +367,22 @@ class SongStreamSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'plays', 'created_at', 'duration_display', 'display_title']
     
     def get_stream_url(self, obj):
-        """Return wrapper URL that requires unwrapping to get actual signed URL"""
+        """Return short stream URL that redirects to signed URL"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            # Generate unique unwrap token
+            # Generate unique short token (8 characters)
             import secrets
-            unwrap_token = secrets.token_urlsafe(32)
+            short_token = secrets.token_urlsafe(6)[:8]  # 8 char token
             
             # Create StreamAccess record
             StreamAccess.objects.create(
                 user=request.user,
                 song=obj,
-                unwrap_token=unwrap_token
+                short_token=short_token
             )
             
-            # Return unwrap URL
+            # Return short URL
             from django.urls import reverse
-            unwrap_path = reverse('unwrap-stream', kwargs={'token': unwrap_token})
-            return request.build_absolute_uri(unwrap_path)
+            short_path = reverse('stream-short', kwargs={'token': short_token})
+            return request.build_absolute_uri(short_path)
         return None

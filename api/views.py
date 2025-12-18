@@ -717,12 +717,17 @@ class StreamShortRedirectView(APIView):
                 parsed = urlparse(audio_url)
                 object_key = unquote(parsed.path.lstrip('/'))
             
-            # Generate signed URL (valid for 1 hour)
+            # Generate signed URL and return it
             signed_url = generate_signed_r2_url(object_key, expiration=3600)
             
-            # Redirect to the signed URL
-            from django.http import HttpResponseRedirect
-            return HttpResponseRedirect(signed_url)
+            return Response({
+                'type': 'stream',
+                'url': signed_url,
+                'song_id': stream_access.song.id,
+                'song_title': stream_access.song.display_title,
+                'expires_in': 3600,
+                'unwrap_count': unwrapped_count
+            })
             
         except StreamAccess.DoesNotExist:
             return Response(
