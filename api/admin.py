@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist
+from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, PlayCount
 
 User = get_user_model()
 
@@ -182,4 +182,24 @@ class PlaylistAdmin(admin.ModelAdmin):
         ('Classification', {'fields': ('genres', 'moods', 'tags'), 'classes': ('collapse',)}),
         ('Songs', {'fields': ('songs',)}),
         ('Metadata', {'fields': ('created_at',)}),
+    )
+
+
+@admin.register(PlayCount)
+class PlayCountAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'song', 'country', 'city', 'ip', 'created_at')
+    list_filter = ('country', 'city', 'created_at')
+    search_fields = ('user__phone_number', 'song__title', 'ip', 'country', 'city')
+    readonly_fields = ('created_at',)
+    autocomplete_fields = ['user', 'song']
+    fieldsets = (
+        ('Play Info', {
+            'fields': ('user', 'song')
+        }),
+        ('Location Data', {
+            'fields': ('country', 'city', 'ip')
+        }),
+        ('Metadata', {
+            'fields': ('created_at',)
+        }),
     )

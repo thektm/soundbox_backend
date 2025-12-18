@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -17,6 +17,7 @@ from .serializers import (
     SongSerializer,
     SongUploadSerializer,
     SongStreamSerializer,
+    RecordPlaySerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -745,7 +746,8 @@ class StreamShortRedirectView(APIView):
                 'song_id': stream_access.song.id,
                 'song_title': stream_access.song.display_title,
                 'expires_in': 3600,
-                'unwrap_count': unwrapped_count
+                'unwrap_count': unwrapped_count,
+                'unique_otplay_id': stream_access.unique_otplay_id
             })
             
         except StreamAccess.DoesNotExist:
@@ -794,3 +796,69 @@ class StreamAccessView(APIView):
 
         except StreamAccess.DoesNotExist:
             return Response({'error': 'Invalid or unauthorized one-time token'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class RecordPlayCountView(APIView):
+    """Record a play count for a song using unique_otplay_id."""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        serializer = RecordPlaySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        unique_otplay_id = serializer.validated_data.get('unique_otplay_id')
+        country = serializer.validated_data.get('country', '')
+        city = serializer.validated_data.get('city', '')
+        
+        try:
+            # Find the StreamAccess record by unique_otplay_id
+            stream_access = StreamAccess.objects.select_related('song', 'user').get(
+                unique_otplay_id=unique_otplay_id,
+                user=request.user
+            )
+            
+            # Check if this otplay_id was already used
+            if stream_access.otplay_id_used:
+                return Response(
+                    {'error': 'This play ID has already been used'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Get IP address from request
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                ip = x_forwarded_for.split(',')[0].strip()
+            else:
+                ip = request.META.get('REMOTE_ADDR', '')
+            
+            # Create PlayCount record
+            play_count = PlayCount.objects.create(
+                user=request.user,
+                song=stream_access.song,
+                country=country,
+                city=city,
+                ip=ip
+            )
+            
+            # Mark the otplay_id as used
+            stream_access.otplay_id_used = True
+            stream_access.save(update_fields=['otplay_id_used'])
+            
+            # Increment the song's play counter
+            stream_access.song.plays += 1
+            stream_access.song.save(update_fields=['plays'])
+            
+            return Response({
+                'success': True,
+                'message': 'Play count recorded successfully',
+                'play_count_id': play_count.id,
+                'song_id': stream_access.song.id,
+                'total_plays': stream_access.song.plays
+            }, status=status.HTTP_201_CREATED)
+            
+        except StreamAccess.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or unauthorized play ID'},
+                status=status.HTTP_404_NOT_FOUND
+            )

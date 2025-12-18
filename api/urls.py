@@ -18,6 +18,7 @@ from .views import (
     SongStreamListView,
     UnwrapStreamView,
     StreamShortRedirectView,
+    RecordPlayCountView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -71,6 +72,7 @@ urlpatterns = [
             # one-time access endpoint (redirects once to presigned R2 URL)
             __import__('api.views', fromlist=['StreamAccessView']).StreamAccessView.as_view(),
             name='stream-access'),
+    path('stream/record-play/', RecordPlayCountView.as_view(), name='record-play-count'),
     
     # Include router URLs
     path('', include(router.urls)),
