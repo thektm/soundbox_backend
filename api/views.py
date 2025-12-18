@@ -637,6 +637,8 @@ class UnwrapStreamView(APIView):
             from django.urls import reverse
             short_path = reverse('stream-short', kwargs={'token': stream_access.short_token})
             short_url = request.build_absolute_uri(short_path)
+            if short_url.startswith('http://'):
+                short_url = short_url.replace('http://', 'https://', 1)
             
             return Response({
                 'type': 'stream',
@@ -738,6 +740,8 @@ class StreamShortRedirectView(APIView):
 
             access_path = reverse('stream-access', kwargs={'token': one_time_token})
             access_url = request.build_absolute_uri(access_path)
+            if access_url.startswith('http://'):
+                access_url = access_url.replace('http://', 'https://', 1)
 
             return Response({
                 'type': 'stream',

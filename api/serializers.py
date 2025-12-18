@@ -408,5 +408,8 @@ class SongStreamSerializer(serializers.ModelSerializer):
             # Return short URL (UNWRAP LINK ONLY - NOT THE FINAL SIGNED URL!)
             from django.urls import reverse
             short_path = reverse('stream-short', kwargs={'token': short_token})
-            return request.build_absolute_uri(short_path)
+            url = request.build_absolute_uri(short_path)
+            if url.startswith('http://'):
+                url = url.replace('http://', 'https://', 1)
+            return url
         return None
