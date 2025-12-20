@@ -615,14 +615,21 @@ class UnwrapStreamView(APIView):
                 parsed = urlparse(audio_url)
                 object_key = unquote(parsed.path.lstrip('/'))
             
-            # Generate signed URL (valid for 1 hour) and return it directly
-            signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            # If the stored audio URL points into our CDN (R2), generate a presigned R2 URL.
+            # Otherwise return the original audio_url as-is (external/public URL).
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            if audio_url and audio_url.startswith(cdn_base):
+                signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            else:
+                # return original URL (no signing) for external hosts
+                signed_url = audio_url
+
             return Response({
                 'type': 'stream',
-                'url': signed_url,  # Direct signed R2 URL
+                'url': signed_url,
                 'song_id': stream_access.song.id,
                 'song_title': stream_access.song.display_title,
-                'expires_in': 3600,
+                'expires_in': 3600 if signed_url and signed_url.startswith(cdn_base) else None,
                 'unwrap_count': unwrapped_count
             })
             
@@ -721,13 +728,20 @@ class StreamShortRedirectView(APIView):
                 access_url = access_url.replace('http://', 'https://', 1)
 
             # Also generate a signed URL for immediate use and return it (still store one-time token)
-            signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            if audio_url and audio_url.startswith(cdn_base):
+                signed_url = generate_signed_r2_url(object_key, expiration=3600)
+                expires = 3600
+            else:
+                signed_url = audio_url
+                expires = None
+
             return Response({
                 'type': 'stream',
                 'url': signed_url,
                 'song_id': stream_access.song.id,
                 'song_title': stream_access.song.display_title,
-                'expires_in': 3600,
+                'expires_in': expires,
                 'unwrap_count': unwrapped_count,
                 'unique_otplay_id': stream_access.unique_otplay_id
             })
