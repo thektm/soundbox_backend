@@ -428,6 +428,81 @@ class SongStreamSerializer(serializers.ModelSerializer):
             # Return short URL (UNWRAP LINK ONLY - NOT THE FINAL SIGNED URL!)
             from django.urls import reverse
             short_path = reverse('stream-short', kwargs={'token': short_token})
+            
+            # Use request to get the origin URL (where the request is coming from)
+            request_obj = self.context.get('request')
+            if request_obj:
+                stream_url = request_obj.build_absolute_uri(short_path)
+            else:
+                stream_url = short_path
+            
+            return stream_url
+        
+        return None
+
+
+class UserPlaylistSerializer(serializers.ModelSerializer):
+    """Serializer for UserPlaylist model"""
+    user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    songs_count = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+    song_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Song.objects.all(),
+        many=True,
+        source='songs',
+        required=False
+    )
+    
+    class Meta:
+        model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
+        fields = [
+            'id', 'user', 'user_phone', 'title', 'public', 'songs_count',
+            'likes_count', 'is_liked', 'song_ids', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'user', 'user_phone', 'songs_count', 'likes_count', 
+                           'is_liked', 'created_at', 'updated_at']
+    
+    def get_songs_count(self, obj):
+        return obj.songs.count()
+    
+    def get_likes_count(self, obj):
+        return obj.liked_by.count()
+    
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.liked_by.filter(id=request.user.id).exists()
+        return False
+
+
+class UserPlaylistCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating UserPlaylist with optional first song"""
+    first_song_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    
+    class Meta:
+        model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
+        fields = ['title', 'public', 'first_song_id']
+    
+    def create(self, validated_data):
+        first_song_id = validated_data.pop('first_song_id', None)
+        request = self.context.get('request')
+        
+        # Create the playlist
+        playlist = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist.objects.create(
+            user=request.user,
+            **validated_data
+        )
+        
+        # Add the first song if provided
+        if first_song_id:
+            try:
+                song = Song.objects.get(id=first_song_id)
+                playlist.songs.add(song)
+            except Song.DoesNotExist:
+                pass
+        
+        return playlist
             url = request.build_absolute_uri(short_path)
             if url.startswith('http://'):
                 url = url.replace('http://', 'https://', 1)

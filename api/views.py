@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -18,6 +18,8 @@ from .serializers import (
     SongUploadSerializer,
     UploadSerializer,
     SongStreamSerializer,
+    UserPlaylistSerializer,
+    UserPlaylistCreateSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -895,3 +897,105 @@ class PlayCountView(APIView):
 
         except StreamAccess.DoesNotExist:
             return Response({'error': 'Invalid unique_otplay_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UserPlaylistListCreateView(APIView):
+    """List all user playlists or create a new one"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """List user's playlists"""
+        playlists = UserPlaylist.objects.filter(user=request.user)
+        serializer = UserPlaylistSerializer(playlists, many=True, context={'request': request})
+        return Response(serializer.data)
+    
+    def post(self, request):
+        """Create a new playlist, optionally with first song"""
+        serializer = UserPlaylistCreateSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            playlist = serializer.save()
+            response_serializer = UserPlaylistSerializer(playlist, context={'request': request})
+            return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UserPlaylistDetailView(APIView):
+    """Retrieve, update, or delete a specific user playlist"""
+    permission_classes = [IsAuthenticated]
+    
+    def get_object(self, pk, user):
+        try:
+            return UserPlaylist.objects.get(pk=pk, user=user)
+        except UserPlaylist.DoesNotExist:
+            return None
+    
+    def get(self, request, pk):
+        """Retrieve a playlist"""
+        playlist = self.get_object(pk, request.user)
+        if not playlist:
+            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = UserPlaylistSerializer(playlist, context={'request': request})
+        return Response(serializer.data)
+    
+    def put(self, request, pk):
+        """Update a playlist"""
+        playlist = self.get_object(pk, request.user)
+        if not playlist:
+            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = UserPlaylistSerializer(playlist, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, pk):
+        """Delete a playlist"""
+        playlist = self.get_object(pk, request.user)
+        if not playlist:
+            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+        playlist.delete()
+        return Response({'message': 'Playlist deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+
+
+class UserPlaylistAddSongView(APIView):
+    """Add a song to a user playlist"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request, pk):
+        """Add song to playlist"""
+        try:
+            playlist = UserPlaylist.objects.get(pk=pk, user=request.user)
+        except UserPlaylist.DoesNotExist:
+            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        song_id = request.data.get('song_id')
+        if not song_id:
+            return Response({'error': 'song_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            song = Song.objects.get(id=song_id)
+            playlist.songs.add(song)
+            serializer = UserPlaylistSerializer(playlist, context={'request': request})
+            return Response(serializer.data)
+        except Song.DoesNotExist:
+            return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class UserPlaylistRemoveSongView(APIView):
+    """Remove a song from a user playlist"""
+    permission_classes = [IsAuthenticated]
+    
+    def delete(self, request, pk, song_id):
+        """Remove song from playlist"""
+        try:
+            playlist = UserPlaylist.objects.get(pk=pk, user=request.user)
+        except UserPlaylist.DoesNotExist:
+            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        try:
+            song = Song.objects.get(id=song_id)
+            playlist.songs.remove(song)
+            serializer = UserPlaylistSerializer(playlist, context={'request': request})
+            return Response(serializer.data)
+        except Song.DoesNotExist:
+            return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)

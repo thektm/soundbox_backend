@@ -22,6 +22,10 @@ from .views import (
     UnwrapStreamView,
     StreamShortRedirectView,
     PlayCountView,
+    UserPlaylistListCreateView,
+    UserPlaylistDetailView,
+    UserPlaylistAddSongView,
+    UserPlaylistRemoveSongView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -83,6 +87,12 @@ urlpatterns = [
     
     # Play count endpoint
     path('play/count/', PlayCountView.as_view(), name='play_count'),
+    
+    # User Playlist endpoints
+    path('user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
+    path('user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
+    path('user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
+    path('user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
     
     # Include router URLs
     path('', include(router.urls)),

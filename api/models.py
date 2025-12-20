@@ -360,6 +360,23 @@ class PlayCount(models.Model):
         return f"PlayCount(user={self.user_id}, {self.city}, {self.country}, {self.created_at})"
 
 
+class UserPlaylist(models.Model):
+    """User-created playlist model"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_playlists')
+    title = models.CharField(max_length=255)
+    public = models.BooleanField(default=False)
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_playlists')
+    songs = models.ManyToManyField(Song, blank=True, related_name='user_playlists')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} by {self.user.phone_number}"
+
+
 class StreamAccess(models.Model):
     """Track stream URL unwraps for ad injection logic"""
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='stream_accesses')

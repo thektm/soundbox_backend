@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist
+from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist
 
 User = get_user_model()
 
@@ -185,3 +185,70 @@ class PlaylistAdmin(admin.ModelAdmin):
         ('Songs', {'fields': ('songs',)}),
         ('Metadata', {'fields': ('created_at',)}),
     )
+
+
+@admin.register(UserPlaylist)
+class UserPlaylistAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'user', 'public', 'songs_count', 'likes_count', 'created_at')
+    list_filter = ('public', 'created_at', 'updated_at', 'user')
+    search_fields = ('title', 'user__phone_number', 'user__first_name', 'user__last_name')
+    readonly_fields = ('created_at', 'updated_at', 'songs_count', 'likes_count')
+    filter_horizontal = ('liked_by', 'songs')
+    autocomplete_fields = ['user']
+    date_hierarchy = 'created_at'
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('user', 'title', 'public')
+        }),
+        ('Content', {
+            'fields': ('songs',),
+            'description': 'Select songs to include in this playlist'
+        }),
+        ('Social Features', {
+            'fields': ('liked_by',),
+            'classes': ('collapse',),
+            'description': 'Users who have liked this playlist'
+        }),
+        ('Statistics', {
+            'fields': ('songs_count', 'likes_count'),
+            'classes': ('collapse',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def songs_count(self, obj):
+        """Display the number of songs in the playlist"""
+        return obj.songs.count()
+    songs_count.short_description = 'Songs Count'
+    
+    def likes_count(self, obj):
+        """Display the number of likes for the playlist"""
+        return obj.liked_by.count()
+    likes_count.short_description = 'Likes Count'
+    
+    actions = ['make_public', 'make_private', 'clear_likes']
+    
+    def make_public(self, request, queryset):
+        """Bulk action to make playlists public"""
+        count = queryset.update(public=True)
+        self.message_user(request, f'{count} playlist(s) made public.')
+    make_public.short_description = 'Make selected playlists public'
+    
+    def make_private(self, request, queryset):
+        """Bulk action to make playlists private"""
+        count = queryset.update(public=False)
+        self.message_user(request, f'{count} playlist(s) made private.')
+    make_private.short_description = 'Make selected playlists private'
+    
+    def clear_likes(self, request, queryset):
+        """Bulk action to clear all likes from playlists"""
+        count = 0
+        for playlist in queryset:
+            playlist.liked_by.clear()
+            count += 1
+        self.message_user(request, f'Likes cleared from {count} playlist(s).')
+    clear_likes.short_description = 'Clear likes from selected playlists'
