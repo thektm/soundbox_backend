@@ -16,6 +16,7 @@ from .serializers import (
     SubGenreSerializer,
     SongSerializer,
     SongUploadSerializer,
+    UploadSerializer,
     SongStreamSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
