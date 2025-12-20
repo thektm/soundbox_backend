@@ -503,11 +503,6 @@ class UserPlaylistCreateSerializer(serializers.ModelSerializer):
                 pass
         
         return playlist
-            url = request.build_absolute_uri(short_path)
-            if url.startswith('http://'):
-                url = url.replace('http://', 'https://', 1)
-            return url
-        return None
 
     def get_plays(self, obj):
         try:
