@@ -447,14 +447,13 @@ class SubGenreViewSet(viewsets.ModelViewSet):
         return super().get_permissions()
 
 
-class SongViewSet(viewsets.ModelViewSet):
-    """ViewSet for Song CRUD operations"""
-    queryset = Song.objects.all()
+class SongListView(generics.ListCreateAPIView):
+    """View for listing and creating songs"""
     serializer_class = SongSerializer
     permission_classes = [IsAuthenticated]
     
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
         return super().get_permissions()
     
@@ -467,11 +466,64 @@ class SongViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
         
         return queryset
+
+
+class SongDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """View for retrieving, updating and deleting a song"""
+    queryset = Song.objects.all()
+    serializer_class = SongSerializer
+    permission_classes = [IsAuthenticated]
     
-    @action(detail=True, methods=['post'])
-    def increment_plays(self, request, pk=None):
-        """Increment play count for a song"""
-        song = self.get_object()
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return super().get_permissions()
+    
+    def get_queryset(self):
+        """Filter songs by status for non-staff users"""
+        queryset = Song.objects.all()
+        
+        # Non-authenticated or non-staff users only see published songs
+        if not self.request.user.is_authenticated or not self.request.user.is_staff:
+            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
+        
+        return queryset
+
+
+class SongLikeView(APIView):
+    """Toggle like status for a song"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk=None):
+        try:
+            song = Song.objects.get(pk=pk)
+        except Song.DoesNotExist:
+            return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        user = request.user
+        if song.liked_by.filter(id=user.id).exists():
+            song.liked_by.remove(user)
+            liked = False
+        else:
+            song.liked_by.add(user)
+            liked = True
+            
+        return Response({
+            'liked': liked,
+            'likes_count': song.liked_by.count()
+        })
+
+
+class SongIncrementPlaysView(APIView):
+    """Increment play count for a song"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk=None):
+        try:
+            song = Song.objects.get(pk=pk)
+        except Song.DoesNotExist:
+            return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+            
         song.plays += 1
         song.save(update_fields=['plays'])
         return Response({'plays': song.plays})

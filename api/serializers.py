@@ -177,6 +177,8 @@ class SongSerializer(serializers.ModelSerializer):
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
     plays = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
     
     # For write operations
     genre_ids = serializers.PrimaryKeyRelatedField(
@@ -210,6 +212,7 @@ class SongSerializer(serializers.ModelSerializer):
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
             'album', 'album_title', 'is_single', 'audio_file', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
+            'likes_count', 'is_liked',
             'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
             'mood_ids', 'tag_ids', 'description', 'lyrics', 'tempo', 'energy',
             'danceability', 'valence', 'acousticness', 'instrumentalness',
@@ -217,13 +220,22 @@ class SongSerializer(serializers.ModelSerializer):
             'lyricists', 'credits', 'uploader', 'uploader_phone', 'created_at',
             'updated_at', 'display_title'
         ]
-        read_only_fields = ['id', 'plays', 'created_at', 'updated_at', 'duration_display', 'display_title']
+        read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
 
     def get_plays(self, obj):
         try:
             return obj.play_counts.count()
         except Exception:
             return 0
+
+    def get_likes_count(self, obj):
+        return obj.liked_by.count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.liked_by.filter(id=request.user.id).exists()
+        return False
 
 
 class SongUploadSerializer(serializers.Serializer):

@@ -14,7 +14,10 @@ from .views import (
     MoodViewSet,
     TagViewSet,
     SubGenreViewSet,
-    SongViewSet,
+    SongListView,
+    SongDetailView,
+    SongLikeView,
+    SongIncrementPlaysView,
     SongStreamListView,
     UnwrapStreamView,
     StreamShortRedirectView,
@@ -41,7 +44,6 @@ router.register(r'genres', GenreViewSet, basename='genre')
 router.register(r'moods', MoodViewSet, basename='mood')
 router.register(r'tags', TagViewSet, basename='tag')
 router.register(r'subgenres', SubGenreViewSet, basename='subgenre')
-router.register(r'songs', SongViewSet, basename='song')
 
 urlpatterns = [
     
@@ -59,6 +61,12 @@ urlpatterns = [
     
     # User endpoints
     path('users/profile/', UserProfileView.as_view(), name='user_profile'),
+    
+    # Song endpoints
+    path('songs/', SongListView.as_view(), name='song_list'),
+    path('songs/<int:pk>/', SongDetailView.as_view(), name='song_detail'),
+    path('songs/<int:pk>/like/', SongLikeView.as_view(), name='song_like'),
+    path('songs/<int:pk>/increment_plays/', SongIncrementPlaysView.as_view(), name='song_increment_plays'),
     
     # Upload endpoints
     path('upload/', R2UploadView.as_view(), name='r2_upload'),

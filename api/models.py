@@ -307,6 +307,9 @@ class Song(models.Model):
     # Play counts
     play_counts = models.ManyToManyField('PlayCount', blank=True, related_name='songs')
 
+    # Likes
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_songs')
+
 
 class Playlist(models.Model):
     """Playlist model containing songs and metadata"""
