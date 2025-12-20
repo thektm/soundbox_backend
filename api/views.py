@@ -615,35 +615,11 @@ class UnwrapStreamView(APIView):
                 parsed = urlparse(audio_url)
                 object_key = unquote(parsed.path.lstrip('/'))
             
-            # Generate signed URL and return short redirect URL
-            audio_url = stream_access.song.audio_file
-            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-            
-            # Extract key from CDN URL and decode it properly
-            if audio_url.startswith(cdn_base):
-                object_key = audio_url.replace(cdn_base + '/', '')
-                # URL decode the key to handle encoded characters
-                from urllib.parse import unquote
-                object_key = unquote(object_key)
-            else:
-                # Fallback: try to extract path and decode
-                from urllib.parse import urlparse, unquote
-                parsed = urlparse(audio_url)
-                object_key = unquote(parsed.path.lstrip('/'))
-            
-            # Generate signed URL (valid for 1 hour)
+            # Generate signed URL (valid for 1 hour) and return it directly
             signed_url = generate_signed_r2_url(object_key, expiration=3600)
-            
-            # Instead of returning the long signed URL, return a short redirect URL
-            from django.urls import reverse
-            short_path = reverse('stream-short', kwargs={'token': stream_access.short_token})
-            short_url = request.build_absolute_uri(short_path)
-            if short_url.startswith('http://'):
-                short_url = short_url.replace('http://', 'https://', 1)
-            
             return Response({
                 'type': 'stream',
-                'url': short_url,  # Short URL instead of long signed URL
+                'url': signed_url,  # Direct signed R2 URL
                 'song_id': stream_access.song.id,
                 'song_title': stream_access.song.display_title,
                 'expires_in': 3600,
@@ -744,9 +720,11 @@ class StreamShortRedirectView(APIView):
             if access_url.startswith('http://'):
                 access_url = access_url.replace('http://', 'https://', 1)
 
+            # Also generate a signed URL for immediate use and return it (still store one-time token)
+            signed_url = generate_signed_r2_url(object_key, expiration=3600)
             return Response({
                 'type': 'stream',
-                'url': access_url,
+                'url': signed_url,
                 'song_id': stream_access.song.id,
                 'song_title': stream_access.song.display_title,
                 'expires_in': 3600,
