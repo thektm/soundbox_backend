@@ -94,6 +94,8 @@ class SongAdmin(admin.ModelAdmin):
         'status', 'is_single', 'language', 'live_performed', 
         'release_date', 'created_at', 'artist', 'genres', 'moods'
     )
+    # Add date hierarchy for quick drill-down by the record creation date
+    date_hierarchy = 'created_at'
     search_fields = ('title', 'artist__name', 'description', 'lyrics')
     readonly_fields = ('plays', 'duration_display', 'display_title', 'created_at', 'updated_at')
     autocomplete_fields = ['artist', 'album', 'uploader']
