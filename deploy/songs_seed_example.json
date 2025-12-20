@@ -1,0 +1,24 @@
+[
+  {
+    "title": "Zendegi",
+    "artist": "Sample Artist",
+    "album": "Sample Album",
+    "is_single": false,
+    "audio_file": "https://cdn.example.com/songs/zendegi-sample.mp3",
+    "cover_image": "https://cdn.example.com/covers/zendegi-sample.jpg",
+    "original_format": "mp3",
+    "duration_seconds": 210,
+    "release_date": "2021-01-01",
+    "language": "fa",
+    "genres": ["pop"],
+    "sub_genres": ["persian-pop"],
+    "moods": ["melancholic"],
+    "tags": ["popular", "starter"],
+    "featured_artists": [],
+    "producers": [],
+    "composers": [],
+    "lyricists": [],
+    "description": "Example seed entry — replace with your real data and URLs.",
+    "lyrics": ""
+  }
+]
