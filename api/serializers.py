@@ -174,6 +174,32 @@ class PopularAlbumSerializer(AlbumSerializer):
             return []
 
 
+class RecommendedPlaylistListSerializer(serializers.Serializer):
+    """Serializer for playlist recommendation list view - shows 3 covers only."""
+    id = serializers.CharField(help_text="Unique identifier (playlist ID or generated hash)")
+    title = serializers.CharField()
+    description = serializers.CharField()
+    cover_images = serializers.ListField(
+        child=serializers.CharField(),
+        help_text="Top 3 song cover URLs"
+    )
+    song_count = serializers.IntegerField()
+    is_generated = serializers.BooleanField(help_text="True if auto-generated, False if existing playlist")
+    match_score = serializers.FloatField(help_text="How well this matches user preferences (0-100)")
+
+
+class RecommendedPlaylistDetailSerializer(serializers.Serializer):
+    """Serializer for playlist recommendation detail view - includes full song list."""
+    id = serializers.CharField()
+    title = serializers.CharField()
+    description = serializers.CharField()
+    cover_images = serializers.ListField(child=serializers.CharField())
+    is_generated = serializers.BooleanField()
+    match_score = serializers.FloatField()
+    songs = SongSerializer(many=True, read_only=True)
+    song_count = serializers.IntegerField()
+
+
 class GenreSerializer(serializers.ModelSerializer):
     """Serializer for Genre model"""
     class Meta:
