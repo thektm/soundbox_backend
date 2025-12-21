@@ -1213,7 +1213,8 @@ class PopularAlbumsView(generics.ListAPIView):
 
     def get_queryset(self):
         # Annotate album with song-level aggregates
-        queryset = Album.objects.all()
+        # Exclude albums literally titled "single" (case-insensitive)
+        queryset = Album.objects.all().exclude(title__iexact='single')
 
         queryset = queryset.annotate(
             total_song_plays=Coalesce(Sum('songs__plays'), 0),
