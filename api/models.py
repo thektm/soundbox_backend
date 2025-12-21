@@ -5,6 +5,7 @@ from django.contrib.auth.models import (
     PermissionsMixin,
 )
 from django.core.validators import MinValueValidator, MaxValueValidator
+import uuid
 
 
 class UserManager(BaseUserManager):
@@ -403,3 +404,47 @@ class StreamAccess(models.Model):
     
     def __str__(self):
         return f"StreamAccess(user={self.user_id}, song={self.song_id}, unwrapped={self.unwrapped})"
+
+
+class AutoPlaylist(models.Model):
+    """Auto-generated (or sourced) playlist recommended to a specific user."""
+
+    SOURCE_GENERATED = 'generated'
+    SOURCE_SYSTEM_PLAYLIST = 'system_playlist'
+    SOURCE_USER_PLAYLIST = 'user_playlist'
+
+    SOURCE_CHOICES = [
+        (SOURCE_GENERATED, 'Generated'),
+        (SOURCE_SYSTEM_PLAYLIST, 'System Playlist'),
+        (SOURCE_USER_PLAYLIST, 'User Playlist'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='auto_playlists')
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    source_type = models.CharField(max_length=30, choices=SOURCE_CHOICES, default=SOURCE_GENERATED)
+    source_ref_id = models.IntegerField(null=True, blank=True, help_text="ID of the source playlist (if any)")
+
+    songs = models.ManyToManyField(Song, blank=True, related_name='auto_playlists')
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_auto_playlists')
+    saved_by = models.ManyToManyField(User, blank=True, related_name='saved_auto_playlists')
+
+    seed = models.JSONField(default=dict, blank=True, help_text="Generation parameters / rationale")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['user', 'source_type', 'source_ref_id']),
+            models.Index(fields=['user', 'updated_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'source_type', 'source_ref_id'], name='uniq_autoplaylist_user_source')
+        ]
+
+    def __str__(self):
+        return f"AutoPlaylist({self.id}) user={self.user_id} source={self.source_type}:{self.source_ref_id}"

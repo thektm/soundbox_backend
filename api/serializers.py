@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, AutoPlaylist
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -172,32 +172,6 @@ class PopularAlbumSerializer(AlbumSerializer):
             return [s.cover_image for s in top if s.cover_image]
         except Exception:
             return []
-
-
-class RecommendedPlaylistListSerializer(serializers.Serializer):
-    """Serializer for playlist recommendation list view - shows 3 covers only."""
-    id = serializers.CharField(help_text="Unique identifier (playlist ID or generated hash)")
-    title = serializers.CharField()
-    description = serializers.CharField()
-    cover_images = serializers.ListField(
-        child=serializers.CharField(),
-        help_text="Top 3 song cover URLs"
-    )
-    song_count = serializers.IntegerField()
-    is_generated = serializers.BooleanField(help_text="True if auto-generated, False if existing playlist")
-    match_score = serializers.FloatField(help_text="How well this matches user preferences (0-100)")
-
-
-class RecommendedPlaylistDetailSerializer(serializers.Serializer):
-    """Serializer for playlist recommendation detail view - includes full song list."""
-    id = serializers.CharField()
-    title = serializers.CharField()
-    description = serializers.CharField()
-    cover_images = serializers.ListField(child=serializers.CharField())
-    is_generated = serializers.BooleanField()
-    match_score = serializers.FloatField()
-    songs = SongSerializer(many=True, read_only=True)
-    song_count = serializers.IntegerField()
 
 
 class GenreSerializer(serializers.ModelSerializer):
@@ -580,3 +554,94 @@ class UserPlaylistCreateSerializer(serializers.ModelSerializer):
             return obj.play_counts.count()
         except Exception:
             return 0
+
+
+class AutoPlaylistSongSerializer(serializers.ModelSerializer):
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+    album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    duration_display = serializers.ReadOnlyField()
+    display_title = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Song
+        fields = [
+            'id', 'title', 'display_title', 'artist', 'artist_name', 'album', 'album_title',
+            'cover_image', 'duration_seconds', 'duration_display',
+        ]
+
+
+class AutoPlaylistListSerializer(serializers.ModelSerializer):
+    songs_count = serializers.SerializerMethodField()
+    covers = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    saves_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AutoPlaylist
+        fields = [
+            'id', 'title', 'description', 'source_type', 'songs_count',
+            'covers', 'is_liked', 'is_saved', 'likes_count', 'saves_count',
+            'updated_at',
+        ]
+
+    def get_songs_count(self, obj):
+        return obj.songs.count()
+
+    def get_covers(self, obj):
+        # No stream links here; covers only.
+        songs = obj.songs.all().order_by('id')[:3]
+        return [s.cover_image for s in songs if s.cover_image]
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.liked_by.filter(id=request.user.id).exists()
+        return False
+
+    def get_is_saved(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.saved_by.filter(id=request.user.id).exists()
+        return False
+
+    def get_likes_count(self, obj):
+        return obj.liked_by.count()
+
+    def get_saves_count(self, obj):
+        return obj.saved_by.count()
+
+
+class AutoPlaylistDetailSerializer(serializers.ModelSerializer):
+    songs = AutoPlaylistSongSerializer(many=True, read_only=True)
+    is_liked = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    saves_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AutoPlaylist
+        fields = [
+            'id', 'title', 'description', 'source_type', 'source_ref_id',
+            'songs', 'is_liked', 'is_saved', 'likes_count', 'saves_count',
+            'seed', 'created_at', 'updated_at',
+        ]
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.liked_by.filter(id=request.user.id).exists()
+        return False
+
+    def get_is_saved(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.saved_by.filter(id=request.user.id).exists()
+        return False
+
+    def get_likes_count(self, obj):
+        return obj.liked_by.count()
+
+    def get_saves_count(self, obj):
+        return obj.saved_by.count()
