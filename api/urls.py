@@ -29,6 +29,7 @@ from .views import (
     UserRecommendationView,
     LatestReleasesView,
     PopularArtistsView,
+    PopularAlbumsView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -73,6 +74,8 @@ urlpatterns = [
     path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
     # Popular artists ordered by plays + likes + playlist adds
     path('users/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
+    # Popular albums based on song plays and likes + album likes
+    path('users/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
     
     # Song endpoints
     path('songs/', SongListView.as_view(), name='song_list'),

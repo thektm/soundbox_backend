@@ -25,7 +25,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Sum, Count, F, IntegerField
+from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch
 from django.db.models.functions import Coalesce
 from django.conf import settings
 import boto3
@@ -1191,5 +1191,45 @@ class PopularArtistsView(generics.ListAPIView):
         queryset = queryset.annotate(
             score=F('total_plays') + F('total_likes') + F('total_playlist_adds')
         ).order_by('-score', '-total_plays')
+
+        return queryset
+
+
+class PopularAlbumsView(generics.ListAPIView):
+    """Return albums ordered by combined popularity (album likes + song likes + song plays).
+
+    Each album includes the first 3 song cover URLs (ordered by release_date, created_at).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    from .serializers import PopularAlbumSerializer
+    serializer_class = PopularAlbumSerializer
+
+    def get_permissions(self):
+        # Public GET access
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        # Annotate album with song-level aggregates
+        queryset = Album.objects.all()
+
+        queryset = queryset.annotate(
+            total_song_plays=Coalesce(Sum('songs__plays'), 0),
+            total_song_likes=Coalesce(Count('songs__liked_by'), 0),
+            # album model currently has no direct likes field; set to 0 (no model changes)
+            album_likes=Value(0, output_field=IntegerField()),
+            playlists_count=Coalesce(Count('songs__playlists'), 0),
+            user_playlists_count=Coalesce(Count('songs__user_playlists'), 0),
+        ).annotate(
+            total_playlist_adds=F('playlists_count') + F('user_playlists_count')
+        ).annotate(
+            score=F('total_song_plays') + F('total_song_likes') + F('album_likes') + F('total_playlist_adds')
+        ).order_by('-score', '-total_song_plays')
+
+        # Prefetch songs ordered so serializer can quickly access first 3 covers
+        song_prefetch = Prefetch('songs', queryset=Song.objects.order_by('-release_date', '-created_at'))
+        queryset = queryset.prefetch_related(song_prefetch)
 
         return queryset

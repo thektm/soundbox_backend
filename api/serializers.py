@@ -148,6 +148,32 @@ class AlbumSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
+class PopularAlbumSerializer(AlbumSerializer):
+    """Album serializer with popularity metrics and top 3 song cover URLs."""
+    total_song_plays = serializers.IntegerField(read_only=True)
+    total_song_likes = serializers.IntegerField(read_only=True)
+    album_likes = serializers.IntegerField(read_only=True)
+    total_playlist_adds = serializers.IntegerField(read_only=True)
+    score = serializers.IntegerField(read_only=True)
+    top_song_covers = serializers.SerializerMethodField()
+
+    class Meta(AlbumSerializer.Meta):
+        fields = AlbumSerializer.Meta.fields + [
+            'total_song_plays', 'total_song_likes', 'album_likes',
+            'total_playlist_adds', 'score', 'top_song_covers'
+        ]
+
+    def get_top_song_covers(self, obj):
+        # obj.songs may be prefetched by the view; choose first 3 by release_date then created_at
+        try:
+            songs_qs = obj.songs.all()
+            # If songs were not prefetched in the view, this will hit DB once per album
+            top = songs_qs.order_by('-release_date', '-created_at')[:3]
+            return [s.cover_image for s in top if s.cover_image]
+        except Exception:
+            return []
+
+
 class GenreSerializer(serializers.ModelSerializer):
     """Serializer for Genre model"""
     class Meta:
