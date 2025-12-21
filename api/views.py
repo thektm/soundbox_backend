@@ -25,6 +25,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
+from django.db.models import Sum, Count, F, IntegerField
+from django.db.models.functions import Coalesce
 from django.conf import settings
 import boto3
 from botocore.config import Config
@@ -1148,3 +1150,46 @@ class LatestReleasesView(generics.ListAPIView):
             queryset = queryset.order_by('-release_date', '-created_at')
 
         return queryset.distinct()
+
+
+class PopularArtistsView(generics.ListAPIView):
+    """Return artists ordered by a popularity score (plays + likes + playlist adds)."""
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    from .serializers import PopularArtistSerializer
+    serializer_class = PopularArtistSerializer
+
+    def get_permissions(self):
+        # Allow public GET access similar to other endpoints
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        # Annotate artists with summed metrics across their songs
+        queryset = Artist.objects.all()
+
+        # total plays across songs
+        queryset = queryset.annotate(
+            total_plays=Coalesce(Sum('songs__plays'), 0)
+        )
+
+        # total likes across songs (may count each like instance)
+        queryset = queryset.annotate(
+            total_likes=Coalesce(Count('songs__liked_by'), 0)
+        )
+
+        # items added to playlists: count occurrences in both Playlist and UserPlaylist
+        queryset = queryset.annotate(
+            playlists_count=Coalesce(Count('songs__playlists'), 0),
+            user_playlists_count=Coalesce(Count('songs__user_playlists'), 0),
+        ).annotate(
+            total_playlist_adds=F('playlists_count') + F('user_playlists_count')
+        )
+
+        # combined score (simple sum) and order by it
+        queryset = queryset.annotate(
+            score=F('total_plays') + F('total_likes') + F('total_playlist_adds')
+        ).order_by('-score', '-total_plays')
+
+        return queryset

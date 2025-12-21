@@ -125,6 +125,19 @@ class ArtistSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
+class PopularArtistSerializer(ArtistSerializer):
+    """Artist serializer extended with popularity metrics."""
+    total_plays = serializers.IntegerField(read_only=True)
+    total_likes = serializers.IntegerField(read_only=True)
+    total_playlist_adds = serializers.IntegerField(read_only=True)
+    score = serializers.IntegerField(read_only=True)
+
+    class Meta(ArtistSerializer.Meta):
+        fields = ArtistSerializer.Meta.fields + [
+            'total_plays', 'total_likes', 'total_playlist_adds', 'score'
+        ]
+
+
 class AlbumSerializer(serializers.ModelSerializer):
     """Serializer for Album model"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
