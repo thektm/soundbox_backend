@@ -1,0 +1,74 @@
+{% extends "admin/base_site.html" %}
+{% load admin_urls static %}
+
+{% block title %}Song Likes Overview{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label='api' %}">API</a>
+    &rsaquo; Song Likes Overview
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="module">
+    <h2>Song Likes Overview</h2>
+
+    <div style="margin-bottom: 20px;">
+        <strong>Total Songs with Likes:</strong> {{ total_songs_with_likes }}<br>
+        <strong>Total Likes:</strong> {{ total_likes }}
+    </div>
+
+    <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+            <tr style="background-color: #f8f8f8;">
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Song ID</th>
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Song Title</th>
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Artist</th>
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Likes Count</th>
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Liked By Users</th>
+                <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Created At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for like_data in likes_data %}
+            <tr style="{% cycle 'background-color: #f9f9f9;' '' %}">
+                <td style="border: 1px solid #ddd; padding: 8px;">{{ like_data.song_id }}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">
+                    <a href="{% url 'admin:api_song_change' like_data.song_id %}">{{ like_data.song_title }}</a>
+                </td>
+                <td style="border: 1px solid #ddd; padding: 8px;">{{ like_data.artist_name }}</td>
+                <td style="border: 1px solid #ddd; padding: 8px; text-align: center; font-weight: bold;">{{ like_data.likes_count }}</td>
+                <td style="border: 1px solid #ddd; padding: 8px;">
+                    {% for user in like_data.liked_users %}
+                        <a href="{% url 'admin:api_user_change' user.id %}">{{ user.phone_number }}</a>{% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                    {% if like_data.remaining_count > 0 %}
+                        <span style="color: #666;">... and {{ like_data.remaining_count }} more</span>
+                    {% endif %}
+                    {% if not like_data.liked_users %}
+                        <span style="color: #999;">No users listed</span>
+                    {% endif %}
+                </td>
+                <td style="border: 1px solid #ddd; padding: 8px;">{{ like_data.created_at|date:"M d, Y H:i" }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" style="border: 1px solid #ddd; padding: 8px; text-align: center; color: #999;">
+                    No songs have been liked yet.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if likes_data %}
+    <div style="margin-top: 20px; padding: 10px; background-color: #f0f0f0; border-radius: 4px;">
+        <strong>Quick Stats:</strong><br>
+        • Most liked song: <a href="{% url 'admin:api_song_change' likes_data.0.song_id %}">"{{ likes_data.0.song_title }}"</a> by {{ likes_data.0.artist_name }} ({{ likes_data.0.likes_count }} likes)<br>
+        • Total engagement: {{ total_likes }} likes across {{ total_songs_with_likes }} songs
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
