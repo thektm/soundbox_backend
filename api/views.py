@@ -1278,7 +1278,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         ).count()
         
         # If we have recent recommendations, skip generation
-        if recent_count >= 5:
+        if recent_count >= 6:
             return
         
         # 1. Get user's interaction history
@@ -1333,8 +1333,13 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         artist_playlists = self._create_artist_mix_playlists(user, all_interacted_ids, top_artists)
         generated_playlists.extend(artist_playlists)
         
-        # Save all generated playlists
-        for playlist_data in generated_playlists[:10]:  # Limit to 10 playlists
+        # F. If we don't have enough playlists, add general cohesive playlists
+        if len(generated_playlists) < 6:
+            general_playlists = self._create_general_cohesive_playlists(user, all_interacted_ids, 6 - len(generated_playlists))
+            generated_playlists.extend(general_playlists)
+        
+        # Save all generated playlists (ensure at least 6, max 12)
+        for playlist_data in generated_playlists[:12]:
             self._save_playlist(user, playlist_data)
 
     def _create_similar_taste_playlist(self, user, excluded_ids, top_genres, top_moods, avg_features):
@@ -1353,10 +1358,10 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         if len(scored_songs) < 10:
             return None
         
-        selected_songs = [s[0] for s in scored_songs[:25]]
+        selected_songs = [s[0] for s in scored_songs[:20]]
         
         # Calculate match percentage based on average score
-        avg_score = sum(s[1] for s in scored_songs[:25]) / len(scored_songs[:25])
+        avg_score = sum(s[1] for s in scored_songs[:20]) / len(scored_songs[:20])
         match_percentage = min(100.0, (avg_score / 20) * 100)  # Normalize to 0-100
         
         import hashlib
@@ -1403,7 +1408,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                     'match_percentage': 0.0  # Discovery playlists don't match existing taste
                 })
         
-        return playlists[:2]  # Max 2 discovery playlists
+        return playlists[:3]  # Max 3 discovery playlists
 
     def _create_mood_playlists(self, user, excluded_ids, top_moods, avg_features):
         """Create mood-based playlists"""
@@ -1499,7 +1504,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 'match_percentage': 60.0  # Energy-based has moderate match
             })
         
-        return playlists[:1]  # Return max 1 energy playlist
+        return playlists  # Return all energy playlists (up to 2)
 
     def _create_artist_mix_playlists(self, user, excluded_ids, top_artists):
         """Create playlists mixing songs from favorite artists"""
@@ -1541,42 +1546,223 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         """Generate general trending playlists for users without history"""
         import hashlib
         
+        playlists = []
+        
         # Trending overall
         trending_songs = Song.objects.filter(
             status=Song.STATUS_PUBLISHED
-        ).order_by('-plays')[:25]
+        ).order_by('-plays')[:20]
         
         if trending_songs.count() >= 10:
             unique_id = hashlib.sha256(f"trending_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
-            
-            self._save_playlist(user, {
+            playlists.append({
                 'unique_id': unique_id,
                 'title': 'Trending Now',
                 'description': 'Most popular tracks right now',
                 'playlist_type': 'similar_taste',
                 'songs': list(trending_songs),
                 'relevance_score': 5.0,
-                'match_percentage': 0.0  # Trending not based on user activity
+                'match_percentage': 0.0
             })
         
         # New releases
         new_releases = Song.objects.filter(
             status=Song.STATUS_PUBLISHED,
             release_date__isnull=False
-        ).order_by('-release_date')[:25]
+        ).order_by('-release_date')[:20]
         
         if new_releases.count() >= 10:
             unique_id = hashlib.sha256(f"new_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
-            
-            self._save_playlist(user, {
+            playlists.append({
                 'unique_id': unique_id,
                 'title': 'Fresh Releases',
                 'description': 'Newest tracks just for you',
                 'playlist_type': 'similar_taste',
                 'songs': list(new_releases),
                 'relevance_score': 5.0,
-                'match_percentage': 0.0  # New releases not based on user activity
+                'match_percentage': 0.0
             })
+        
+        # Add general cohesive playlists to reach at least 6
+        if len(playlists) < 6:
+            general_playlists = self._create_general_cohesive_playlists(user, set(), 6 - len(playlists))
+            playlists.extend(general_playlists)
+        
+        # Save all playlists
+        for playlist_data in playlists:
+            self._save_playlist(user, playlist_data)
+
+    def _create_general_cohesive_playlists(self, user, excluded_ids, count_needed):
+        """Create general playlists that are cohesive but not user-specific"""
+        from .models import Genre, Mood
+        import hashlib
+        
+        playlists = []
+        
+        # 1. High Energy Workout
+        if count_needed > 0:
+            high_energy = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                energy__gte=75,
+                danceability__gte=60
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if high_energy.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_energy_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Power Workout',
+                    'description': 'High-energy tracks to fuel your workout',
+                    'playlist_type': 'energy',
+                    'songs': list(high_energy),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 2. Acoustic & Chill
+        if len(playlists) < count_needed:
+            acoustic = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                acousticness__gte=60,
+                energy__lte=50
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if acoustic.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_acoustic_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Acoustic Sessions',
+                    'description': 'Mellow acoustic vibes for relaxation',
+                    'playlist_type': 'mood_based',
+                    'songs': list(acoustic),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 3. Happy & Upbeat
+        if len(playlists) < count_needed:
+            happy = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                valence__gte=70,
+                energy__gte=60
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if happy.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_happy_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Feel Good Hits',
+                    'description': 'Upbeat songs to brighten your day',
+                    'playlist_type': 'mood_based',
+                    'songs': list(happy),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 4. Melancholic & Dramatic
+        if len(playlists) < count_needed:
+            dramatic = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                valence__lte=40,
+                energy__lte=60
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if dramatic.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_dramatic_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Emotional Journey',
+                    'description': 'Deep, emotional tracks for reflective moments',
+                    'playlist_type': 'mood_based',
+                    'songs': list(dramatic),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 5. Dance Party
+        if len(playlists) < count_needed:
+            dance = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                danceability__gte=75
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if dance.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_dance_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Dance Floor Fillers',
+                    'description': 'Get moving with these danceable tracks',
+                    'playlist_type': 'energy',
+                    'songs': list(dance),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 6. Focus & Study
+        if len(playlists) < count_needed:
+            focus = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                instrumentalness__gte=50,
+                energy__lte=50
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if focus.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_focus_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Focus & Productivity',
+                    'description': 'Instrumental tracks for concentration',
+                    'playlist_type': 'mood_based',
+                    'songs': list(focus),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 7. Late Night Vibes
+        if len(playlists) < count_needed:
+            night = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                energy__lte=45,
+                valence__range=(30, 60)
+            ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            
+            if night.count() >= 10:
+                unique_id = hashlib.sha256(f"gen_night_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'Late Night Vibes',
+                    'description': 'Smooth tracks for the evening',
+                    'playlist_type': 'mood_based',
+                    'songs': list(night),
+                    'relevance_score': 6.0,
+                    'match_percentage': 0.0
+                })
+        
+        # 8. Genre-based fallbacks
+        if len(playlists) < count_needed:
+            all_genres = Genre.objects.all()[:5]
+            for genre in all_genres:
+                if len(playlists) >= count_needed:
+                    break
+                    
+                genre_songs = Song.objects.filter(
+                    status=Song.STATUS_PUBLISHED,
+                    genres=genre
+                ).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+                
+                if genre_songs.count() >= 10:
+                    unique_id = hashlib.sha256(f"gen_genre_{genre.id}_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                    playlists.append({
+                        'unique_id': unique_id,
+                        'title': f'Best of {genre.name}',
+                        'description': f'Top {genre.name} tracks',
+                        'playlist_type': 'discover_genre',
+                        'songs': list(genre_songs),
+                        'relevance_score': 5.5,
+                        'match_percentage': 0.0
+                    })
+        
+        return playlists[:count_needed]
 
     def _score_songs_by_similarity(self, songs, top_genres, top_moods, avg_features):
         """Score songs by similarity to user preferences"""
