@@ -1,9 +1,5 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from django.db.models import Count
-from django.urls import path
-from django.shortcuts import render
-from django.utils.html import format_html
 from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist
 
 User = get_user_model()
@@ -258,152 +254,23 @@ class UserPlaylistAdmin(admin.ModelAdmin):
     clear_likes.short_description = 'Clear likes from selected playlists'
 
 
-# Add likes information to existing SongAdmin
-def song_likes_count(self, song):
-    return song.liked_by.count()
-song_likes_count.short_description = 'Likes Count'
-
-def song_liked_users(self, song):
-    users = song.liked_by.all()[:5]  # Show first 5 users
-    user_list = [user.phone_number for user in users]
-    if song.liked_by.count() > 5:
-        user_list.append(f"... and {song.liked_by.count() - 5} more")
-    return ", ".join(user_list) if user_list else "No likes"
-song_liked_users.short_description = 'Liked By'
+# Register auto-generated through models for likes so they appear as separate tables
+# This avoids changing existing models and exposes the implicit M2M join tables
+SongLike = Song.liked_by.through
+@admin.register(SongLike)
+class SongLikeAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'song')
+    list_filter = ('song',)
+    search_fields = ('user__phone_number', 'song__title')
+    raw_id_fields = ('user', 'song')
+    ordering = ('-id',)
 
 
-# Enhance SongAdmin to show likes
-SongAdmin.list_display = SongAdmin.list_display + ('song_likes_count',)
-SongAdmin.list_filter = SongAdmin.list_filter + ('liked_by',)
-SongAdmin.readonly_fields = SongAdmin.readonly_fields + ('song_likes_count', 'song_liked_users')
-SongAdmin.song_likes_count = song_likes_count
-SongAdmin.song_liked_users = song_liked_users
-
-
-class SongLikesAdmin(admin.ModelAdmin):
-    """
-    Custom admin to display song likes in a separate table view
-    """
-    
-    def get_urls(self):
-        urls = super().get_urls()
-        custom_urls = [
-            path('song-likes/', self.admin_site.admin_view(self.song_likes_view), name='song_likes_overview'),
-        ]
-        return custom_urls + urls
-    
-    def song_likes_view(self, request):
-        """Custom view to display song likes in a table"""
-        # Get all songs with likes
-        songs_with_likes = Song.objects.annotate(
-            likes_count=Count('liked_by')
-        ).filter(
-            likes_count__gt=0
-        ).select_related('artist').prefetch_related('liked_by').order_by('-likes_count', '-created_at')
-        
-        # Prepare data for template
-        likes_data = []
-        for song in songs_with_likes:
-            liked_users = list(song.liked_by.all()[:5])  # Get first 5 likers for display
-            likes_data.append({
-                'song_id': song.id,
-                'song_title': song.title,
-                'artist_name': song.artist.name,
-                'likes_count': song.likes_count,
-                'liked_users': liked_users,
-                'remaining_count': max(0, song.likes_count - 5),
-                'created_at': song.created_at
-            })
-        
-        context = {
-            'likes_data': likes_data,
-            'total_likes': sum(song.likes_count for song in songs_with_likes),
-            'total_songs_with_likes': len(likes_data),
-            'title': 'Song Likes Table',
-            'opts': self.model._meta if hasattr(self, 'model') else None,
-            'has_permission': True,
-            'is_popup': False,
-            'is_nav_sidebar_enabled': True,
-        }
-        
-        return render(request, 'admin/song_likes_table.html', context)
-    
-    def has_add_permission(self, request):
-        return False
-    
-    def has_change_permission(self, request, obj=None):
-        return False
-    
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-
-# Register the custom likes admin - this creates a separate menu item
-class SongLikesProxy:
-    class _meta:
-        app_label = 'api'
-        model_name = 'songlikes'
-        verbose_name = 'Song Likes'
-        verbose_name_plural = 'Song Likes'
-
-# Add a link to the Song admin for viewing likes
-def view_song_likes_link(self, obj):
-    from django.urls import reverse
-    url = reverse('admin:api_song_changelist') + 'song-likes/'
-    return format_html('<a href="{}" target="_blank">View Song Likes Table</a>', url)
-view_song_likes_link.short_description = 'View Likes'
-
-# Add the link to SongAdmin
-SongAdmin.view_song_likes_link = view_song_likes_link
-
-# Add to the beginning of list_display
-if 'view_song_likes_link' not in SongAdmin.list_display:
-    SongAdmin.list_display = ('view_song_likes_link',) + SongAdmin.list_display
-
-# Add custom URL to SongAdmin
-def get_urls(self):
-    urls = super().get_urls()
-    custom_urls = [
-        path('song-likes/', self.admin_site.admin_view(self.song_likes_view), name='song_likes_overview'),
-    ]
-    return custom_urls + urls
-
-def song_likes_view(self, request):
-    """Custom view to display song likes in a table"""
-    # Get all songs with likes
-    songs_with_likes = Song.objects.annotate(
-        likes_count=Count('liked_by')
-    ).filter(
-        likes_count__gt=0
-    ).select_related('artist').prefetch_related('liked_by').order_by('-likes_count', '-created_at')
-    
-    # Prepare data for template
-    likes_data = []
-    for song in songs_with_likes:
-        liked_users = list(song.liked_by.all()[:5])  # Get first 5 likers for display
-        likes_data.append({
-            'song_id': song.id,
-            'song_title': song.title,
-            'artist_name': song.artist.name,
-            'likes_count': song.likes_count,
-            'liked_users': liked_users,
-            'remaining_count': max(0, song.likes_count - 5),
-            'created_at': song.created_at
-        })
-    
-    context = {
-        'likes_data': likes_data,
-        'total_likes': sum(song.likes_count for song in songs_with_likes),
-        'total_songs_with_likes': len(likes_data),
-        'title': 'Song Likes Table',
-        'opts': self.model._meta,
-        'has_permission': True,
-        'is_popup': False,
-        'is_nav_sidebar_enabled': True,
-    }
-    
-    return render(request, 'admin/song_likes_table.html', context)
-
-# Add methods to SongAdmin
-SongAdmin.get_urls = get_urls
-SongAdmin.song_likes_view = song_likes_view
+PlaylistLike = UserPlaylist.liked_by.through
+@admin.register(PlaylistLike)
+class PlaylistLikeAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'userplaylist')
+    list_filter = ('userplaylist',)
+    search_fields = ('user__phone_number', 'userplaylist__title')
+    raw_id_fields = ('user', 'userplaylist')
+    ordering = ('-id',)
