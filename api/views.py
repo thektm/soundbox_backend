@@ -1035,10 +1035,12 @@ class UserRecommendationView(APIView):
         top_genres = interacted_songs.values('genres').annotate(count=Count('genres')).order_by('-count')[:3]
         top_moods = interacted_songs.values('moods').annotate(count=Count('moods')).order_by('-count')[:3]
         top_artists = interacted_songs.values('artist').annotate(count=Count('artist')).order_by('-count')[:3]
+        top_languages = interacted_songs.values('language').annotate(count=Count('language')).order_by('-count')[:2]
         
         genre_ids = [g['genres'] for g in top_genres if g['genres']]
         mood_ids = [m['moods'] for m in top_moods if m['moods']]
         artist_ids = [a['artist'] for a in top_artists if a['artist']]
+        preferred_languages = [l['language'] for l in top_languages if l['language']]
         
         # Average audio features
         avg_features = interacted_songs.aggregate(
@@ -1049,7 +1051,7 @@ class UserRecommendationView(APIView):
         )
 
         # 3. Candidate Generation
-        # Find songs that match top genres, moods, or artists but haven't been interacted with
+        # Find songs that match top genres, moods, artists, or languages but haven't been interacted with
         candidates = Song.objects.filter(
             status=Song.STATUS_PUBLISHED
         ).exclude(
@@ -1057,7 +1059,8 @@ class UserRecommendationView(APIView):
         ).filter(
             Q(genres__in=genre_ids) | 
             Q(moods__in=mood_ids) | 
-            Q(artist__in=artist_ids)
+            Q(artist__in=artist_ids) |
+            Q(language__in=preferred_languages)
         ).distinct()
 
         # 4. Scoring & Ranking
@@ -1075,6 +1078,8 @@ class UserRecommendationView(APIView):
             score += len(song_moods.intersection(mood_ids)) * 2
             if song.artist_id in artist_ids:
                 score += 5
+            if song.language in preferred_languages:
+                score += 4  # Language match: 4 points (strong preference signal)
                 
             # Audio feature similarity (inverse distance)
             if avg_features['avg_energy'] and song.energy:
