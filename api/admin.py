@@ -257,6 +257,13 @@ class UserPlaylistAdmin(admin.ModelAdmin):
 # Register auto-generated through models for likes so they appear as separate tables
 # This avoids changing existing models and exposes the implicit M2M join tables
 SongLike = Song.liked_by.through
+# Give the auto through-model a friendly name in the admin
+try:
+    SongLike._meta.verbose_name = 'like'
+    SongLike._meta.verbose_name_plural = 'likes'
+except Exception:
+    pass
+
 @admin.register(SongLike)
 class SongLikeAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'song')
@@ -267,6 +274,13 @@ class SongLikeAdmin(admin.ModelAdmin):
 
 
 PlaylistLike = UserPlaylist.liked_by.through
+# Friendly admin name for playlist likes
+try:
+    PlaylistLike._meta.verbose_name = 'playlist like'
+    PlaylistLike._meta.verbose_name_plural = 'playlist likes'
+except Exception:
+    pass
+
 @admin.register(PlaylistLike)
 class PlaylistLikeAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'userplaylist')
