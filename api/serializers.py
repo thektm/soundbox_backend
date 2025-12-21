@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, PlayCount, AutoPlaylist
+from .models import User,UserPlaylist, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, PlayCount, AutoPlaylist
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
