@@ -5,7 +5,6 @@ from django.contrib.auth.models import (
     PermissionsMixin,
 )
 from django.core.validators import MinValueValidator, MaxValueValidator
-import uuid
 
 
 class UserManager(BaseUserManager):
@@ -406,45 +405,63 @@ class StreamAccess(models.Model):
         return f"StreamAccess(user={self.user_id}, song={self.song_id}, unwrapped={self.unwrapped})"
 
 
-class AutoPlaylist(models.Model):
-    """Auto-generated (or sourced) playlist recommended to a specific user."""
-
-    SOURCE_GENERATED = 'generated'
-    SOURCE_SYSTEM_PLAYLIST = 'system_playlist'
-    SOURCE_USER_PLAYLIST = 'user_playlist'
-
-    SOURCE_CHOICES = [
-        (SOURCE_GENERATED, 'Generated'),
-        (SOURCE_SYSTEM_PLAYLIST, 'System Playlist'),
-        (SOURCE_USER_PLAYLIST, 'User Playlist'),
+class RecommendedPlaylist(models.Model):
+    """Auto-generated playlist recommendations based on user activity"""
+    
+    PLAYLIST_TYPE_SIMILAR_TASTE = 'similar_taste'
+    PLAYLIST_TYPE_DISCOVER_GENRE = 'discover_genre'
+    PLAYLIST_TYPE_MOOD_BASED = 'mood_based'
+    PLAYLIST_TYPE_DECADE = 'decade'
+    PLAYLIST_TYPE_ENERGY = 'energy'
+    PLAYLIST_TYPE_ARTIST_MIX = 'artist_mix'
+    
+    TYPE_CHOICES = [
+        (PLAYLIST_TYPE_SIMILAR_TASTE, 'Similar to Your Taste'),
+        (PLAYLIST_TYPE_DISCOVER_GENRE, 'Discover Genre'),
+        (PLAYLIST_TYPE_MOOD_BASED, 'Mood Based'),
+        (PLAYLIST_TYPE_DECADE, 'Decade Mix'),
+        (PLAYLIST_TYPE_ENERGY, 'Energy Level'),
+        (PLAYLIST_TYPE_ARTIST_MIX, 'Artist Mix'),
     ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='auto_playlists')
+    
+    # Unique identifier for the recommended playlist
+    unique_id = models.CharField(max_length=128, unique=True, db_index=True, help_text="Unique ID for this recommendation")
+    
+    # User for whom this playlist is recommended (null = general recommendation)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='recommended_playlists', null=True, blank=True)
+    
+    # Playlist metadata
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-
-    source_type = models.CharField(max_length=30, choices=SOURCE_CHOICES, default=SOURCE_GENERATED)
-    source_ref_id = models.IntegerField(null=True, blank=True, help_text="ID of the source playlist (if any)")
-
-    songs = models.ManyToManyField(Song, blank=True, related_name='auto_playlists')
-    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_auto_playlists')
-    saved_by = models.ManyToManyField(User, blank=True, related_name='saved_auto_playlists')
-
-    seed = models.JSONField(default=dict, blank=True, help_text="Generation parameters / rationale")
-
+    playlist_type = models.CharField(max_length=50, choices=TYPE_CHOICES, default=PLAYLIST_TYPE_SIMILAR_TASTE)
+    
+    # Songs in the playlist (ordered)
+    songs = models.ManyToManyField(Song, related_name='recommended_playlists', blank=True)
+    
+    # User interactions
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_recommended_playlists')
+    saved_by = models.ManyToManyField(User, blank=True, related_name='saved_recommended_playlists')
+    views = models.PositiveIntegerField(default=0, help_text="Number of times this playlist was viewed")
+    
+    # Metadata for ranking/scoring
+    relevance_score = models.FloatField(default=0.0, help_text="How relevant this playlist is to the user")
+    match_percentage = models.FloatField(default=0.0, help_text="Percentage match with user's activity and taste (0-100)")
+    
+    # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
+    
+    # Expiry (for cache invalidation)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="When this recommendation expires")
+    
     class Meta:
-        ordering = ['-updated_at']
+        ordering = ['-relevance_score', '-created_at']
         indexes = [
-            models.Index(fields=['user', 'source_type', 'source_ref_id']),
-            models.Index(fields=['user', 'updated_at']),
+            models.Index(fields=['user', 'playlist_type', '-relevance_score']),
+            models.Index(fields=['unique_id']),
+            models.Index(fields=['expires_at']),
         ]
-        constraints = [
-            models.UniqueConstraint(fields=['user', 'source_type', 'source_ref_id'], name='uniq_autoplaylist_user_source')
-        ]
-
+    
     def __str__(self):
-        return f"AutoPlaylist({self.id}) user={self.user_id} source={self.source_type}:{self.source_ref_id}"
+        user_info = f"for {self.user.phone_number}" if self.user else "general"
+        return f"{self.title} ({self.playlist_type}) {user_info}"

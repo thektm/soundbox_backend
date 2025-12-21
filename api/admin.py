@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist
+from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist, RecommendedPlaylist
 
 User = get_user_model()
 
@@ -288,3 +288,29 @@ class PlaylistLikeAdmin(admin.ModelAdmin):
     search_fields = ('user__phone_number', 'userplaylist__title')
     raw_id_fields = ('user', 'userplaylist')
     ordering = ('-id',)
+
+
+@admin.register(RecommendedPlaylist)
+class RecommendedPlaylistAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'playlist_type', 'user', 'match_percentage', 'relevance_score', 'views', 'created_at')
+    list_filter = ('playlist_type', 'created_at', 'user')
+    search_fields = ('title', 'unique_id', 'user__phone_number')
+    readonly_fields = ('created_at', 'updated_at', 'views')
+    filter_horizontal = ('songs', 'liked_by', 'saved_by')
+    fieldsets = (
+        ('Basic Info', {
+            'fields': ('unique_id', 'title', 'description', 'playlist_type', 'user')
+        }),
+        ('Songs', {
+            'fields': ('songs',)
+        }),
+        ('Metrics', {
+            'fields': ('relevance_score', 'match_percentage', 'views', 'expires_at')
+        }),
+        ('User Interactions', {
+            'fields': ('liked_by', 'saved_by')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )

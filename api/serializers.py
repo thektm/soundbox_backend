@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User,UserPlaylist, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, PlayCount, AutoPlaylist
+from .models import User,UserPlaylist, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -556,208 +556,109 @@ class UserPlaylistCreateSerializer(serializers.ModelSerializer):
             return 0
 
 
-class AutoPlaylistSongSerializer(serializers.ModelSerializer):
-    artist_name = serializers.CharField(source='artist.name', read_only=True)
-    album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
-    duration_display = serializers.ReadOnlyField()
-    display_title = serializers.ReadOnlyField()
-
-    class Meta:
-        model = Song
-        fields = [
-            'id', 'title', 'display_title', 'artist', 'artist_name', 'album', 'album_title',
-            'cover_image', 'duration_seconds', 'duration_display',
-        ]
-
-
-class AutoPlaylistListSerializer(serializers.ModelSerializer):
-    songs_count = serializers.SerializerMethodField()
+class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
+    """Serializer for listing recommended playlists with 3 cover images"""
     covers = serializers.SerializerMethodField()
+    songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
-    saves_count = serializers.SerializerMethodField()
-    match_rate = serializers.SerializerMethodField()
-
+    
     class Meta:
-        model = AutoPlaylist
+        model = RecommendedPlaylist
         fields = [
-            'id', 'title', 'description', 'source_type', 'match_rate', 'songs_count',
-            'covers', 'is_liked', 'is_saved', 'likes_count', 'saves_count',
-            'updated_at',
+            'id', 'unique_id', 'title', 'description', 'playlist_type',
+            'covers', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
+            'views', 'relevance_score', 'match_percentage', 'created_at'
         ]
-
+        read_only_fields = fields
+    
+    def get_covers(self, obj):
+        """Return first 3 song cover images"""
+        songs = obj.songs.all()[:3]
+        return [song.cover_image for song in songs if song.cover_image]
+    
     def get_songs_count(self, obj):
         return obj.songs.count()
-
-    def get_covers(self, obj):
-        # No stream links here; covers only.
-        songs = obj.songs.all().order_by('id')[:3]
-        return [s.cover_image for s in songs if s.cover_image]
-
+    
     def get_is_liked(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.liked_by.filter(id=request.user.id).exists()
         return False
-
+    
     def get_is_saved(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.saved_by.filter(id=request.user.id).exists()
         return False
-
+    
     def get_likes_count(self, obj):
         return obj.liked_by.count()
 
-    def get_saves_count(self, obj):
-        return obj.saved_by.count()
 
-    def get_match_rate(self, obj):
-        request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
-            return "0.00"
-        user = request.user
-        # Compute match rate for this user
-        songs = list(obj.songs.all())
-        if not songs:
-            return "0.00"
-        # Extract user prefs (reuse logic from views)
-        from django.db.models import Count, Avg
-        interacted_ids = set()
-        interacted_ids.update(Song.objects.filter(liked_by=user).values_list('id', flat=True))
-        interacted_ids.update(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
-        interacted_ids.update(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
-        if not interacted_ids:
-            return "0.00"
-        interacted_songs = Song.objects.filter(id__in=interacted_ids)
-        top_genres = interacted_songs.values('genres').annotate(count=Count('genres')).order_by('-count')[:4]
-        top_moods = interacted_songs.values('moods').annotate(count=Count('moods')).order_by('-count')[:4]
-        genre_ids = [g['genres'] for g in top_genres if g['genres']]
-        mood_ids = [m['moods'] for m in top_moods if m['moods']]
-        avg_features = interacted_songs.aggregate(
-            avg_energy=Avg('energy'),
-            avg_dance=Avg('danceability'),
-            avg_valence=Avg('valence'),
-            avg_tempo=Avg('tempo'),
-            avg_acoustic=Avg('acousticness'),
-            avg_instrumental=Avg('instrumentalness'),
-        )
-        prefs = {'genre_ids': genre_ids, 'mood_ids': mood_ids, 'avg_features': avg_features}
-        # Score songs
-        scores = []
-        for s in songs[:20]:
-            score = 0.0
-            s_genres = set(s.genres.values_list('id', flat=True))
-            s_moods = set(s.moods.values_list('id', flat=True))
-            score += len(s_genres.intersection(genre_ids)) * 3
-            score += len(s_moods.intersection(mood_ids)) * 2
-            def _feature_bonus(song_val, avg_val, scale=10.0):
-                if avg_val is None or song_val is None:
-                    return 0.0
-                return max(0.0, (100.0 - abs(float(song_val) - float(avg_val))) / scale)
-            score += _feature_bonus(s.energy, avg_features.get('avg_energy'))
-            score += _feature_bonus(s.danceability, avg_features.get('avg_dance'))
-            score += _feature_bonus(s.valence, avg_features.get('avg_valence'))
-            if avg_features.get('avg_tempo') is not None and s.tempo is not None:
-                score += max(0.0, (200.0 - abs(float(s.tempo) - float(avg_features['avg_tempo']))) / 20.0)
-            score += _feature_bonus(s.acousticness, avg_features.get('avg_acoustic'))
-            score += _feature_bonus(s.instrumentalness, avg_features.get('avg_instrumental'))
-            scores.append(score)
-        if not scores:
-            return "0.00"
-        avg_score = sum(scores) / len(scores)
-        pct = max(0.0, min(100.0, (avg_score / 20.0) * 100.0))
-        return f"{pct:.2f}"
-
-
-class AutoPlaylistDetailSerializer(serializers.ModelSerializer):
-    songs = AutoPlaylistSongSerializer(many=True, read_only=True)
+class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
+    """Serializer for detailed view of recommended playlist with all songs"""
+    songs = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
-    saves_count = serializers.SerializerMethodField()
-    match_rate = serializers.SerializerMethodField()
-
+    songs_count = serializers.SerializerMethodField()
+    
     class Meta:
-        model = AutoPlaylist
+        model = RecommendedPlaylist
         fields = [
-            'id', 'title', 'description', 'source_type', 'source_ref_id', 'match_rate',
-            'songs', 'is_liked', 'is_saved', 'likes_count', 'saves_count',
-            'seed', 'created_at', 'updated_at',
+            'id', 'unique_id', 'title', 'description', 'playlist_type',
+            'songs', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
+            'views', 'relevance_score', 'match_percentage', 'created_at', 'updated_at'
         ]
-
+        read_only_fields = fields
+    
+    def get_songs(self, obj):
+        """Return all songs without stream links, only cover images"""
+        from .serializers import SongSerializer
+        songs = obj.songs.all()
+        # Use SongSerializer but exclude stream-related fields
+        song_data = []
+        for song in songs:
+            data = {
+                'id': song.id,
+                'title': song.title,
+                'display_title': song.display_title,
+                'artist': {
+                    'id': song.artist.id,
+                    'name': song.artist.name,
+                    'profile_image': song.artist.profile_image
+                } if song.artist else None,
+                'album': {
+                    'id': song.album.id,
+                    'title': song.album.title,
+                    'cover_image': song.album.cover_image
+                } if song.album else None,
+                'cover_image': song.cover_image,
+                'duration_seconds': song.duration_seconds,
+                'duration_display': song.duration_display,
+                'plays': song.plays,
+                'release_date': song.release_date,
+                'language': song.language,
+            }
+            song_data.append(data)
+        return song_data
+    
     def get_is_liked(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.liked_by.filter(id=request.user.id).exists()
         return False
-
+    
     def get_is_saved(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.saved_by.filter(id=request.user.id).exists()
         return False
-
+    
     def get_likes_count(self, obj):
         return obj.liked_by.count()
-
-    def get_saves_count(self, obj):
-        return obj.saved_by.count()
-
-    def get_match_rate(self, obj):
-        request = self.context.get('request')
-        if not request or not request.user.is_authenticated:
-            return "0.00"
-        user = request.user
-        # Compute match rate for this user
-        songs = list(obj.songs.all())
-        if not songs:
-            return "0.00"
-        # Extract user prefs (reuse logic from views)
-        from django.db.models import Count, Avg
-        interacted_ids = set()
-        interacted_ids.update(Song.objects.filter(liked_by=user).values_list('id', flat=True))
-        interacted_ids.update(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
-        interacted_ids.update(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
-        if not interacted_ids:
-            return "0.00"
-        interacted_songs = Song.objects.filter(id__in=interacted_ids)
-        top_genres = interacted_songs.values('genres').annotate(count=Count('genres')).order_by('-count')[:4]
-        top_moods = interacted_songs.values('moods').annotate(count=Count('moods')).order_by('-count')[:4]
-        genre_ids = [g['genres'] for g in top_genres if g['genres']]
-        mood_ids = [m['moods'] for m in top_moods if m['moods']]
-        avg_features = interacted_songs.aggregate(
-            avg_energy=Avg('energy'),
-            avg_dance=Avg('danceability'),
-            avg_valence=Avg('valence'),
-            avg_tempo=Avg('tempo'),
-            avg_acoustic=Avg('acousticness'),
-            avg_instrumental=Avg('instrumentalness'),
-        )
-        prefs = {'genre_ids': genre_ids, 'mood_ids': mood_ids, 'avg_features': avg_features}
-        # Score songs
-        scores = []
-        for s in songs[:20]:
-            score = 0.0
-            s_genres = set(s.genres.values_list('id', flat=True))
-            s_moods = set(s.moods.values_list('id', flat=True))
-            score += len(s_genres.intersection(genre_ids)) * 3
-            score += len(s_moods.intersection(mood_ids)) * 2
-            def _feature_bonus(song_val, avg_val, scale=10.0):
-                if avg_val is None or song_val is None:
-                    return 0.0
-                return max(0.0, (100.0 - abs(float(song_val) - float(avg_val))) / scale)
-            score += _feature_bonus(s.energy, avg_features.get('avg_energy'))
-            score += _feature_bonus(s.danceability, avg_features.get('avg_dance'))
-            score += _feature_bonus(s.valence, avg_features.get('avg_valence'))
-            if avg_features.get('avg_tempo') is not None and s.tempo is not None:
-                score += max(0.0, (200.0 - abs(float(s.tempo) - float(avg_features['avg_tempo']))) / 20.0)
-            score += _feature_bonus(s.acousticness, avg_features.get('avg_acoustic'))
-            score += _feature_bonus(s.instrumentalness, avg_features.get('avg_instrumental'))
-            scores.append(score)
-        if not scores:
-            return "0.00"
-        avg_score = sum(scores) / len(scores)
-        pct = max(0.0, min(100.0, (avg_score / 20.0) * 100.0))
-        return f"{pct:.2f}"
+    
+    def get_songs_count(self, obj):
+        return obj.songs.count()

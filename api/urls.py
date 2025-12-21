@@ -30,10 +30,10 @@ from .views import (
     LatestReleasesView,
     PopularArtistsView,
     PopularAlbumsView,
-    UserPlaylistRecommendationsView,
-    UserPlaylistRecommendationDetailView,
-    AutoPlaylistLikeView,
-    AutoPlaylistSaveView,
+    PlaylistRecommendationsView,
+    PlaylistRecommendationDetailView,
+    PlaylistRecommendationLikeView,
+    PlaylistRecommendationSaveView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -80,12 +80,11 @@ urlpatterns = [
     path('users/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
     # Popular albums based on song plays and likes + album likes
     path('users/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
-
-    # Auto playlist recommendations (generated + sourced from existing playlists)
-    path('users/playlist-recommendations/', UserPlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
-    path('users/playlist-recommendations/<uuid:pk>/', UserPlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),
-    path('users/playlist-recommendations/<uuid:pk>/like/', AutoPlaylistLikeView.as_view(), name='user_playlist_recommendation_like'),
-    path('users/playlist-recommendations/<uuid:pk>/save/', AutoPlaylistSaveView.as_view(), name='user_playlist_recommendation_save'),
+    # Playlist recommendations - auto-generated based on user activity
+    path('users/playlist-recommendations/', PlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
+    path('users/playlist-recommendations/<str:unique_id>/', PlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),
+    path('users/playlist-recommendations/<str:unique_id>/like/', PlaylistRecommendationLikeView.as_view(), name='user_playlist_recommendation_like'),
+    path('users/playlist-recommendations/<str:unique_id>/save/', PlaylistRecommendationSaveView.as_view(), name='user_playlist_recommendation_save'),
     
     # Song endpoints
     path('songs/', SongListView.as_view(), name='song_list'),

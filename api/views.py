@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, Playlist, AutoPlaylist
+from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -20,8 +20,8 @@ from .serializers import (
     SongStreamSerializer,
     UserPlaylistSerializer,
     UserPlaylistCreateSerializer,
-    AutoPlaylistListSerializer,
-    AutoPlaylistDetailSerializer,
+    RecommendedPlaylistListSerializer,
+    RecommendedPlaylistDetailSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -41,361 +41,6 @@ from mutagen.wave import WAVE
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q, Count, Avg, F
-from decimal import Decimal, ROUND_HALF_UP
-
-
-def _user_interacted_song_ids(user: User) -> set:
-    liked_song_ids = set(Song.objects.filter(liked_by=user).values_list('id', flat=True))
-    played_song_ids = set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
-    playlist_song_ids = set(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
-    return liked_song_ids | played_song_ids | playlist_song_ids
-
-
-def _extract_user_preferences(song_qs):
-    top_genres = song_qs.values('genres').annotate(count=Count('genres')).order_by('-count')[:4]
-    top_moods = song_qs.values('moods').annotate(count=Count('moods')).order_by('-count')[:4]
-    top_artists = song_qs.values('artist').annotate(count=Count('artist')).order_by('-count')[:4]
-    top_languages = song_qs.values('language').annotate(count=Count('language')).order_by('-count')[:2]
-
-    genre_ids = [g['genres'] for g in top_genres if g['genres']]
-    mood_ids = [m['moods'] for m in top_moods if m['moods']]
-    artist_ids = [a['artist'] for a in top_artists if a['artist']]
-    preferred_languages = [l['language'] for l in top_languages if l['language']]
-
-    avg_features = song_qs.aggregate(
-        avg_energy=Avg('energy'),
-        avg_dance=Avg('danceability'),
-        avg_valence=Avg('valence'),
-        avg_tempo=Avg('tempo'),
-        avg_acoustic=Avg('acousticness'),
-        avg_instrumental=Avg('instrumentalness'),
-    )
-
-    return {
-        'genre_ids': genre_ids,
-        'mood_ids': mood_ids,
-        'artist_ids': artist_ids,
-        'preferred_languages': preferred_languages,
-        'avg_features': avg_features,
-    }
-
-
-def _score_song_for_preferences(song: Song, prefs: dict) -> float:
-    score = 0.0
-    genre_ids = prefs.get('genre_ids', [])
-    mood_ids = prefs.get('mood_ids', [])
-    artist_ids = prefs.get('artist_ids', [])
-    preferred_languages = prefs.get('preferred_languages', [])
-    avg = prefs.get('avg_features', {}) or {}
-
-    song_genres = set(song.genres.values_list('id', flat=True))
-    song_moods = set(song.moods.values_list('id', flat=True))
-    score += len(song_genres.intersection(genre_ids)) * 3
-    score += len(song_moods.intersection(mood_ids)) * 2
-    if song.artist_id in artist_ids:
-        score += 4
-    if song.language in preferred_languages:
-        score += 2
-
-    def _feature_bonus(song_val, avg_val, scale=10.0):
-        if avg_val is None or song_val is None:
-            return 0.0
-        return max(0.0, (100.0 - abs(float(song_val) - float(avg_val))) / scale)
-
-    score += _feature_bonus(song.energy, avg.get('avg_energy'))
-    score += _feature_bonus(song.danceability, avg.get('avg_dance'))
-    score += _feature_bonus(song.valence, avg.get('avg_valence'))
-
-    # tempo is typically wider range; normalize by 2x
-    if avg.get('avg_tempo') is not None and song.tempo is not None:
-        score += max(0.0, (200.0 - abs(float(song.tempo) - float(avg['avg_tempo']))) / 20.0)
-
-    score += _feature_bonus(song.acousticness, avg.get('avg_acoustic'))
-    score += _feature_bonus(song.instrumentalness, avg.get('avg_instrumental'))
-    return score
-
-
-def _pick_similar_songs(prefs: dict, exclude_ids: set, limit: int, seed_genre_ids=None, seed_mood_ids=None):
-    seed_genre_ids = seed_genre_ids or prefs.get('genre_ids', [])
-    seed_mood_ids = seed_mood_ids or prefs.get('mood_ids', [])
-    preferred_languages = prefs.get('preferred_languages', [])
-
-    base = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id__in=exclude_ids)
-    filters = Q()
-    if seed_genre_ids:
-        filters |= Q(genres__in=seed_genre_ids)
-    if seed_mood_ids:
-        filters |= Q(moods__in=seed_mood_ids)
-    if preferred_languages:
-        filters |= Q(language__in=preferred_languages)
-    if filters:
-        base = base.filter(filters)
-    base = base.distinct()
-
-    scored = []
-    for song in base[:250]:
-        scored.append((song, _score_song_for_preferences(song, prefs)))
-    scored.sort(key=lambda x: x[1], reverse=True)
-
-    picked = []
-    seen_artists = {}
-    for song, _score in scored:
-        # keep some diversity (avoid 10 songs from same artist)
-        cnt = seen_artists.get(song.artist_id, 0)
-        if cnt >= 3:
-            continue
-        seen_artists[song.artist_id] = cnt + 1
-        picked.append(song)
-        if len(picked) >= limit:
-            break
-    return picked
-
-
-def _score_playlist_candidate(song_ids: set, prefs: dict) -> float:
-    # Very lightweight scoring: overlap with user's favorite genres/moods using songs' metadata.
-    genre_ids = set(prefs.get('genre_ids', []))
-    mood_ids = set(prefs.get('mood_ids', []))
-    if not song_ids:
-        return 0.0
-    qs = Song.objects.filter(id__in=list(song_ids))
-    playlist_genres = set(qs.values_list('genres', flat=True))
-    playlist_moods = set(qs.values_list('moods', flat=True))
-    # overlap sizes, weighted
-    return len(playlist_genres.intersection(genre_ids)) * 3.0 + len(playlist_moods.intersection(mood_ids)) * 2.0
-
-
-def _match_rate_from_song_scores(scores: list[float]) -> Decimal:
-    if not scores:
-        return Decimal('0.00')
-    avg_score = sum(scores) / float(len(scores))
-    # Empirical cap for converting our weighted score into a %.
-    # This keeps output stable/meaningful without claiming a hard maximum.
-    cap = 20.0
-    pct = max(0.0, min(100.0, (avg_score / cap) * 100.0))
-    return Decimal(str(pct)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
-
-def _compute_match_rate_for_songs(songs: list[Song], prefs: dict) -> Decimal:
-    # Use first 20 songs (or fewer) for stability and cost.
-    scored = []
-    for s in songs[:20]:
-        scored.append(_score_song_for_preferences(s, prefs))
-    return _match_rate_from_song_scores(scored)
-
-
-def _ensure_autoplaylists_for_user(user: User, target_count: int = 10) -> None:
-    now = timezone.now()
-    interacted_ids = _user_interacted_song_ids(user)
-
-    # If no history, create a couple of trending-based generated playlists.
-    if not interacted_ids:
-        trending = list(Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-plays')[:60])
-        if not trending:
-            return
-        for idx, title in enumerate(['Trending Now', 'Hot Right Now'], start=1):
-            ap = AutoPlaylist.objects.create(
-                user=user,
-                title=title,
-                description='Popular songs right now.',
-                source_type=AutoPlaylist.SOURCE_GENERATED,
-                seed={'type': 'trending', 'rank': idx},
-            )
-            ap.songs.set(trending[(idx - 1) * 20: idx * 20])
-        return
-
-    interacted_songs = Song.objects.filter(id__in=interacted_ids)
-    prefs = _extract_user_preferences(interacted_songs)
-
-    # 1) Source from existing playlists closest to user taste.
-    existing_candidates = []
-
-    system_playlists = Playlist.objects.all().prefetch_related('songs__genres', 'songs__moods', 'songs__artist')[:200]
-    for pl in system_playlists:
-        songs = list(pl.songs.all())
-        if not songs:
-            continue
-        song_ids = set([s.id for s in songs])
-        match_rate = _compute_match_rate_for_songs(songs, prefs)
-        existing_candidates.append((
-            AutoPlaylist.SOURCE_SYSTEM_PLAYLIST,
-            pl.id,
-            pl.title,
-            pl.description,
-            songs,
-            _score_playlist_candidate(song_ids, prefs),
-            match_rate,
-        ))
-
-    public_user_playlists = UserPlaylist.objects.filter(public=True).prefetch_related('songs__genres', 'songs__moods', 'songs__artist')[:200]
-    for upl in public_user_playlists:
-        songs = list(upl.songs.all())
-        if not songs:
-            continue
-        song_ids = set([s.id for s in songs])
-        match_rate = _compute_match_rate_for_songs(songs, prefs)
-        existing_candidates.append((
-            AutoPlaylist.SOURCE_USER_PLAYLIST,
-            upl.id,
-            upl.title,
-            '',
-            songs,
-            _score_playlist_candidate(song_ids, prefs),
-            match_rate,
-        ))
-
-    existing_candidates.sort(key=lambda x: x[5], reverse=True)
-    top_existing = existing_candidates[: min(5, target_count)]
-
-    for source_type, source_id, title, desc, songs, score, match_rate in top_existing:
-        ap, created = AutoPlaylist.objects.get_or_create(
-            user=user,
-            source_type=source_type,
-            source_ref_id=source_id,
-            defaults={
-                'title': title,
-                'description': desc or 'Recommended based on your listening.',
-                'seed': {'type': 'sourced', 'score': score},
-            },
-        )
-        if not created:
-            ap.title = title
-            ap.description = desc or ap.description
-            ap.seed = {**(ap.seed or {}), 'type': 'sourced', 'score': score}
-            ap.updated_at = now
-            ap.save(update_fields=['title', 'description', 'seed', 'updated_at'])
-        ap.songs.set(songs)
-
-    # 2) Generate the rest.
-    current_count = AutoPlaylist.objects.filter(user=user).count()
-    to_generate = max(0, target_count - min(current_count, target_count))
-    if to_generate <= 0:
-        return
-
-    # Build several seeds based on dominant genres/moods.
-    seed_genres = prefs.get('genre_ids', [])
-    seed_moods = prefs.get('mood_ids', [])
-    seeds = []
-    if seed_genres:
-        for gid in seed_genres[:3]:
-            seeds.append({'genre_ids': [gid], 'mood_ids': seed_moods[:2]})
-    if seed_moods:
-        for mid in seed_moods[:3]:
-            seeds.append({'genre_ids': seed_genres[:2], 'mood_ids': [mid]})
-    if not seeds:
-        seeds = [{'genre_ids': seed_genres, 'mood_ids': seed_moods}]
-
-    exclude_ids = set(interacted_ids)
-    created_count = 0
-    for idx, seed in enumerate(seeds):
-        if created_count >= to_generate:
-            break
-        songs = _pick_similar_songs(
-            prefs,
-            exclude_ids=exclude_ids,
-            limit=20,
-            seed_genre_ids=seed.get('genre_ids'),
-            seed_mood_ids=seed.get('mood_ids'),
-        )
-        if len(songs) < 8:
-            continue
-        exclude_ids |= set([s.id for s in songs])
-
-        match_rate = _compute_match_rate_for_songs(songs, prefs)
-
-        title = 'Made for you'
-        if seed.get('genre_ids'):
-            gname = Genre.objects.filter(id=seed['genre_ids'][0]).values_list('name', flat=True).first()
-            if gname:
-                title = f"Your {gname} Mix"
-        elif seed.get('mood_ids'):
-            mname = Mood.objects.filter(id=seed['mood_ids'][0]).values_list('name', flat=True).first()
-            if mname:
-                title = f"{mname} Vibes"
-
-        ap = AutoPlaylist.objects.create(
-            user=user,
-            title=title,
-            description='Auto-generated from your activity (plays, likes, playlists).',
-            source_type=AutoPlaylist.SOURCE_GENERATED,
-            seed={
-                'type': 'generated',
-                'genre_ids': seed.get('genre_ids', []),
-                'mood_ids': seed.get('mood_ids', []),
-                'avg_features': prefs.get('avg_features', {}),
-                'version': 1,
-            },
-        )
-        ap.songs.set(songs)
-        created_count += 1
-
-
-class UserPlaylistRecommendationsView(APIView):
-    """List auto-generated playlist recommendations for the authenticated user."""
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        user = request.user
-        freshness = timezone.now() - timedelta(hours=12)
-
-        qs = AutoPlaylist.objects.filter(user=user, updated_at__gte=freshness).prefetch_related('songs')
-        if qs.count() < 6:
-            _ensure_autoplaylists_for_user(user, target_count=10)
-            qs = AutoPlaylist.objects.filter(user=user).order_by('-updated_at').prefetch_related('songs')[:10]
-        else:
-            qs = qs.order_by('-updated_at')[:10]
-
-        serializer = AutoPlaylistListSerializer(qs, many=True, context={'request': request})
-        return Response(serializer.data)
-
-
-class UserPlaylistRecommendationDetailView(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = AutoPlaylistDetailSerializer
-    lookup_field = 'pk'
-
-    def get_queryset(self):
-        return AutoPlaylist.objects.filter(user=self.request.user).prefetch_related('songs')
-
-
-class AutoPlaylistLikeView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        try:
-            ap = AutoPlaylist.objects.get(pk=pk, user=request.user)
-        except AutoPlaylist.DoesNotExist:
-            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        user = request.user
-        if ap.liked_by.filter(id=user.id).exists():
-            ap.liked_by.remove(user)
-            liked = False
-        else:
-            ap.liked_by.add(user)
-            liked = True
-
-        return Response({'liked': liked, 'likes_count': ap.liked_by.count()})
-
-
-class AutoPlaylistSaveView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk):
-        try:
-            ap = AutoPlaylist.objects.get(pk=pk, user=request.user)
-        except AutoPlaylist.DoesNotExist:
-            return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        user = request.user
-        if ap.saved_by.filter(id=user.id).exists():
-            ap.saved_by.remove(user)
-            saved = False
-        else:
-            ap.saved_by.add(user)
-            saved = True
-
-        return Response({'saved': saved, 'saves_count': ap.saved_by.count()})
 
 
 class RegisterView(APIView):
@@ -1591,3 +1236,492 @@ class PopularAlbumsView(generics.ListAPIView):
         queryset = queryset.prefetch_related(song_prefetch)
 
         return queryset
+
+
+class PlaylistRecommendationsView(generics.ListAPIView):
+    """
+    Auto-generate and return personalized playlist recommendations.
+    Based on user activity (plays, likes, playlists).
+    Returns existing playlists and generates new ones.
+    """
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    from .serializers import RecommendedPlaylistListSerializer
+    serializer_class = RecommendedPlaylistListSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        
+        # Generate or update recommendations for this user
+        self._generate_recommendations(user)
+        
+        # Return all recommendations for this user, sorted by relevance
+        from .models import RecommendedPlaylist
+        queryset = RecommendedPlaylist.objects.filter(
+            Q(user=user) | Q(user__isnull=True)  # User-specific or general recommendations
+        ).filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())  # Not expired
+        ).prefetch_related('songs', 'liked_by', 'saved_by')
+        
+        return queryset
+
+    def _generate_recommendations(self, user):
+        """Generate personalized playlist recommendations based on user activity"""
+        from .models import RecommendedPlaylist
+        import hashlib
+        
+        # Check if we have recent recommendations (generated in last 6 hours)
+        recent_cutoff = timezone.now() - timedelta(hours=6)
+        recent_count = RecommendedPlaylist.objects.filter(
+            user=user,
+            created_at__gte=recent_cutoff
+        ).count()
+        
+        # If we have recent recommendations, skip generation
+        if recent_count >= 5:
+            return
+        
+        # 1. Get user's interaction history
+        liked_song_ids = set(Song.objects.filter(liked_by=user).values_list('id', flat=True))
+        played_song_ids = set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
+        playlist_song_ids = set(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
+        
+        all_interacted_ids = liked_song_ids | played_song_ids | playlist_song_ids
+        
+        # If no history, generate general trending playlists
+        if not all_interacted_ids:
+            self._generate_trending_playlists(user)
+            return
+        
+        # 2. Extract preferences
+        interacted_songs = Song.objects.filter(id__in=all_interacted_ids)
+        
+        # Get top preferences
+        top_genres = list(interacted_songs.values_list('genres', flat=True).distinct())[:5]
+        top_moods = list(interacted_songs.values_list('moods', flat=True).distinct())[:5]
+        top_artists = list(interacted_songs.values_list('artist', flat=True).distinct())[:5]
+        
+        # Average audio features
+        avg_features = interacted_songs.aggregate(
+            avg_energy=Avg('energy'),
+            avg_dance=Avg('danceability'),
+            avg_valence=Avg('valence'),
+            avg_tempo=Avg('tempo')
+        )
+        
+        # 3. Generate different types of playlists
+        generated_playlists = []
+        
+        # A. Similar Taste Playlist - Songs close to what they already like
+        similar_playlist = self._create_similar_taste_playlist(user, all_interacted_ids, top_genres, top_moods, avg_features)
+        if similar_playlist:
+            generated_playlists.append(similar_playlist)
+        
+        # B. Discover Genre Playlists - Explore genres they haven't tried much
+        genre_playlists = self._create_genre_discovery_playlists(user, all_interacted_ids, top_genres)
+        generated_playlists.extend(genre_playlists)
+        
+        # C. Mood-Based Playlists
+        mood_playlists = self._create_mood_playlists(user, all_interacted_ids, top_moods, avg_features)
+        generated_playlists.extend(mood_playlists)
+        
+        # D. Energy Level Playlists
+        energy_playlists = self._create_energy_playlists(user, all_interacted_ids, avg_features)
+        generated_playlists.extend(energy_playlists)
+        
+        # E. Artist Mix Playlists
+        artist_playlists = self._create_artist_mix_playlists(user, all_interacted_ids, top_artists)
+        generated_playlists.extend(artist_playlists)
+        
+        # Save all generated playlists
+        for playlist_data in generated_playlists[:10]:  # Limit to 10 playlists
+            self._save_playlist(user, playlist_data)
+
+    def _create_similar_taste_playlist(self, user, excluded_ids, top_genres, top_moods, avg_features):
+        """Create a playlist similar to user's current taste"""
+        candidates = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED
+        ).exclude(
+            id__in=excluded_ids
+        ).filter(
+            Q(genres__in=top_genres) | Q(moods__in=top_moods)
+        ).distinct()[:200]
+        
+        # Score songs by similarity
+        scored_songs = self._score_songs_by_similarity(candidates, top_genres, top_moods, avg_features)
+        
+        if len(scored_songs) < 10:
+            return None
+        
+        selected_songs = [s[0] for s in scored_songs[:25]]
+        
+        # Calculate match percentage based on average score
+        avg_score = sum(s[1] for s in scored_songs[:25]) / len(scored_songs[:25])
+        match_percentage = min(100.0, (avg_score / 20) * 100)  # Normalize to 0-100
+        
+        import hashlib
+        unique_id = hashlib.sha256(f"similar_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+        
+        return {
+            'unique_id': unique_id,
+            'title': 'More of What You Love',
+            'description': 'Songs similar to your favorites',
+            'playlist_type': 'similar_taste',
+            'songs': selected_songs,
+            'relevance_score': 10.0,
+            'match_percentage': round(match_percentage, 1)
+        }
+
+    def _create_genre_discovery_playlists(self, user, excluded_ids, top_genres):
+        """Create playlists to help discover new genres"""
+        from .models import Genre
+        
+        playlists = []
+        
+        # Get genres user hasn't explored much
+        all_genres = Genre.objects.exclude(id__in=top_genres)[:3]
+        
+        for genre in all_genres:
+            songs = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                genres=genre
+            ).exclude(
+                id__in=excluded_ids
+            ).order_by('-plays')[:20]
+            
+            if songs.count() >= 10:
+                import hashlib
+                unique_id = hashlib.sha256(f"discover_{genre.id}_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': f'Discover {genre.name}',
+                    'description': f'Explore popular {genre.name} tracks',
+                    'playlist_type': 'discover_genre',
+                    'songs': list(songs),
+                    'relevance_score': 7.0,
+                    'match_percentage': 0.0  # Discovery playlists don't match existing taste
+                })
+        
+        return playlists[:2]  # Max 2 discovery playlists
+
+    def _create_mood_playlists(self, user, excluded_ids, top_moods, avg_features):
+        """Create mood-based playlists"""
+        from .models import Mood
+        
+        playlists = []
+        
+        # Get user's favorite moods
+        moods = Mood.objects.filter(id__in=top_moods)[:2]
+        
+        for mood in moods:
+            songs = Song.objects.filter(
+                status=Song.STATUS_PUBLISHED,
+                moods=mood
+            ).exclude(
+                id__in=excluded_ids
+            )
+            
+            # Filter by similar audio features
+            if avg_features['avg_valence']:
+                songs = songs.filter(
+                    valence__gte=avg_features['avg_valence'] - 20,
+                    valence__lte=avg_features['avg_valence'] + 20
+                )
+            
+            songs = songs.order_by('-plays')[:20]
+            
+            if songs.count() >= 10:
+                import hashlib
+                unique_id = hashlib.sha256(f"mood_{mood.id}_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+                
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': f'{mood.name} Vibes',
+                    'description': f'Perfect songs for a {mood.name.lower()} mood',
+                    'playlist_type': 'mood_based',
+                    'songs': list(songs),
+                    'relevance_score': 8.5,
+                    'match_percentage': 75.0  # Mood-based matches user's mood preferences
+                })
+        
+        return playlists
+
+    def _create_energy_playlists(self, user, excluded_ids, avg_features):
+        """Create playlists based on energy levels"""
+        playlists = []
+        
+        if not avg_features['avg_energy']:
+            return playlists
+        
+        # High energy playlist
+        high_energy_songs = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED,
+            energy__gte=70
+        ).exclude(
+            id__in=excluded_ids
+        ).order_by('-energy', '-plays')[:20]
+        
+        if high_energy_songs.count() >= 10:
+            import hashlib
+            unique_id = hashlib.sha256(f"high_energy_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+            
+            playlists.append({
+                'unique_id': unique_id,
+                'title': 'High Energy Boost',
+                'description': 'Pump up the energy with these tracks',
+                'playlist_type': 'energy',
+                'songs': list(high_energy_songs),
+                'relevance_score': 7.5,
+                'match_percentage': 60.0  # Energy-based has moderate match
+            })
+        
+        # Chill/Relaxing playlist
+        chill_songs = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED,
+            energy__lte=40,
+            acousticness__gte=30
+        ).exclude(
+            id__in=excluded_ids
+        ).order_by('energy', '-plays')[:20]
+        
+        if chill_songs.count() >= 10:
+            import hashlib
+            unique_id = hashlib.sha256(f"chill_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+            
+            playlists.append({
+                'unique_id': unique_id,
+                'title': 'Chill & Relax',
+                'description': 'Unwind with these mellow tracks',
+                'playlist_type': 'energy',
+                'songs': list(chill_songs),
+                'relevance_score': 7.5,
+                'match_percentage': 60.0  # Energy-based has moderate match
+            })
+        
+        return playlists[:1]  # Return max 1 energy playlist
+
+    def _create_artist_mix_playlists(self, user, excluded_ids, top_artists):
+        """Create playlists mixing songs from favorite artists"""
+        from .models import Artist
+        
+        playlists = []
+        
+        if len(top_artists) < 2:
+            return playlists
+        
+        # Get songs from top 3 artists
+        artists = Artist.objects.filter(id__in=top_artists[:3])
+        
+        songs = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED,
+            artist__in=artists
+        ).exclude(
+            id__in=excluded_ids
+        ).order_by('-plays', '-release_date')[:20]
+        
+        if songs.count() >= 10:
+            artist_names = ', '.join([a.name for a in artists[:2]])
+            import hashlib
+            unique_id = hashlib.sha256(f"artist_mix_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+            
+            playlists.append({
+                'unique_id': unique_id,
+                'title': f'{artist_names} & More',
+                'description': f'A mix featuring your favorite artists',
+                'playlist_type': 'artist_mix',
+                'songs': list(songs),
+                'relevance_score': 9.0,
+                'match_percentage': 85.0  # Artist mix has high match with user taste
+            })
+        
+        return playlists
+
+    def _generate_trending_playlists(self, user):
+        """Generate general trending playlists for users without history"""
+        import hashlib
+        
+        # Trending overall
+        trending_songs = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED
+        ).order_by('-plays')[:25]
+        
+        if trending_songs.count() >= 10:
+            unique_id = hashlib.sha256(f"trending_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+            
+            self._save_playlist(user, {
+                'unique_id': unique_id,
+                'title': 'Trending Now',
+                'description': 'Most popular tracks right now',
+                'playlist_type': 'similar_taste',
+                'songs': list(trending_songs),
+                'relevance_score': 5.0,
+                'match_percentage': 0.0  # Trending not based on user activity
+            })
+        
+        # New releases
+        new_releases = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED,
+            release_date__isnull=False
+        ).order_by('-release_date')[:25]
+        
+        if new_releases.count() >= 10:
+            unique_id = hashlib.sha256(f"new_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
+            
+            self._save_playlist(user, {
+                'unique_id': unique_id,
+                'title': 'Fresh Releases',
+                'description': 'Newest tracks just for you',
+                'playlist_type': 'similar_taste',
+                'songs': list(new_releases),
+                'relevance_score': 5.0,
+                'match_percentage': 0.0  # New releases not based on user activity
+            })
+
+    def _score_songs_by_similarity(self, songs, top_genres, top_moods, avg_features):
+        """Score songs by similarity to user preferences"""
+        scored = []
+        
+        for song in songs:
+            score = 0
+            
+            # Genre matching
+            song_genres = set(song.genres.values_list('id', flat=True))
+            score += len(song_genres.intersection(top_genres)) * 3
+            
+            # Mood matching
+            song_moods = set(song.moods.values_list('id', flat=True))
+            score += len(song_moods.intersection(top_moods)) * 2
+            
+            # Audio feature similarity
+            if avg_features['avg_energy'] and song.energy:
+                score += max(0, (100 - abs(song.energy - avg_features['avg_energy'])) / 10)
+            if avg_features['avg_dance'] and song.danceability:
+                score += max(0, (100 - abs(song.danceability - avg_features['avg_dance'])) / 10)
+            if avg_features['avg_valence'] and song.valence:
+                score += max(0, (100 - abs(song.valence - avg_features['avg_valence'])) / 10)
+            
+            # Popularity boost (but not too much)
+            score += min(song.plays / 1000, 5)
+            
+            scored.append((song, score))
+        
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored
+
+    def _save_playlist(self, user, playlist_data):
+        """Save or update a recommended playlist"""
+        from .models import RecommendedPlaylist
+        
+        # Check if playlist with this unique_id already exists
+        existing = RecommendedPlaylist.objects.filter(
+            unique_id=playlist_data['unique_id']
+        ).first()
+        
+        if existing:
+            # Update existing
+            existing.title = playlist_data['title']
+            existing.description = playlist_data['description']
+            existing.relevance_score = playlist_data['relevance_score']
+            existing.match_percentage = playlist_data.get('match_percentage', 0.0)
+            existing.updated_at = timezone.now()
+            existing.expires_at = timezone.now() + timedelta(days=7)
+            existing.save()
+            
+            # Update songs
+            existing.songs.clear()
+            existing.songs.add(*playlist_data['songs'])
+        else:
+            # Create new
+            playlist = RecommendedPlaylist.objects.create(
+                unique_id=playlist_data['unique_id'],
+                user=user,
+                title=playlist_data['title'],
+                description=playlist_data['description'],
+                playlist_type=playlist_data['playlist_type'],
+                relevance_score=playlist_data['relevance_score'],
+                match_percentage=playlist_data.get('match_percentage', 0.0),
+                expires_at=timezone.now() + timedelta(days=7)
+            )
+            playlist.songs.add(*playlist_data['songs'])
+
+
+class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
+    """
+    Detail view for a specific recommended playlist.
+    Shows all songs without stream links.
+    Increments view count.
+    """
+    permission_classes = [IsAuthenticated]
+    from .serializers import RecommendedPlaylistDetailSerializer
+    serializer_class = RecommendedPlaylistDetailSerializer
+    lookup_field = 'unique_id'
+
+    def get_queryset(self):
+        from .models import RecommendedPlaylist
+        return RecommendedPlaylist.objects.all().prefetch_related(
+            'songs__artist',
+            'songs__album',
+            'liked_by',
+            'saved_by'
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        
+        # Increment view count
+        instance.views += 1
+        instance.save(update_fields=['views'])
+        
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+
+class PlaylistRecommendationLikeView(APIView):
+    """Like or unlike a recommended playlist"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, unique_id):
+        from .models import RecommendedPlaylist
+        
+        try:
+            playlist = RecommendedPlaylist.objects.get(unique_id=unique_id)
+        except RecommendedPlaylist.DoesNotExist:
+            return Response(
+                {'error': 'Playlist not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        if playlist.liked_by.filter(id=request.user.id).exists():
+            # Unlike
+            playlist.liked_by.remove(request.user)
+            return Response({'status': 'unliked', 'likes_count': playlist.liked_by.count()})
+        else:
+            # Like
+            playlist.liked_by.add(request.user)
+            return Response({'status': 'liked', 'likes_count': playlist.liked_by.count()})
+
+
+class PlaylistRecommendationSaveView(APIView):
+    """Save or unsave a recommended playlist"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, unique_id):
+        from .models import RecommendedPlaylist
+        
+        try:
+            playlist = RecommendedPlaylist.objects.get(unique_id=unique_id)
+        except RecommendedPlaylist.DoesNotExist:
+            return Response(
+                {'error': 'Playlist not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        if playlist.saved_by.filter(id=request.user.id).exists():
+            # Unsave
+            playlist.saved_by.remove(request.user)
+            return Response({'status': 'unsaved'})
+        else:
+            # Save
+            playlist.saved_by.add(request.user)
+            return Response({'status': 'saved'})
