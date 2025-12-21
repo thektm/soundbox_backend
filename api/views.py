@@ -41,6 +41,7 @@ from mutagen.wave import WAVE
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q, Count, Avg, F
+from decimal import Decimal, ROUND_HALF_UP
 
 
 def _user_interacted_song_ids(user: User) -> set:
@@ -163,6 +164,25 @@ def _score_playlist_candidate(song_ids: set, prefs: dict) -> float:
     return len(playlist_genres.intersection(genre_ids)) * 3.0 + len(playlist_moods.intersection(mood_ids)) * 2.0
 
 
+def _match_rate_from_song_scores(scores: list[float]) -> Decimal:
+    if not scores:
+        return Decimal('0.00')
+    avg_score = sum(scores) / float(len(scores))
+    # Empirical cap for converting our weighted score into a %.
+    # This keeps output stable/meaningful without claiming a hard maximum.
+    cap = 20.0
+    pct = max(0.0, min(100.0, (avg_score / cap) * 100.0))
+    return Decimal(str(pct)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def _compute_match_rate_for_songs(songs: list[Song], prefs: dict) -> Decimal:
+    # Use first 20 songs (or fewer) for stability and cost.
+    scored = []
+    for s in songs[:20]:
+        scored.append(_score_song_for_preferences(s, prefs))
+    return _match_rate_from_song_scores(scored)
+
+
 def _ensure_autoplaylists_for_user(user: User, target_count: int = 10) -> None:
     now = timezone.now()
     interacted_ids = _user_interacted_song_ids(user)
@@ -189,38 +209,44 @@ def _ensure_autoplaylists_for_user(user: User, target_count: int = 10) -> None:
     # 1) Source from existing playlists closest to user taste.
     existing_candidates = []
 
-    system_playlists = Playlist.objects.all().prefetch_related('songs')[:200]
+    system_playlists = Playlist.objects.all().prefetch_related('songs__genres', 'songs__moods', 'songs__artist')[:200]
     for pl in system_playlists:
-        song_ids = set(pl.songs.values_list('id', flat=True))
-        if not song_ids:
+        songs = list(pl.songs.all())
+        if not songs:
             continue
+        song_ids = set([s.id for s in songs])
+        match_rate = _compute_match_rate_for_songs(songs, prefs)
         existing_candidates.append((
             AutoPlaylist.SOURCE_SYSTEM_PLAYLIST,
             pl.id,
             pl.title,
             pl.description,
-            list(pl.songs.all()),
+            songs,
             _score_playlist_candidate(song_ids, prefs),
+            match_rate,
         ))
 
-    public_user_playlists = UserPlaylist.objects.filter(public=True).prefetch_related('songs')[:200]
+    public_user_playlists = UserPlaylist.objects.filter(public=True).prefetch_related('songs__genres', 'songs__moods', 'songs__artist')[:200]
     for upl in public_user_playlists:
-        song_ids = set(upl.songs.values_list('id', flat=True))
-        if not song_ids:
+        songs = list(upl.songs.all())
+        if not songs:
             continue
+        song_ids = set([s.id for s in songs])
+        match_rate = _compute_match_rate_for_songs(songs, prefs)
         existing_candidates.append((
             AutoPlaylist.SOURCE_USER_PLAYLIST,
             upl.id,
             upl.title,
             '',
-            list(upl.songs.all()),
+            songs,
             _score_playlist_candidate(song_ids, prefs),
+            match_rate,
         ))
 
     existing_candidates.sort(key=lambda x: x[5], reverse=True)
     top_existing = existing_candidates[: min(5, target_count)]
 
-    for source_type, source_id, title, desc, songs, score in top_existing:
+    for source_type, source_id, title, desc, songs, score, match_rate in top_existing:
         ap, created = AutoPlaylist.objects.get_or_create(
             user=user,
             source_type=source_type,
@@ -273,6 +299,8 @@ def _ensure_autoplaylists_for_user(user: User, target_count: int = 10) -> None:
         if len(songs) < 8:
             continue
         exclude_ids |= set([s.id for s in songs])
+
+        match_rate = _compute_match_rate_for_songs(songs, prefs)
 
         title = 'Made for you'
         if seed.get('genre_ids'):
