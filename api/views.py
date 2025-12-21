@@ -35,7 +35,7 @@ from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Q
+from django.db.models import Q, Count, Avg, F
 
 
 class RegisterView(APIView):
@@ -999,3 +999,109 @@ class UserPlaylistRemoveSongView(APIView):
             return Response(serializer.data)
         except Song.DoesNotExist:
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class UserRecommendationView(APIView):
+    """
+    Spotify-level recommendation engine.
+    Provides 10 songs based on user history (likes, plays, playlists)
+    and metadata similarity.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # 1. Get user's interaction history
+        liked_song_ids = set(Song.objects.filter(liked_by=user).values_list('id', flat=True))
+        played_song_ids = set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
+        playlist_song_ids = set(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
+        
+        all_interacted_ids = liked_song_ids | played_song_ids | playlist_song_ids
+        
+        # If no history, return trending songs
+        if not all_interacted_ids:
+            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-plays')[:10]
+            serializer = SongSerializer(trending_songs, many=True, context={'request': request})
+            return Response({
+                'type': 'trending',
+                'message': 'Start listening to get personalized recommendations!',
+                'songs': serializer.data
+            })
+
+        # 2. Extract preferences
+        interacted_songs = Song.objects.filter(id__in=all_interacted_ids)
+        
+        top_genres = interacted_songs.values('genres').annotate(count=Count('genres')).order_by('-count')[:3]
+        top_moods = interacted_songs.values('moods').annotate(count=Count('moods')).order_by('-count')[:3]
+        top_artists = interacted_songs.values('artist').annotate(count=Count('artist')).order_by('-count')[:3]
+        
+        genre_ids = [g['genres'] for g in top_genres if g['genres']]
+        mood_ids = [m['moods'] for m in top_moods if m['moods']]
+        artist_ids = [a['artist'] for a in top_artists if a['artist']]
+        
+        # Average audio features
+        avg_features = interacted_songs.aggregate(
+            avg_energy=Avg('energy'),
+            avg_dance=Avg('danceability'),
+            avg_valence=Avg('valence'),
+            avg_tempo=Avg('tempo')
+        )
+
+        # 3. Candidate Generation
+        # Find songs that match top genres, moods, or artists but haven't been interacted with
+        candidates = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED
+        ).exclude(
+            id__in=all_interacted_ids
+        ).filter(
+            Q(genres__in=genre_ids) | 
+            Q(moods__in=mood_ids) | 
+            Q(artist__in=artist_ids)
+        ).distinct()
+
+        # 4. Scoring & Ranking
+        # We'll use a simple weighted scoring system in Python for better control
+        scored_candidates = []
+        
+        for song in candidates[:100]: # Limit to 100 candidates for performance
+            score = 0
+            
+            # Metadata matching
+            song_genres = set(song.genres.values_list('id', flat=True))
+            song_moods = set(song.moods.values_list('id', flat=True))
+            
+            score += len(song_genres.intersection(genre_ids)) * 3
+            score += len(song_moods.intersection(mood_ids)) * 2
+            if song.artist_id in artist_ids:
+                score += 5
+                
+            # Audio feature similarity (inverse distance)
+            if avg_features['avg_energy'] and song.energy:
+                score += (100 - abs(song.energy - avg_features['avg_energy'])) / 10
+            if avg_features['avg_dance'] and song.danceability:
+                score += (100 - abs(song.danceability - avg_features['avg_dance'])) / 10
+                
+            scored_candidates.append((song, score))
+            
+        # Sort by score descending
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        
+        # Take top 10
+        recommended_songs = [item[0] for item in scored_candidates[:10]]
+        
+        # If we don't have enough recommendations, fill with trending
+        if len(recommended_songs) < 10:
+            needed = 10 - len(recommended_songs)
+            trending = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(
+                id__in=all_interacted_ids
+            ).exclude(
+                id__in=[s.id for s in recommended_songs]
+            ).order_by('-plays')[:needed]
+            recommended_songs.extend(list(trending))
+
+        serializer = SongSerializer(recommended_songs, many=True, context={'request': request})
+        return Response({
+            'type': 'personalized',
+            'songs': serializer.data
+        })
