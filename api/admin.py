@@ -252,3 +252,114 @@ class UserPlaylistAdmin(admin.ModelAdmin):
             count += 1
         self.message_user(request, f'Likes cleared from {count} playlist(s).')
     clear_likes.short_description = 'Clear likes from selected playlists'
+
+
+# Add likes information to existing SongAdmin
+def song_likes_count(song):
+    return song.liked_by.count()
+song_likes_count.short_description = 'Likes Count'
+
+def song_liked_users(song):
+    users = song.liked_by.all()[:5]  # Show first 5 users
+    user_list = [user.phone_number for user in users]
+    if song.liked_by.count() > 5:
+        user_list.append(f"... and {song.liked_by.count() - 5} more")
+    return ", ".join(user_list) if user_list else "No likes"
+song_liked_users.short_description = 'Liked By'
+
+
+# Enhance SongAdmin to show likes
+SongAdmin.list_display = SongAdmin.list_display + ('song_likes_count',)
+SongAdmin.list_filter = SongAdmin.list_filter + ('liked_by',)
+SongAdmin.readonly_fields = SongAdmin.readonly_fields + ('song_likes_count', 'song_liked_users')
+SongAdmin.song_likes_count = song_likes_count
+SongAdmin.song_liked_users = song_liked_users
+
+
+# Create a custom admin view for likes using a proxy approach
+from django.db import models
+
+class SongLikeProxy(models.Model):
+    """Proxy model to display song likes in admin"""
+    song = models.ForeignKey(Song, on_delete=models.CASCADE, related_name='like_proxy')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='song_like_proxy')
+    
+    class Meta:
+        app_label = 'api'
+        db_table = None  # This is a proxy, no actual table
+        managed = False
+        verbose_name = 'Song Like'
+        verbose_name_plural = 'Song Likes'
+    
+    def __str__(self):
+        return f"{self.user.phone_number} likes {self.song.title}"
+
+
+class SongLikeAdmin(admin.ModelAdmin):
+    """Admin view for displaying all song likes"""
+    
+    list_display = ('song_title', 'artist_name', 'user_phone', 'user_name', 'song_created')
+    list_filter = ('song__artist', 'song__genres', 'song__moods', 'user__roles')
+    search_fields = ('song__title', 'song__artist__name', 'user__phone_number', 'user__first_name', 'user__last_name')
+    date_hierarchy = 'song__created_at'
+    readonly_fields = ('song_title', 'artist_name', 'user_phone', 'user_name', 'song_created', 'song_details')
+    
+    def get_queryset(self, request):
+        """Override to show all likes using a custom query"""
+        # Use raw SQL or a custom query to get likes
+        # Since likes are ManyToMany, we'll use a subquery approach
+        from django.db.models import Exists, OuterRef
+        
+        # Get songs that have likes
+        return Song.objects.filter(
+            Exists(User.objects.filter(song_liked_by=OuterRef('pk')))
+        ).prefetch_related('liked_by', 'artist', 'genres', 'moods')
+    
+    def song_title(self, obj):
+        return obj.title
+    song_title.short_description = 'Song Title'
+    song_title.admin_order_field = 'title'
+    
+    def artist_name(self, obj):
+        return obj.artist.name
+    artist_name.short_description = 'Artist'
+    artist_name.admin_order_field = 'artist__name'
+    
+    def user_phone(self, obj):
+        # This is tricky since we have multiple users per song
+        # For display purposes, we'll show the first user
+        first_user = obj.liked_by.first()
+        return first_user.phone_number if first_user else "N/A"
+    user_phone.short_description = 'Sample User Phone'
+    
+    def user_name(self, obj):
+        first_user = obj.liked_by.first()
+        if first_user and (first_user.first_name or first_user.last_name):
+            return f"{first_user.first_name} {first_user.last_name}".strip()
+        return "-"
+    user_name.short_description = 'Sample User Name'
+    
+    def song_created(self, obj):
+        return obj.created_at
+    song_created.short_description = 'Song Created'
+    song_created.admin_order_field = 'created_at'
+    
+    def song_details(self, obj):
+        genres = ", ".join([g.name for g in obj.genres.all()])
+        moods = ", ".join([m.name for m in obj.moods.all()])
+        likes_count = obj.liked_by.count()
+        return f"Genres: {genres}\nMoods: {moods}\nTotal Likes: {likes_count}"
+    song_details.short_description = 'Song Details'
+    
+    def has_add_permission(self, request):
+        return False
+    
+    def has_change_permission(self, request, obj=None):
+        return False
+    
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+# Register the proxy admin
+admin.site.register(SongLikeProxy, SongLikeAdmin)
