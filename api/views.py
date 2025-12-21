@@ -24,6 +24,7 @@ from .serializers import (
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.pagination import PageNumberPagination
 from django.conf import settings
 import boto3
 from botocore.config import Config
@@ -1110,3 +1111,40 @@ class UserRecommendationView(APIView):
             'type': 'personalized',
             'songs': serializer.data
         })
+
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class LatestReleasesView(generics.ListAPIView):
+    """Return songs ordered by release date (newest first), paginated with next link."""
+    serializer_class = SongSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get_permissions(self):
+        # Allow unauthenticated GET access similar to other song endpoints
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return super().get_permissions()
+
+    def get_queryset(self):
+        queryset = Song.objects.all()
+        # Non-authenticated or non-staff users only see published songs
+        if not self.request.user.is_authenticated or not self.request.user.is_staff:
+            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
+
+        # Order by release_date newest first, fall back to created_at for tie-breaker
+        # Use NULLS LAST behavior where supported by the DB driver
+        try:
+            from django.db.models import F
+            # annotate won't change ordering for nulls handling across DBs reliably,
+            # so default to simple ordering which is acceptable in many setups
+            queryset = queryset.order_by(F('release_date').desc(nulls_last=True), '-created_at')
+        except Exception:
+            queryset = queryset.order_by('-release_date', '-created_at')
+
+        return queryset.distinct()
