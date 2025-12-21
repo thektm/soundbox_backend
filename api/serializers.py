@@ -440,6 +440,12 @@ class SongStreamSerializer(serializers.ModelSerializer):
         
         return None
 
+    def get_plays(self, obj):
+        try:
+            return obj.play_counts.count()
+        except Exception:
+            return 0
+
 
 class UserPlaylistSerializer(serializers.ModelSerializer):
     """Serializer for UserPlaylist model"""
