@@ -826,8 +826,8 @@ class SearchResultSerializer(serializers.Serializer):
                 'duration_seconds': obj.duration_seconds,
                 'plays': obj.plays,
                 'language': obj.language,
-                'artist_id': obj.artist.id if obj.artist else None,
-                'album_id': obj.album.id if obj.album else None,
+                'artist_name': obj.artist.name if obj.artist else None,
+                'album_name': obj.album.title if obj.album else None,
             }
         if isinstance(obj, Artist):
             return {
@@ -837,6 +837,6 @@ class SearchResultSerializer(serializers.Serializer):
         if isinstance(obj, Album):
             return {
                 'release_date': obj.release_date,
-                'artist_id': obj.artist.id if obj.artist else None,
+                'artist_name': obj.artist.name if obj.artist else None,
             }
         return {}
