@@ -1239,6 +1239,27 @@ class PopularAlbumsView(generics.ListAPIView):
         return queryset
 
 
+class WeeklyTopSongsView(generics.ListAPIView):
+    """Return songs ordered by play count in the last 7 days (Global)."""
+    serializer_class = SongSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        last_week = timezone.now() - timedelta(days=7)
+        # Filter songs that have at least one play in the last week
+        # and annotate with the count of plays in that period
+        queryset = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED
+        ).annotate(
+            weekly_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=last_week))
+        ).filter(
+            weekly_plays__gt=0
+        ).order_by('-weekly_plays', '-plays')
+        
+        return queryset.distinct()
+
+
 class PlaylistRecommendationsView(generics.ListAPIView):
     """
     Auto-generate and return personalized playlist recommendations.
