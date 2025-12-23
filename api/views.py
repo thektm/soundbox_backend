@@ -2091,6 +2091,7 @@ class SearchView(APIView):
     def get(self, request):
         q = request.query_params.get('q', '').strip()
         search_type = request.query_params.get('type')
+        moods = request.query_params.getlist('moods')
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 20))
         
@@ -2100,13 +2101,13 @@ class SearchView(APIView):
         if search_type:
             # Single type search
             if search_type == 'song':
-                items = self._search_songs(q)
+                items = self._search_songs(q, moods)
             elif search_type == 'artist':
                 items = self._search_artists(q)
             elif search_type == 'album':
                 items = self._search_albums(q)
             elif search_type == 'playlist':
-                items = self._search_playlists(q)
+                items = self._search_playlists(q, moods)
             else:
                 return Response({'error': 'Invalid type. Must be song, artist, album, or playlist.'}, status=400)
             
@@ -2117,10 +2118,10 @@ class SearchView(APIView):
             # Mixed search (interleaved)
             per_type = page_size // 4
             
-            songs = list(self._search_songs(q)[offset:offset + per_type])
+            songs = list(self._search_songs(q, moods)[offset:offset + per_type])
             artists = list(self._search_artists(q)[offset:offset + per_type])
             albums = list(self._search_albums(q)[offset:offset + per_type])
-            playlists = list(self._search_playlists(q)[offset:offset + per_type])
+            playlists = list(self._search_playlists(q, moods)[offset:offset + per_type])
             
             # Interleave results
             max_len = max(len(songs), len(artists), len(albums), len(playlists))
@@ -2141,10 +2142,11 @@ class SearchView(APIView):
             'page_size': page_size,
             'has_next': has_next,
             'query': q,
+            'moods': moods,
             'type': search_type or 'mixed'
         })
 
-    def _search_songs(self, q):
+    def _search_songs(self, q, moods=None):
         qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album')
         if q:
             # Complex matching: title, description, lyrics, producers, composers, lyricists, artist name, album title
@@ -2158,6 +2160,14 @@ class SearchView(APIView):
                 Q(artist__name__icontains=q) |
                 Q(album__title__icontains=q)
             )
+        
+        if moods:
+            # Filter by mood IDs or slugs
+            if all(m.isdigit() for m in moods):
+                qs = qs.filter(moods__id__in=moods).distinct()
+            else:
+                qs = qs.filter(moods__slug__in=moods).distinct()
+                
         return qs.order_by('-plays', '-created_at')
 
     def _search_artists(self, q):
@@ -2179,7 +2189,7 @@ class SearchView(APIView):
             )
         return qs.order_by('-release_date')
 
-    def _search_playlists(self, q):
+    def _search_playlists(self, q, moods=None):
         # Combine admin/system playlists and public user playlists
         admin_qs = Playlist.objects.all()
         if q:
@@ -2187,6 +2197,13 @@ class SearchView(APIView):
                 Q(title__icontains=q) |
                 Q(description__icontains=q)
             )
+        
+        if moods:
+            if all(m.isdigit() for m in moods):
+                admin_qs = admin_qs.filter(moods__id__in=moods).distinct()
+            else:
+                admin_qs = admin_qs.filter(moods__slug__in=moods).distinct()
+                
         return admin_qs.order_by('-created_at')
 
 
