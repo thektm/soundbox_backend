@@ -40,6 +40,7 @@ from .views import (
     PlaylistRecommendationDetailView,
     PlaylistRecommendationLikeView,
     PlaylistRecommendationSaveView,
+    SearchView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -125,6 +126,9 @@ urlpatterns = [
     
     # Play count endpoint
     path('play/count/', PlayCountView.as_view(), name='play_count'),
+    
+    # Search endpoint
+    path('search/', SearchView.as_view(), name='search'),
     
     # User Playlist endpoints
     path('user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),

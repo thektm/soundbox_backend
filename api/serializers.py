@@ -760,3 +760,83 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
     
     def get_songs_count(self, obj):
         return obj.songs.count()
+
+
+class SearchResultSerializer(serializers.Serializer):
+    """Unified serializer for search results (Song, Artist, Album, Playlist)."""
+    id = serializers.IntegerField()
+    type = serializers.SerializerMethodField()
+    title = serializers.SerializerMethodField()
+    subtitle = serializers.SerializerMethodField()
+    image = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+    data = serializers.SerializerMethodField()
+
+    def get_type(self, obj):
+        if isinstance(obj, Song): return 'song'
+        if isinstance(obj, Artist): return 'artist'
+        if isinstance(obj, Album): return 'album'
+        if isinstance(obj, (Playlist, UserPlaylist)): return 'playlist'
+        return 'unknown'
+
+    def get_title(self, obj):
+        if hasattr(obj, 'title'): return obj.title
+        if hasattr(obj, 'name'): return obj.name
+        return ""
+
+    def get_subtitle(self, obj):
+        if isinstance(obj, Song): return obj.artist.name if obj.artist else ""
+        if isinstance(obj, Album): return obj.artist.name if obj.artist else ""
+        if isinstance(obj, Artist): return "Artist"
+        if isinstance(obj, (Playlist, UserPlaylist)): 
+            if hasattr(obj, 'user'): return f"By {obj.user.phone_number}"
+            if hasattr(obj, 'created_by'): return obj.created_by
+            return "Playlist"
+        return ""
+
+    def get_image(self, obj):
+        if hasattr(obj, 'cover_image'): return obj.cover_image
+        if hasattr(obj, 'profile_image'): return obj.profile_image
+        return ""
+
+    def get_is_following(self, obj):
+        if not isinstance(obj, Artist): return None
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return request.user.followings.filter(id=obj.id).exists()
+        return False
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        if hasattr(obj, 'liked_by'):
+            # Playlist model doesn't have liked_by, but UserPlaylist does
+            try:
+                return obj.liked_by.filter(id=request.user.id).exists()
+            except:
+                return False
+        return False
+
+    def get_data(self, obj):
+        # Return minimal specific data
+        if isinstance(obj, Song):
+            return {
+                'duration_seconds': obj.duration_seconds,
+                'plays': obj.plays,
+                'language': obj.language,
+                'artist_id': obj.artist.id if obj.artist else None,
+                'album_id': obj.album.id if obj.album else None,
+            }
+        if isinstance(obj, Artist):
+            return {
+                'verified': obj.verified,
+                'bio': obj.bio[:100] if obj.bio else ""
+            }
+        if isinstance(obj, Album):
+            return {
+                'release_date': obj.release_date,
+                'artist_id': obj.artist.id if obj.artist else None,
+            }
+        return {}

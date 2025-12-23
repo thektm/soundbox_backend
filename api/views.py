@@ -24,6 +24,7 @@ from .serializers import (
     UserPlaylistCreateSerializer,
     RecommendedPlaylistListSerializer,
     RecommendedPlaylistDetailSerializer,
+    SearchResultSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -2077,3 +2078,112 @@ class PlaylistRecommendationSaveView(APIView):
             # Save
             playlist.saved_by.add(request.user)
             return Response({'status': 'saved'})
+
+
+class SearchView(APIView):
+    """
+    Unified search endpoint for songs, artists, albums, and playlists.
+    Supports complex matching and mixed results.
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        q = request.query_params.get('q', '').strip()
+        search_type = request.query_params.get('type')
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 20))
+        
+        offset = (page - 1) * page_size
+        results = []
+        
+        if search_type:
+            # Single type search
+            if search_type == 'song':
+                items = self._search_songs(q)
+            elif search_type == 'artist':
+                items = self._search_artists(q)
+            elif search_type == 'album':
+                items = self._search_albums(q)
+            elif search_type == 'playlist':
+                items = self._search_playlists(q)
+            else:
+                return Response({'error': 'Invalid type. Must be song, artist, album, or playlist.'}, status=400)
+            
+            paginated_items = items[offset:offset + page_size]
+            results = list(paginated_items)
+            has_next = items.count() > offset + page_size
+        else:
+            # Mixed search (interleaved)
+            per_type = page_size // 4
+            
+            songs = list(self._search_songs(q)[offset:offset + per_type])
+            artists = list(self._search_artists(q)[offset:offset + per_type])
+            albums = list(self._search_albums(q)[offset:offset + per_type])
+            playlists = list(self._search_playlists(q)[offset:offset + per_type])
+            
+            # Interleave results
+            max_len = max(len(songs), len(artists), len(albums), len(playlists))
+            for i in range(max_len):
+                if i < len(songs): results.append(songs[i])
+                if i < len(artists): results.append(artists[i])
+                if i < len(albums): results.append(albums[i])
+                if i < len(playlists): results.append(playlists[i])
+            
+            # For mixed, we assume there's more if we got a full page
+            has_next = len(results) >= page_size
+
+        serializer = SearchResultSerializer(results, many=True, context={'request': request})
+        
+        return Response({
+            'results': serializer.data,
+            'page': page,
+            'page_size': page_size,
+            'has_next': has_next,
+            'query': q,
+            'type': search_type or 'mixed'
+        })
+
+    def _search_songs(self, q):
+        qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album')
+        if q:
+            # Complex matching: title, description, lyrics, producers, composers, lyricists, artist name, album title
+            qs = qs.filter(
+                Q(title__icontains=q) |
+                Q(description__icontains=q) |
+                Q(lyrics__icontains=q) |
+                Q(producers__icontains=q) |
+                Q(composers__icontains=q) |
+                Q(lyricists__icontains=q) |
+                Q(artist__name__icontains=q) |
+                Q(album__title__icontains=q)
+            )
+        return qs.order_by('-plays', '-created_at')
+
+    def _search_artists(self, q):
+        qs = Artist.objects.all()
+        if q:
+            qs = qs.filter(
+                Q(name__icontains=q) |
+                Q(bio__icontains=q)
+            )
+        return qs.order_by('-verified', '-created_at')
+
+    def _search_albums(self, q):
+        qs = Album.objects.all().select_related('artist')
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q) |
+                Q(description__icontains=q) |
+                Q(artist__name__icontains=q)
+            )
+        return qs.order_by('-release_date')
+
+    def _search_playlists(self, q):
+        # Combine admin/system playlists and public user playlists
+        admin_qs = Playlist.objects.all()
+        if q:
+            admin_qs = admin_qs.filter(
+                Q(title__icontains=q) |
+                Q(description__icontains=q)
+            )
+        return admin_qs.order_by('-created_at')
