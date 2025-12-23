@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist
+from .models import User, Artist, Album,Playlist, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
