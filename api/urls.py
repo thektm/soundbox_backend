@@ -32,6 +32,10 @@ from .views import (
     PopularAlbumsView,
     WeeklyTopSongsView,
     WeeklyTopArtistsView,
+    WeeklyTopAlbumsView,
+    DailyTopSongsView,
+    DailyTopArtistsView,
+    DailyTopAlbumsView,
     PlaylistRecommendationsView,
     PlaylistRecommendationDetailView,
     PlaylistRecommendationLikeView,
@@ -86,6 +90,14 @@ urlpatterns = [
     path('users/weekly-top-songs-global/', WeeklyTopSongsView.as_view(), name='user_weekly_top_songs_global'),
     # Weekly Top Artists Global
     path('users/weekly-top-artists-global/', WeeklyTopArtistsView.as_view(), name='user_weekly_top_artists_global'),
+    # Weekly Top Albums Global
+    path('users/weekly-top-albums-global/', WeeklyTopAlbumsView.as_view(), name='user_weekly_top_albums_global'),
+    # Daily Top Songs Global
+    path('users/daily-top-songs-global/', DailyTopSongsView.as_view(), name='user_daily_top_songs_global'),
+    # Daily Top Artists Global
+    path('users/daily-top-artists-global/', DailyTopArtistsView.as_view(), name='user_daily_top_artists_global'),
+    # Daily Top Albums Global
+    path('users/daily-top-albums-global/', DailyTopAlbumsView.as_view(), name='user_daily_top_albums_global'),
     # Playlist recommendations - auto-generated based on user activity
     path('users/playlist-recommendations/', PlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
     path('users/playlist-recommendations/<str:unique_id>/', PlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),

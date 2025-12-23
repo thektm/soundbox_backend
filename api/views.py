@@ -11,6 +11,7 @@ from .serializers import (
     ArtistSerializer,
     PopularArtistSerializer,
     AlbumSerializer,
+    PopularAlbumSerializer,
     GenreSerializer,
     MoodSerializer,
     TagSerializer,
@@ -1239,6 +1240,65 @@ class PopularAlbumsView(generics.ListAPIView):
         return queryset
 
 
+class DailyTopSongsView(generics.ListAPIView):
+    """Return songs ordered by play count in the last 24 hours (Global)."""
+    serializer_class = SongSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        last_24h = timezone.now() - timedelta(hours=24)
+        queryset = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED
+        ).annotate(
+            daily_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=last_24h))
+        ).filter(
+            daily_plays__gt=0
+        ).order_by('-daily_plays', '-plays')
+        
+        return queryset.distinct()
+
+
+class DailyTopArtistsView(generics.ListAPIView):
+    """Return artists ordered by total play count of their songs in the last 24 hours (Global)."""
+    serializer_class = PopularArtistSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        last_24h = timezone.now() - timedelta(hours=24)
+        queryset = Artist.objects.annotate(
+            daily_plays=Count(
+                'songs__play_counts', 
+                filter=Q(songs__play_counts__created_at__gte=last_24h)
+            )
+        ).filter(
+            daily_plays__gt=0
+        ).order_by('-daily_plays')
+        
+        return queryset.distinct()
+
+
+class DailyTopAlbumsView(generics.ListAPIView):
+    """Return albums ordered by total play count of their songs in the last 24 hours (Global)."""
+    serializer_class = PopularAlbumSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        last_24h = timezone.now() - timedelta(hours=24)
+        queryset = Album.objects.annotate(
+            daily_plays=Count(
+                'songs__play_counts', 
+                filter=Q(songs__play_counts__created_at__gte=last_24h)
+            )
+        ).filter(
+            daily_plays__gt=0
+        ).order_by('-daily_plays')
+        
+        return queryset.distinct()
+
+
 class WeeklyTopSongsView(generics.ListAPIView):
     """Return songs ordered by play count in the last 7 days (Global)."""
     serializer_class = SongSerializer
@@ -1271,6 +1331,28 @@ class WeeklyTopArtistsView(generics.ListAPIView):
         # Filter artists whose songs have at least one play in the last week
         # and annotate with the count of plays in that period
         queryset = Artist.objects.annotate(
+            weekly_plays=Count(
+                'songs__play_counts', 
+                filter=Q(songs__play_counts__created_at__gte=last_week)
+            )
+        ).filter(
+            weekly_plays__gt=0
+        ).order_by('-weekly_plays')
+        
+        return queryset.distinct()
+
+
+class WeeklyTopAlbumsView(generics.ListAPIView):
+    """Return albums ordered by total play count of their songs in the last 7 days (Global)."""
+    serializer_class = PopularAlbumSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        last_week = timezone.now() - timedelta(days=7)
+        # Filter albums whose songs have at least one play in the last week
+        # and annotate with the count of plays in that period
+        queryset = Album.objects.annotate(
             weekly_plays=Count(
                 'songs__play_counts', 
                 filter=Q(songs__play_counts__created_at__gte=last_week)

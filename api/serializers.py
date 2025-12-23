@@ -131,11 +131,12 @@ class PopularArtistSerializer(ArtistSerializer):
     total_likes = serializers.IntegerField(read_only=True)
     total_playlist_adds = serializers.IntegerField(read_only=True)
     weekly_plays = serializers.IntegerField(read_only=True)
+    daily_plays = serializers.IntegerField(read_only=True)
     score = serializers.IntegerField(read_only=True)
 
     class Meta(ArtistSerializer.Meta):
         fields = ArtistSerializer.Meta.fields + [
-            'total_plays', 'total_likes', 'total_playlist_adds', 'weekly_plays', 'score'
+            'total_plays', 'total_likes', 'total_playlist_adds', 'weekly_plays', 'daily_plays', 'score'
         ]
 
 
@@ -155,13 +156,15 @@ class PopularAlbumSerializer(AlbumSerializer):
     total_song_likes = serializers.IntegerField(read_only=True)
     album_likes = serializers.IntegerField(read_only=True)
     total_playlist_adds = serializers.IntegerField(read_only=True)
+    weekly_plays = serializers.IntegerField(read_only=True)
+    daily_plays = serializers.IntegerField(read_only=True)
     score = serializers.IntegerField(read_only=True)
     top_song_covers = serializers.SerializerMethodField()
 
     class Meta(AlbumSerializer.Meta):
         fields = AlbumSerializer.Meta.fields + [
             'total_song_plays', 'total_song_likes', 'album_likes',
-            'total_playlist_adds', 'score', 'top_song_covers'
+            'total_playlist_adds', 'weekly_plays', 'daily_plays', 'score', 'top_song_covers'
         ]
 
     def get_top_song_covers(self, obj):
