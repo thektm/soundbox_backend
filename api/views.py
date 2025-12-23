@@ -36,6 +36,7 @@ from botocore.exceptions import ClientError
 import uuid
 import os
 import mimetypes
+import random
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
@@ -1252,8 +1253,8 @@ class PlaylistRecommendationsView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         
-        # Generate or update recommendations for this user
-        self._generate_recommendations(user)
+        # Note: generation is triggered in `list()` (every 3 requests).
+        # Here we only return cached/available recommendations.
         
         # Return all recommendations for this user, sorted by relevance
         from .models import RecommendedPlaylist
@@ -1265,7 +1266,32 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         
         return queryset
 
-    def _generate_recommendations(self, user):
+    def list(self, request, *args, **kwargs):
+        """Override list to count requests and regenerate every 3rd request."""
+        user = request.user
+
+        # increment a lightweight counter in user.settings
+        try:
+            settings_json = user.settings or {}
+        except Exception:
+            settings_json = {}
+
+        cnt = int(settings_json.get('recommendations_request_count', 0)) + 1
+        settings_json['recommendations_request_count'] = cnt
+        user.settings = settings_json
+        try:
+            user.save(update_fields=['settings'])
+        except Exception:
+            user.save()
+
+        # Regenerate when counter divisible by 3
+        if cnt % 3 == 0:
+            self._generate_recommendations(user, force=True)
+
+        return super().list(request, *args, **kwargs)
+
+
+    def _generate_recommendations(self, user, force=False):
         """Generate personalized playlist recommendations based on user activity"""
         from .models import RecommendedPlaylist
         import hashlib
@@ -1276,9 +1302,9 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             user=user,
             created_at__gte=recent_cutoff
         ).count()
-        
-        # If we have recent recommendations, skip generation
-        if recent_count >= 6:
+
+        # If we have recent recommendations and not forced, skip generation
+        if not force and recent_count >= 6:
             return
         
         # 1. Get user's interaction history
@@ -1812,11 +1838,18 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             existing.match_percentage = playlist_data.get('match_percentage', 0.0)
             existing.updated_at = timezone.now()
             existing.expires_at = timezone.now() + timedelta(days=7)
-            existing.save()
-            
-            # Update songs
+            # Update songs: clear/add then set a randomized explicit order
             existing.songs.clear()
             existing.songs.add(*playlist_data['songs'])
+            try:
+                song_ids = [s.id for s in playlist_data['songs']]
+            except Exception:
+                song_ids = []
+            # Shuffle to ensure list view doesn't look identical each time
+            if song_ids:
+                random.shuffle(song_ids)
+                existing.song_order = song_ids
+            existing.save()
         else:
             # Create new
             playlist = RecommendedPlaylist.objects.create(
@@ -1830,6 +1863,14 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 expires_at=timezone.now() + timedelta(days=7)
             )
             playlist.songs.add(*playlist_data['songs'])
+            try:
+                song_ids = [s.id for s in playlist_data['songs']]
+            except Exception:
+                song_ids = []
+            if song_ids:
+                random.shuffle(song_ids)
+                playlist.song_order = song_ids
+                playlist.save()
 
 
 class PlaylistRecommendationDetailView(generics.RetrieveAPIView):

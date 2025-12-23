@@ -437,6 +437,8 @@ class RecommendedPlaylist(models.Model):
     
     # Songs in the playlist (ordered)
     songs = models.ManyToManyField(Song, related_name='recommended_playlists', blank=True)
+    # Explicit ordered list of song IDs (preserves order and allows randomized ordering)
+    song_order = models.JSONField(default=list, blank=True, help_text="Ordered list of song IDs for this playlist")
     
     # User interactions
     liked_by = models.ManyToManyField(User, blank=True, related_name='liked_recommended_playlists')

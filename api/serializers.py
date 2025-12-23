@@ -574,7 +574,23 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
     
     def get_covers(self, obj):
-        """Return first 3 song cover images"""
+        """Return first 3 song cover images, respecting explicit `song_order` when present."""
+        # If song_order is available, use it to select ordered covers
+        try:
+            order = obj.song_order if hasattr(obj, 'song_order') and obj.song_order else None
+        except Exception:
+            order = None
+
+        if order:
+            ids = order[:3]
+            song_map = {s.id: s for s in obj.songs.filter(id__in=ids)}
+            covers = []
+            for sid in ids:
+                s = song_map.get(sid)
+                if s and s.cover_image:
+                    covers.append(s.cover_image)
+            return covers
+
         songs = obj.songs.all()[:3]
         return [song.cover_image for song in songs if song.cover_image]
     
@@ -616,11 +632,33 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
     
     def get_songs(self, obj):
         """Return all songs without stream links, only cover images"""
-        from .serializers import SongSerializer
-        songs = obj.songs.all()
-        # Use SongSerializer but exclude stream-related fields
+        # Prefer explicit ordering stored in `song_order` if available
+        order = None
+        try:
+            order = obj.song_order if hasattr(obj, 'song_order') and obj.song_order else None
+        except Exception:
+            order = None
+
+        song_qs = obj.songs.all()
+        song_map = {s.id: s for s in song_qs}
+
+        ordered_songs = []
+        if order:
+            for sid in order:
+                s = song_map.get(sid)
+                if s:
+                    ordered_songs.append(s)
+
+        # Fallback to DB order for any songs not in song_order
+        if not ordered_songs:
+            ordered_songs = list(song_qs)
+        else:
+            # add any remaining songs that were not present in song_order
+            remaining = [s for s in song_qs if s.id not in set(order)]
+            ordered_songs.extend(remaining)
+
         song_data = []
-        for song in songs:
+        for song in ordered_songs:
             data = {
                 'id': song.id,
                 'title': song.title,
@@ -643,6 +681,7 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
                 'language': song.language,
             }
             song_data.append(data)
+
         return song_data
     
     def get_is_liked(self, obj):
