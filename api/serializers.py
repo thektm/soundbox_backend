@@ -215,6 +215,7 @@ class SongSerializer(serializers.ModelSerializer):
     uploader_phone = serializers.CharField(source='uploader.phone_number', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
+    stream_url = serializers.SerializerMethodField()
     plays = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
@@ -249,7 +250,7 @@ class SongSerializer(serializers.ModelSerializer):
         model = Song
         fields = [
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
-            'album', 'album_title', 'is_single', 'audio_file', 'cover_image',
+            'album', 'album_title', 'is_single', 'stream_url', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
             'likes_count', 'is_liked',
             'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
@@ -275,6 +276,60 @@ class SongSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.liked_by.filter(id=request.user.id).exists()
         return False
+
+    def get_stream_url(self, obj):
+        """
+        CRITICAL: ONLY RETURN UNWRAP LINKS HERE - NEVER DIRECT SIGNED URLS!
+        This endpoint MUST ONLY return short wrapper URLs that require unwrapping.
+        The actual signed streaming URLs are ONLY returned by the unwrap endpoint.
+        DO NOT CHANGE THIS - EVER!
+        """
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            # Generate unique short token (8 characters) and avoid collisions
+            import secrets
+            from uuid import uuid4
+            short_token = None
+            for _ in range(6):
+                candidate = secrets.token_urlsafe(6)[:8]
+                if not StreamAccess.objects.filter(short_token=candidate).exists():
+                    short_token = candidate
+                    break
+            if not short_token:
+                short_token = uuid4().hex[:8]
+
+            # Generate unique one-time play ID
+            unique_otplay_id = None
+            for _ in range(6):
+                candidate = secrets.token_urlsafe(16)
+                if not StreamAccess.objects.filter(unique_otplay_id=candidate).exists():
+                    unique_otplay_id = candidate
+                    break
+            if not unique_otplay_id:
+                unique_otplay_id = uuid4().hex
+
+            # Create StreamAccess record
+            StreamAccess.objects.create(
+                user=request.user,
+                song=obj,
+                short_token=short_token,
+                unique_otplay_id=unique_otplay_id
+            )
+            
+            # Return short URL (UNWRAP LINK ONLY - NOT THE FINAL SIGNED URL!)
+            from django.urls import reverse
+            short_path = reverse('stream-short', kwargs={'token': short_token})
+            
+            # Use request to get the origin URL (where the request is coming from)
+            request_obj = self.context.get('request')
+            if request_obj:
+                stream_url = request_obj.build_absolute_uri(short_path)
+            else:
+                stream_url = short_path
+            
+            return stream_url
+        
+        return None
 
 
 class SongUploadSerializer(serializers.Serializer):
