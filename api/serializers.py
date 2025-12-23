@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User,UserPlaylist, Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist
+from .models import User,UserPlaylist, Artist,EventPlaylist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -840,3 +840,12 @@ class SearchResultSerializer(serializers.Serializer):
                 'artist_name': obj.artist.name if obj.artist else None,
             }
         return {}
+
+
+class EventPlaylistSerializer(serializers.ModelSerializer):
+    """Serializer for EventPlaylist model"""
+    playlists = PlaylistSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = EventPlaylist
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']

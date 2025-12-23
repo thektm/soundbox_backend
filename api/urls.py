@@ -41,6 +41,7 @@ from .views import (
     PlaylistRecommendationLikeView,
     PlaylistRecommendationSaveView,
     SearchView,
+    EventPlaylistView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -129,6 +130,9 @@ urlpatterns = [
     
     # Search endpoint
     path('search/', SearchView.as_view(), name='search'),
+    
+    # Event Playlists
+    path('event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
     
     # User Playlist endpoints
     path('user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),

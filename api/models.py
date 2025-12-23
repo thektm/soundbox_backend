@@ -467,3 +467,30 @@ class RecommendedPlaylist(models.Model):
     def __str__(self):
         user_info = f"for {self.user.phone_number}" if self.user else "general"
         return f"{self.title} ({self.playlist_type}) {user_info}"
+
+
+class EventPlaylist(models.Model):
+    """Group of playlists for specific times of day (Morning, Evening, Night)"""
+    TIME_MORNING = 'morning'
+    TIME_EVENING = 'evening'
+    TIME_NIGHT = 'night'
+    
+    TIME_CHOICES = [
+        (TIME_MORNING, 'Morning'),
+        (TIME_EVENING, 'Evening'),
+        (TIME_NIGHT, 'Night'),
+    ]
+    
+    title = models.CharField(max_length=255)
+    time_of_day = models.CharField(max_length=20, choices=TIME_CHOICES)
+    playlists = models.ManyToManyField(Playlist, related_name='event_playlists', blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = "Event Playlist Group"
+        verbose_name_plural = "Event Playlist Groups"
+    
+    def __str__(self):
+        return f"{self.title} ({self.get_time_of_day_display()})"

@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist, RecommendedPlaylist
+from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist, RecommendedPlaylist, EventPlaylist
 
 User = get_user_model()
 
@@ -315,3 +315,30 @@ class RecommendedPlaylistAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'updated_at')
         }),
     )
+
+
+@admin.register(EventPlaylist)
+class EventPlaylistAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'time_of_day', 'playlists_count', 'created_at')
+    list_filter = ('time_of_day', 'created_at')
+    search_fields = ('title',)
+    autocomplete_fields = ['playlists']
+    readonly_fields = ('created_at', 'updated_at')
+    
+    fieldsets = (
+        ('Basic Info', {
+            'fields': ('title', 'time_of_day')
+        }),
+        ('Playlists', {
+            'fields': ('playlists',),
+            'description': 'Select playlists to include in this event group. You can create new playlists using the plus icon.'
+        }),
+        ('Metadata', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def playlists_count(self, obj):
+        return obj.playlists.count()
+    playlists_count.short_description = 'Playlists Count'

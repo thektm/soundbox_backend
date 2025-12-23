@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album,Playlist, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist
+from .models import User, Artist, Album,Playlist, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -25,6 +25,7 @@ from .serializers import (
     RecommendedPlaylistListSerializer,
     RecommendedPlaylistDetailSerializer,
     SearchResultSerializer,
+    EventPlaylistSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -2187,3 +2188,24 @@ class SearchView(APIView):
                 Q(description__icontains=q)
             )
         return admin_qs.order_by('-created_at')
+
+
+class EventPlaylistView(APIView):
+    """Return event playlist groups with all details."""
+    permission_classes = [permissions.AllowAny]
+    
+    def get(self, request):
+        queryset = EventPlaylist.objects.all().prefetch_related(
+            'playlists', 
+            'playlists__songs',
+            'playlists__songs__artist',
+            'playlists__genres',
+            'playlists__moods'
+        )
+        
+        time_of_day = request.query_params.get('time_of_day')
+        if time_of_day:
+            queryset = queryset.filter(time_of_day=time_of_day)
+            
+        serializer = EventPlaylistSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
