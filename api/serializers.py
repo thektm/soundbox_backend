@@ -130,11 +130,12 @@ class PopularArtistSerializer(ArtistSerializer):
     total_plays = serializers.IntegerField(read_only=True)
     total_likes = serializers.IntegerField(read_only=True)
     total_playlist_adds = serializers.IntegerField(read_only=True)
+    weekly_plays = serializers.IntegerField(read_only=True)
     score = serializers.IntegerField(read_only=True)
 
     class Meta(ArtistSerializer.Meta):
         fields = ArtistSerializer.Meta.fields + [
-            'total_plays', 'total_likes', 'total_playlist_adds', 'score'
+            'total_plays', 'total_likes', 'total_playlist_adds', 'weekly_plays', 'score'
         ]
 
 

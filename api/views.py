@@ -9,6 +9,7 @@ from .serializers import (
     RegisterSerializer,
     CustomTokenObtainPairSerializer,
     ArtistSerializer,
+    PopularArtistSerializer,
     AlbumSerializer,
     GenreSerializer,
     MoodSerializer,
@@ -1159,7 +1160,6 @@ class PopularArtistsView(generics.ListAPIView):
     """Return artists ordered by a popularity score (plays + likes + playlist adds)."""
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
-    from .serializers import PopularArtistSerializer
     serializer_class = PopularArtistSerializer
 
     def get_permissions(self):
@@ -1256,6 +1256,28 @@ class WeeklyTopSongsView(generics.ListAPIView):
         ).filter(
             weekly_plays__gt=0
         ).order_by('-weekly_plays', '-plays')
+        
+        return queryset.distinct()
+
+
+class WeeklyTopArtistsView(generics.ListAPIView):
+    """Return artists ordered by total play count of their songs in the last 7 days (Global)."""
+    serializer_class = PopularArtistSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        last_week = timezone.now() - timedelta(days=7)
+        # Filter artists whose songs have at least one play in the last week
+        # and annotate with the count of plays in that period
+        queryset = Artist.objects.annotate(
+            weekly_plays=Count(
+                'songs__play_counts', 
+                filter=Q(songs__play_counts__created_at__gte=last_week)
+            )
+        ).filter(
+            weekly_plays__gt=0
+        ).order_by('-weekly_plays')
         
         return queryset.distinct()
 

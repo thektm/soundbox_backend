@@ -31,6 +31,7 @@ from .views import (
     PopularArtistsView,
     PopularAlbumsView,
     WeeklyTopSongsView,
+    WeeklyTopArtistsView,
     PlaylistRecommendationsView,
     PlaylistRecommendationDetailView,
     PlaylistRecommendationLikeView,
@@ -83,6 +84,8 @@ urlpatterns = [
     path('users/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
     # Weekly Top Songs Global
     path('users/weekly-top-songs-global/', WeeklyTopSongsView.as_view(), name='user_weekly_top_songs_global'),
+    # Weekly Top Artists Global
+    path('users/weekly-top-artists-global/', WeeklyTopArtistsView.as_view(), name='user_weekly_top_artists_global'),
     # Playlist recommendations - auto-generated based on user activity
     path('users/playlist-recommendations/', PlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
     path('users/playlist-recommendations/<str:unique_id>/', PlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),
