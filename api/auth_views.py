@@ -163,16 +163,21 @@ def issue_tokens_for_user(user: User, request) -> dict:
     
     # Extract device info
     device_name, device_type, os_info = get_device_info(request)
-    
-    RefreshToken.objects.create(
-        user=user, 
-        token_hash=token_hash, 
-        user_agent=request.META.get('HTTP_USER_AGENT', ''), 
-        ip=request.META.get('REMOTE_ADDR', ''), 
-        expires_at=expires_at,
+    ua = request.META.get('HTTP_USER_AGENT', '')
+    ip = request.META.get('REMOTE_ADDR', '')
+
+    RefreshToken.objects.update_or_create(
+        user=user,
+        user_agent=ua,
+        ip=ip,
         device_name=device_name,
         device_type=device_type,
-        os_info=os_info
+        os_info=os_info,
+        defaults={
+            'token_hash': token_hash,
+            'expires_at': expires_at,
+            'revoked_at': None
+        }
     )
     # update last_login
     user.last_login_at = timezone.now()
@@ -418,26 +423,25 @@ class TokenRefreshView(APIView):
         # rotate: create new refresh and store
         new_refresh = SimpleRefreshToken.for_user(user)
         new_access = new_refresh.access_token
-        # store new refresh hashed and revoke old ones matching token string
+        # store new refresh hashed and update existing session for this device
         try:
-            # revoke matching stored token(s)
-            hashed = make_password(refresh_token)
-            RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
+            # Extract device info
+            device_name, device_type, os_info = get_device_info(request)
+            ua = request.META.get('HTTP_USER_AGENT', '')
+            ip = request.META.get('REMOTE_ADDR', '')
             
-            # Extract device info from request data if available
-            device_name = request.data.get('device_name', '')
-            device_type = request.data.get('device_type', '')
-            os_info = request.data.get('os_info', '')
-            
-            RefreshToken.objects.create(
-                user=user, 
-                token_hash=make_password(str(new_refresh)), 
-                user_agent=request.META.get('HTTP_USER_AGENT', ''), 
-                ip=request.META.get('REMOTE_ADDR', ''), 
-                expires_at=timezone.now()+timedelta(days=30),
+            RefreshToken.objects.update_or_create(
+                user=user,
+                user_agent=ua,
+                ip=ip,
                 device_name=device_name,
                 device_type=device_type,
-                os_info=os_info
+                os_info=os_info,
+                defaults={
+                    'token_hash': make_password(str(new_refresh)),
+                    'expires_at': timezone.now() + timedelta(days=30),
+                    'revoked_at': None
+                }
             )
         except Exception:
             pass
