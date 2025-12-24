@@ -8,22 +8,18 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
 class UserSerializer(serializers.ModelSerializer):
-    followers = serializers.SerializerMethodField()
-    followings = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all(), many=True, required=False)
-    playlists = serializers.JSONField()
-    settings = serializers.JSONField()
+    followers_count = serializers.IntegerField(source='followers.count', read_only=True)
+    following_count = serializers.IntegerField(source='followings.count', read_only=True)
+    user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
+    
     class Meta:
         model = get_user_model()
         fields = [
             'id', 'phone_number', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
-            'followers', 'followings', 'playlists', 'plan', 'settings'
+            'followers_count', 'following_count', 'user_playlists_count', 'plan'
         ]
-        read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined', 'followers']
-
-    def get_followers(self, obj):
-        # return minimal follower info: id and phone_number
-        return [{'id': u.id, 'phone_number': u.phone_number} for u in obj.followers.all()]
+        read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined', 'followers_count', 'following_count', 'user_playlists_count']
 
 
 class RegisterSerializer(serializers.ModelSerializer):
