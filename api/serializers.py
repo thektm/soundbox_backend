@@ -297,10 +297,11 @@ class SongSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
 
     def get_plays(self, obj):
+        # Return the sum of the legacy 'plays' field and the actual PlayCount records
         try:
-            return obj.play_counts.count()
+            return (obj.plays or 0) + obj.play_counts.count()
         except Exception:
-            return 0
+            return obj.plays or 0
 
     def get_likes_count(self, obj):
         return obj.liked_by.count()
@@ -569,10 +570,11 @@ class SongStreamSerializer(serializers.ModelSerializer):
         return None
 
     def get_plays(self, obj):
+        # Return the sum of the legacy 'plays' field and the actual PlayCount records
         try:
-            return obj.play_counts.count()
+            return (obj.plays or 0) + obj.play_counts.count()
         except Exception:
-            return 0
+            return obj.plays or 0
 
 
 class UserPlaylistSerializer(serializers.ModelSerializer):
@@ -837,9 +839,12 @@ class SearchResultSerializer(serializers.Serializer):
                 from .serializers import SongStreamSerializer
                 stream_url = SongStreamSerializer(obj, context=self.context).data.get('stream_url')
 
+            # Calculate total plays (legacy field + PlayCount records)
+            total_plays = (obj.plays or 0) + obj.play_counts.count()
+
             return {
                 'duration_seconds': obj.duration_seconds,
-                'plays': obj.plays,
+                'plays': total_plays,
                 'language': obj.language,
                 'artist_name': obj.artist.name if obj.artist else None,
                 'album_name': obj.album.title if obj.album else None,
