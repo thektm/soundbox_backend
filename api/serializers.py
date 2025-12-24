@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    User, UserPlaylist, Artist, EventPlaylist, Album, Genre, Mood, Tag, 
+    User, UserPlaylist, Artist,RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting
 )
