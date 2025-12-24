@@ -121,7 +121,13 @@ class Artist(models.Model):
     user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='artist_profile')
     bio = models.TextField(blank=True)
     profile_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for profile image")
+    banner_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for banner image")
     verified = models.BooleanField(default=False)
+    
+    # Social
+    followers = models.ManyToManyField(User, related_name='followed_artists', blank=True)
+    followings = models.ManyToManyField('self', symmetrical=False, related_name='artist_followers', blank=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -129,6 +135,22 @@ class Artist(models.Model):
     
     def __str__(self):
         return self.name
+
+
+class ArtistMonthlyListener(models.Model):
+    """Track unique listeners per artist to calculate monthly listeners (last 28 days)"""
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name='monthly_listener_records')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='artist_listened_to')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('artist', 'user')
+        indexes = [
+            models.Index(fields=['artist', 'updated_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.phone_number} listened to {self.artist.name} (last: {self.updated_at})"
 
 
 class Album(models.Model):

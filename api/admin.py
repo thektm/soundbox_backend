@@ -2,7 +2,8 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from .models import (
     Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
-    UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection
+    UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
+    ArtistMonthlyListener
 )
 
 User = get_user_model()
@@ -21,17 +22,29 @@ class ArtistAdmin(admin.ModelAdmin):
     list_filter = ('verified', 'created_at')
     search_fields = ('name', 'user__phone_number')
     readonly_fields = ('created_at',)
+    filter_horizontal = ('followers', 'followings')
     fieldsets = (
         ('Basic Info', {
             'fields': ('name', 'user', 'bio', 'verified')
         }),
         ('Media', {
-            'fields': ('profile_image',)
+            'fields': ('profile_image', 'banner_image')
+        }),
+        ('Social', {
+            'fields': ('followers', 'followings')
         }),
         ('Metadata', {
             'fields': ('created_at',)
         }),
     )
+
+
+@admin.register(ArtistMonthlyListener)
+class ArtistMonthlyListenerAdmin(admin.ModelAdmin):
+    list_display = ('id', 'artist', 'user', 'updated_at')
+    list_filter = ('updated_at', 'artist')
+    search_fields = ('artist__name', 'user__phone_number')
+    readonly_fields = ('updated_at',)
 
 
 @admin.register(Album)

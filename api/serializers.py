@@ -121,11 +121,38 @@ class ArtistSerializer(serializers.ModelSerializer):
         required=False, 
         allow_null=True
     )
+    followers_count = serializers.SerializerMethodField()
+    followings_count = serializers.SerializerMethodField()
+    monthly_listeners_count = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
     
     class Meta:
         model = Artist
-        fields = ['id', 'name', 'user_id', 'bio', 'profile_image', 'verified', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = [
+            'id', 'name', 'user_id', 'bio', 'profile_image', 'banner_image', 
+            'verified', 'followers_count', 'followings_count', 
+            'monthly_listeners_count', 'is_following', 'created_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'followers_count', 'followings_count', 'monthly_listeners_count', 'is_following']
+
+    def get_followers_count(self, obj):
+        return obj.followers.count()
+
+    def get_followings_count(self, obj):
+        return obj.followings.count()
+
+    def get_monthly_listeners_count(self, obj):
+        from django.utils import timezone
+        from datetime import timedelta
+        # Count unique users who listened in the last 28 days
+        cutoff = timezone.now() - timedelta(days=28)
+        return obj.monthly_listener_records.filter(updated_at__gte=cutoff).count()
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.followers.filter(id=request.user.id).exists()
+        return False
 
 
 class PopularArtistSerializer(ArtistSerializer):

@@ -5,7 +5,8 @@ from rest_framework import status
 from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist, Genre, Mood, Tag, SubGenre, Song, 
-    StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection
+    StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
+    ArtistMonthlyListener
 )
 from .serializers import (
     UserSerializer,
@@ -1242,6 +1243,13 @@ class PlayCountView(APIView):
             # Mark as used
             stream_access.one_time_used = True
             stream_access.save(update_fields=['one_time_used'])
+
+            # Update monthly listener record for the artist
+            if song.artist:
+                ArtistMonthlyListener.objects.update_or_create(
+                    artist=song.artist,
+                    user=request.user
+                )
 
             return Response({'message': 'Play count recorded successfully'})
 
