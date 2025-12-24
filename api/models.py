@@ -443,6 +443,7 @@ class RecommendedPlaylist(models.Model):
     # User interactions
     liked_by = models.ManyToManyField(User, blank=True, related_name='liked_recommended_playlists')
     saved_by = models.ManyToManyField(User, blank=True, related_name='saved_recommended_playlists')
+    viewed_by = models.ManyToManyField(User, blank=True, related_name='viewed_recommended_playlists')
     views = models.PositiveIntegerField(default=0, help_text="Number of times this playlist was viewed")
     
     # Metadata for ranking/scoring

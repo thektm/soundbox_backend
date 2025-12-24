@@ -299,7 +299,7 @@ class RecommendedPlaylistAdmin(admin.ModelAdmin):
     list_filter = ('playlist_type', 'created_at', 'user')
     search_fields = ('title', 'unique_id', 'user__phone_number')
     readonly_fields = ('created_at', 'updated_at', 'views')
-    filter_horizontal = ('songs', 'liked_by', 'saved_by')
+    filter_horizontal = ('songs', 'liked_by', 'saved_by', 'viewed_by')
     readonly_fields = ('created_at', 'updated_at', 'views', 'song_order')
     fieldsets = (
         ('Basic Info', {
@@ -312,7 +312,7 @@ class RecommendedPlaylistAdmin(admin.ModelAdmin):
             'fields': ('relevance_score', 'match_percentage', 'views', 'expires_at')
         }),
         ('User Interactions', {
-            'fields': ('liked_by', 'saved_by')
+            'fields': ('liked_by', 'saved_by', 'viewed_by')
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at')

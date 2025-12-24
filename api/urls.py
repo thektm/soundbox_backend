@@ -8,12 +8,18 @@ from .views import (
     UserProfileView,
     R2UploadView,
     SongUploadView,
-    ArtistViewSet,
-    AlbumViewSet,
-    GenreViewSet,
-    MoodViewSet,
-    TagViewSet,
-    SubGenreViewSet,
+    ArtistListView,
+    ArtistDetailView,
+    AlbumListView,
+    AlbumDetailView,
+    GenreListView,
+    GenreDetailView,
+    MoodListView,
+    MoodDetailView,
+    TagListView,
+    TagDetailView,
+    SubGenreListView,
+    SubGenreDetailView,
     SongListView,
     SongDetailView,
     SongLikeView,
@@ -58,19 +64,11 @@ from .auth_views import (
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
-# Create router for viewsets
+# Create router for remaining viewsets (if any)
 router = DefaultRouter()
-router.register(r'artists', ArtistViewSet, basename='artist')
-router.register(r'albums', AlbumViewSet, basename='album')
-router.register(r'genres', GenreViewSet, basename='genre')
-router.register(r'moods', MoodViewSet, basename='mood')
-router.register(r'tags', TagViewSet, basename='tag')
-router.register(r'subgenres', SubGenreViewSet, basename='subgenre')
 
 urlpatterns = [
-    
-
-    #auth endpoints
+    # --- Authentication Endpoints ---
     path('auth/register/', AuthRegisterView.as_view(), name='auth_register'),
     path('auth/verify/', AuthVerifyView.as_view(), name='auth_verify'),
     path('auth/login/password/', LoginPasswordView.as_view(), name='auth_login_password'),
@@ -81,71 +79,80 @@ urlpatterns = [
     path('auth/token/refresh/', LocalTokenRefreshView.as_view(), name='auth_token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth_logout'),
     
-    # User endpoints
+    # --- User & Profile Endpoints ---
     path('users/profile/', UserProfileView.as_view(), name='user_profile'),
     path('users/songs/recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
-    # Latest releases (newest first) - paginated with `next` link
     path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
-    # Popular artists ordered by plays + likes + playlist adds
     path('users/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
-    # Popular albums based on song plays and likes + album likes
     path('users/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
-    # Weekly Top Songs Global
+    
+    # --- Global Charts & Top Lists ---
     path('users/weekly-top-songs-global/', WeeklyTopSongsView.as_view(), name='user_weekly_top_songs_global'),
-    # Weekly Top Artists Global
     path('users/weekly-top-artists-global/', WeeklyTopArtistsView.as_view(), name='user_weekly_top_artists_global'),
-    # Weekly Top Albums Global
     path('users/weekly-top-albums-global/', WeeklyTopAlbumsView.as_view(), name='user_weekly_top_albums_global'),
-    # Daily Top Songs Global
     path('users/daily-top-songs-global/', DailyTopSongsView.as_view(), name='user_daily_top_songs_global'),
-    # Daily Top Artists Global
     path('users/daily-top-artists-global/', DailyTopArtistsView.as_view(), name='user_daily_top_artists_global'),
-    # Daily Top Albums Global
     path('users/daily-top-albums-global/', DailyTopAlbumsView.as_view(), name='user_daily_top_albums_global'),
-    # Playlist recommendations - auto-generated based on user activity
+    
+    # --- Recommendations & Discovery ---
     path('users/playlist-recommendations/', PlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
     path('users/playlist-recommendations/<str:unique_id>/', PlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),
     path('users/playlist-recommendations/<str:unique_id>/like/', PlaylistRecommendationLikeView.as_view(), name='user_playlist_recommendation_like'),
     path('users/playlist-recommendations/<str:unique_id>/save/', PlaylistRecommendationSaveView.as_view(), name='user_playlist_recommendation_save'),
     
-    # Song endpoints
+    # --- Artist Endpoints ---
+    path('artists/', ArtistListView.as_view(), name='artist_list'),
+    path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
+
+    # --- Album Endpoints ---
+    path('albums/', AlbumListView.as_view(), name='album_list'),
+    path('albums/<int:pk>/', AlbumDetailView.as_view(), name='album_detail'),
+
+    # --- Genre & SubGenre Endpoints ---
+    path('genres/', GenreListView.as_view(), name='genre_list'),
+    path('genres/<int:pk>/', GenreDetailView.as_view(), name='genre_detail'),
+    path('subgenres/', SubGenreListView.as_view(), name='subgenre_list'),
+    path('subgenres/<int:pk>/', SubGenreDetailView.as_view(), name='subgenre_detail'),
+
+    # --- Mood & Tag Endpoints ---
+    path('moods/', MoodListView.as_view(), name='mood_list'),
+    path('moods/<int:pk>/', MoodDetailView.as_view(), name='mood_detail'),
+    path('tags/', TagListView.as_view(), name='tag_list'),
+    path('tags/<int:pk>/', TagDetailView.as_view(), name='tag_detail'),
+
+    # --- Song Endpoints ---
     path('songs/', SongListView.as_view(), name='song_list'),
     path('songs/<int:pk>/', SongDetailView.as_view(), name='song_detail'),
     path('songs/<int:pk>/like/', SongLikeView.as_view(), name='song_like'),
     path('songs/<int:pk>/increment_plays/', SongIncrementPlaysView.as_view(), name='song_increment_plays'),
     
-    # Upload endpoints
+    # --- Media Upload Endpoints ---
     path('upload/', R2UploadView.as_view(), name='r2_upload'),
     path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
     
-    # Stream endpoints
+    # --- Streaming & Playback Endpoints ---
     path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),
     path('stream/unwrap/<str:token>/', UnwrapStreamView.as_view(), name='unwrap-stream'),
-        path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
-        path('stream/access/<str:token>/',
-            # one-time access endpoint (redirects once to presigned R2 URL)
-            __import__('api.views', fromlist=['StreamAccessView']).StreamAccessView.as_view(),
-            name='stream-access'),
+    path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
+    path('stream/access/<str:token>/',
+        __import__('api.views', fromlist=['StreamAccessView']).StreamAccessView.as_view(),
+        name='stream-access'),
     
-    # Play count endpoint
+    # --- Analytics & Search ---
     path('play/count/', PlayCountView.as_view(), name='play_count'),
-    
-    # Search endpoint
     path('search/', SearchView.as_view(), name='search'),
     
-    # Event Playlists
+    # --- Curated Content Endpoints ---
     path('event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
-    
-    # Search Sections
     path('search-sections/', SearchSectionListView.as_view(), name='search_section_list'),
     path('search-sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
     
-    # User Playlist endpoints
+    # --- User Playlist Endpoints ---
     path('user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
     path('user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
     path('user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
     path('user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
     
-    # Include router URLs
+    # Include router URLs (if any)
     path('', include(router.urls)),
 ]

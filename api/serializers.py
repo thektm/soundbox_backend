@@ -693,7 +693,7 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
         read_only_fields = fields
     
     def get_songs(self, obj):
-        """Return all songs without stream links, only cover images"""
+        """Return all songs with stream links"""
         # Prefer explicit ordering stored in `song_order` if available
         order = None
         try:
@@ -701,7 +701,7 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
         except Exception:
             order = None
 
-        song_qs = obj.songs.all()
+        song_qs = obj.songs.all().select_related('artist', 'album')
         song_map = {s.id: s for s in song_qs}
 
         ordered_songs = []
@@ -719,32 +719,8 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
             remaining = [s for s in song_qs if s.id not in set(order)]
             ordered_songs.extend(remaining)
 
-        song_data = []
-        for song in ordered_songs:
-            data = {
-                'id': song.id,
-                'title': song.title,
-                'display_title': song.display_title,
-                'artist': {
-                    'id': song.artist.id,
-                    'name': song.artist.name,
-                    'profile_image': song.artist.profile_image
-                } if song.artist else None,
-                'album': {
-                    'id': song.album.id,
-                    'title': song.album.title,
-                    'cover_image': song.album.cover_image
-                } if song.album else None,
-                'cover_image': song.cover_image,
-                'duration_seconds': song.duration_seconds,
-                'duration_display': song.duration_display,
-                'plays': song.plays,
-                'release_date': song.release_date,
-                'language': song.language,
-            }
-            song_data.append(data)
-
-        return song_data
+        # Use SongStreamSerializer to include stream_url
+        return SongStreamSerializer(ordered_songs, many=True, context=self.context).data
     
     def get_is_liked(self, obj):
         request = self.context.get('request')

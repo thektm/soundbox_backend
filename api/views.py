@@ -391,76 +391,412 @@ class SongUploadView(APIView):
             )
 
 
-class ArtistViewSet(viewsets.ModelViewSet):
-    """ViewSet for Artist CRUD operations"""
-    queryset = Artist.objects.all()
-    serializer_class = ArtistSerializer
-    permission_classes = [IsAuthenticated]
-    
+class ArtistListView(APIView):
+    """List and Create Artists"""
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        artists = Artist.objects.all()
+        serializer = ArtistSerializer(artists, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = ArtistSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AlbumViewSet(viewsets.ModelViewSet):
-    """ViewSet for Album CRUD operations"""
-    queryset = Album.objects.all()
-    serializer_class = AlbumSerializer
-    permission_classes = [IsAuthenticated]
-    
+class ArtistDetailView(APIView):
+    """Retrieve, Update, and Delete Artist"""
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return Artist.objects.get(pk=pk)
+        except Artist.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        artist = self.get_object(pk)
+        if not artist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ArtistSerializer(artist, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        artist = self.get_object(pk)
+        if not artist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ArtistSerializer(artist, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        artist = self.get_object(pk)
+        if not artist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ArtistSerializer(artist, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        artist = self.get_object(pk)
+        if not artist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        artist.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class GenreViewSet(viewsets.ModelViewSet):
-    """ViewSet for Genre CRUD operations"""
-    queryset = Genre.objects.all()
-    serializer_class = GenreSerializer
-    permission_classes = [IsAuthenticated]
-    
+class AlbumListView(APIView):
+    """List and Create Albums"""
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        albums = Album.objects.all()
+        serializer = AlbumSerializer(albums, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = AlbumSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MoodViewSet(viewsets.ModelViewSet):
-    """ViewSet for Mood CRUD operations"""
-    queryset = Mood.objects.all()
-    serializer_class = MoodSerializer
-    permission_classes = [IsAuthenticated]
-    
+class AlbumDetailView(APIView):
+    """Retrieve, Update, and Delete Album"""
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return Album.objects.get(pk=pk)
+        except Album.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        album = self.get_object(pk)
+        if not album:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AlbumSerializer(album, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        album = self.get_object(pk)
+        if not album:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AlbumSerializer(album, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        album = self.get_object(pk)
+        if not album:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AlbumSerializer(album, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        album = self.get_object(pk)
+        if not album:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        album.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class TagViewSet(viewsets.ModelViewSet):
-    """ViewSet for Tag CRUD operations"""
-    queryset = Tag.objects.all()
-    serializer_class = TagSerializer
-    permission_classes = [IsAuthenticated]
-    
+class GenreListView(APIView):
+    """List and Create Genres"""
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        genres = Genre.objects.all()
+        serializer = GenreSerializer(genres, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = GenreSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class SubGenreViewSet(viewsets.ModelViewSet):
-    """ViewSet for SubGenre CRUD operations"""
-    queryset = SubGenre.objects.all()
-    serializer_class = SubGenreSerializer
-    permission_classes = [IsAuthenticated]
-    
+class GenreDetailView(APIView):
+    """Retrieve, Update, and Delete Genre"""
     def get_permissions(self):
-        if self.action == 'list' or self.action == 'retrieve':
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return Genre.objects.get(pk=pk)
+        except Genre.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        genre = self.get_object(pk)
+        if not genre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = GenreSerializer(genre, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        genre = self.get_object(pk)
+        if not genre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = GenreSerializer(genre, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        genre = self.get_object(pk)
+        if not genre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = GenreSerializer(genre, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        genre = self.get_object(pk)
+        if not genre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        genre.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MoodListView(APIView):
+    """List and Create Moods"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        moods = Mood.objects.all()
+        serializer = MoodSerializer(moods, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = MoodSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MoodDetailView(APIView):
+    """Retrieve, Update, and Delete Mood"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return Mood.objects.get(pk=pk)
+        except Mood.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        mood = self.get_object(pk)
+        if not mood:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MoodSerializer(mood, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        mood = self.get_object(pk)
+        if not mood:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MoodSerializer(mood, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        mood = self.get_object(pk)
+        if not mood:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MoodSerializer(mood, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        mood = self.get_object(pk)
+        if not mood:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        mood.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TagListView(APIView):
+    """List and Create Tags"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        tags = Tag.objects.all()
+        serializer = TagSerializer(tags, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = TagSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TagDetailView(APIView):
+    """Retrieve, Update, and Delete Tag"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return Tag.objects.get(pk=pk)
+        except Tag.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        tag = self.get_object(pk)
+        if not tag:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = TagSerializer(tag, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        tag = self.get_object(pk)
+        if not tag:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = TagSerializer(tag, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        tag = self.get_object(pk)
+        if not tag:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = TagSerializer(tag, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        tag = self.get_object(pk)
+        if not tag:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        tag.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SubGenreListView(APIView):
+    """List and Create SubGenres"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get(self, request):
+        subgenres = SubGenre.objects.all()
+        serializer = SubGenreSerializer(subgenres, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = SubGenreSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class SubGenreDetailView(APIView):
+    """Retrieve, Update, and Delete SubGenre"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return SubGenre.objects.get(pk=pk)
+        except SubGenre.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        subgenre = self.get_object(pk)
+        if not subgenre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SubGenreSerializer(subgenre, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        subgenre = self.get_object(pk)
+        if not subgenre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SubGenreSerializer(subgenre, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        subgenre = self.get_object(pk)
+        if not subgenre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SubGenreSerializer(subgenre, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        subgenre = self.get_object(pk)
+        if not subgenre:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        subgenre.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SongListView(generics.ListCreateAPIView):
@@ -2027,8 +2363,10 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         
-        # Increment view count
+        # Increment view count and record user
         instance.views += 1
+        if request.user.is_authenticated:
+            instance.viewed_by.add(request.user)
         instance.save(update_fields=['views'])
         
         serializer = self.get_serializer(instance)
