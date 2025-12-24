@@ -50,6 +50,7 @@ from .views import (
     EventPlaylistView,
     SearchSectionListView,
     SearchSectionDetailView,
+    PlaylistLikeView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -144,6 +145,7 @@ urlpatterns = [
     
     # --- Curated Content Endpoints ---
     path('event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
+    path('playlists/<int:pk>/like/', PlaylistLikeView.as_view(), name='playlist_like'),
     path('search-sections/', SearchSectionListView.as_view(), name='search_section_list'),
     path('search-sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
     

@@ -412,6 +412,29 @@ class ArtistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class PlaylistLikeView(APIView):
+    """Like or unlike a playlist (Admin/System/Audience)"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            playlist = Playlist.objects.get(pk=pk)
+        except Playlist.DoesNotExist:
+            return Response({"detail": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        if playlist.liked_by.filter(id=request.user.id).exists():
+            playlist.liked_by.remove(request.user)
+            liked = False
+        else:
+            playlist.liked_by.add(request.user)
+            liked = True
+            
+        return Response({
+            "liked": liked,
+            "likes_count": playlist.liked_by.count()
+        })
+
+
 class ArtistDetailView(APIView):
     """Retrieve, Update, and Delete Artist"""
     def get_permissions(self):
@@ -429,8 +452,119 @@ class ArtistDetailView(APIView):
         artist = self.get_object(pk)
         if not artist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = ArtistSerializer(artist, context={'request': request})
-        return Response(serializer.data)
+        
+        # Pagination params
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 10))
+        offset = (page - 1) * page_size
+        
+        # Check if user wants a specific list (paginated)
+        list_type = request.query_params.get('type')
+        
+        if list_type == 'top_songs':
+            qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).annotate(
+                total_plays=Coalesce(F('plays'), 0) + Count('play_counts')
+            ).order_by('-total_plays')
+            items = qs[offset:offset + page_size]
+            data = SongStreamSerializer(items, many=True, context={'request': request}).data
+            return Response({
+                'items': data,
+                'total': qs.count(),
+                'page': page,
+                'has_next': qs.count() > offset + page_size
+            })
+            
+        if list_type == 'albums':
+            qs = Album.objects.filter(artist=artist).order_by('-release_date')
+            items = qs[offset:offset + page_size]
+            data = AlbumSerializer(items, many=True, context={'request': request}).data
+            return Response({
+                'items': data,
+                'total': qs.count(),
+                'page': page,
+                'has_next': qs.count() > offset + page_size
+            })
+            
+        if list_type == 'latest_songs':
+            qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).order_by('-release_date', '-created_at')
+            items = qs[offset:offset + page_size]
+            data = SongStreamSerializer(items, many=True, context={'request': request}).data
+            return Response({
+                'items': data,
+                'total': qs.count(),
+                'page': page,
+                'has_next': qs.count() > offset + page_size
+            })
+
+        # Default: Return full detail view
+        # Basic artist data
+        artist_data = ArtistSerializer(artist, context={'request': request}).data
+        
+        # 1. Top Songs (preview)
+        top_songs_qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).annotate(
+            total_plays=Coalesce(F('plays'), 0) + Count('play_counts')
+        ).order_by('-total_plays')
+        top_songs_data = SongStreamSerializer(top_songs_qs[:5], many=True, context={'request': request}).data
+        
+        # 2. Albums (preview)
+        albums_qs = Album.objects.filter(artist=artist).order_by('-release_date')
+        albums_data = AlbumSerializer(albums_qs[:5], many=True, context={'request': request}).data
+        
+        # 3. Latest Songs (preview)
+        latest_songs_qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).order_by('-release_date', '-created_at')
+        latest_songs_data = SongStreamSerializer(latest_songs_qs[:5], many=True, context={'request': request}).data
+        
+        # 4. Discovered On
+        discovered_on = []
+        
+        # Admin playlists
+        admin_playlists = Playlist.objects.filter(songs__artist=artist, created_by=Playlist.CREATED_BY_ADMIN).distinct()
+        # System/Audience playlists with likes
+        other_playlists = Playlist.objects.filter(
+            songs__artist=artist,
+            created_by__in=[Playlist.CREATED_BY_SYSTEM, Playlist.CREATED_BY_AUDIENCE]
+        ).annotate(likes_count=Count('liked_by')).filter(likes_count__gt=0).distinct()
+        # Public UserPlaylists with likes
+        user_playlists = UserPlaylist.objects.filter(songs__artist=artist, public=True).annotate(likes_count=Count('liked_by')).filter(likes_count__gt=0).distinct()
+        
+        # Credited songs
+        credited_songs = Song.objects.filter(
+            Q(featured_artists__icontains=artist.name) |
+            Q(producers__icontains=artist.name) |
+            Q(composers__icontains=artist.name) |
+            Q(lyricists__icontains=artist.name)
+        ).exclude(artist=artist).filter(status=Song.STATUS_PUBLISHED).distinct()
+        
+        for p in admin_playlists:
+            discovered_on.append({'type': 'playlist', 'id': p.id, 'title': p.title, 'image': p.cover_image, 'source': 'admin'})
+        for p in other_playlists:
+            discovered_on.append({'type': 'playlist', 'id': p.id, 'title': p.title, 'image': p.cover_image, 'source': p.created_by})
+        for p in user_playlists:
+            discovered_on.append({'type': 'user_playlist', 'id': p.id, 'title': p.title, 'image': None, 'source': 'user'})
+        for s in credited_songs:
+            discovered_on.append({'type': 'song', 'id': s.id, 'title': s.title, 'image': s.cover_image, 'artist': s.artist.name if s.artist else None})
+
+        base_url = request.build_absolute_uri(request.path)
+        
+        return Response({
+            'artist': artist_data,
+            'top_songs': {
+                'items': top_songs_data,
+                'total': top_songs_qs.count(),
+                'next_page_link': f"{base_url}?type=top_songs&page=2" if top_songs_qs.count() > 5 else None
+            },
+            'albums': {
+                'items': albums_data,
+                'total': albums_qs.count(),
+                'next_page_link': f"{base_url}?type=albums&page=2" if albums_qs.count() > 5 else None
+            },
+            'latest_songs': {
+                'items': latest_songs_data,
+                'total': latest_songs_qs.count(),
+                'next_page_link': f"{base_url}?type=latest_songs&page=2" if latest_songs_qs.count() > 5 else None
+            },
+            'discovered_on': discovered_on[:10]
+        })
 
     def put(self, request, pk):
         artist = self.get_object(pk)

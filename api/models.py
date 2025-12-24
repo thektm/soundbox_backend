@@ -360,6 +360,9 @@ class Playlist(models.Model):
     # Songs in the playlist
     songs = models.ManyToManyField(Song, blank=True, related_name='playlists')
 
+    # Likes
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_admin_playlists')
+
     class Meta:
         ordering = ['-created_at']
 
