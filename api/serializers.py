@@ -1,10 +1,20 @@
 from rest_framework import serializers
 from .models import (
     User, UserPlaylist, Artist, EventPlaylist, Album, Genre, Mood, Tag, 
-    SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection
+    SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
+    NotificationSetting
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+
+class NotificationSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NotificationSetting
+        fields = [
+            'new_song_followed_artists', 'new_album_followed_artists', 
+            'new_playlist', 'new_likes', 'new_follower', 'system_notifications'
+        ]
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -12,6 +22,7 @@ class UserSerializer(serializers.ModelSerializer):
     following_count = serializers.IntegerField(source='followings.count', read_only=True)
     user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
     recently_played = serializers.SerializerMethodField()
+    notification_setting = NotificationSettingSerializer(read_only=True)
     
     class Meta:
         model = get_user_model()
@@ -19,9 +30,25 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'phone_number', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
             'followers_count', 'following_count', 'user_playlists_count', 
-            'recently_played', 'plan'
+            'recently_played', 'notification_setting', 'plan'
         ]
-        read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined', 'followers_count', 'following_count', 'user_playlists_count']
+        read_only_fields = [
+            'id', 'is_active', 'is_staff', 'date_joined', 
+            'followers_count', 'following_count', 'user_playlists_count',
+            'notification_setting'
+        ]
+
+    def update(self, instance, validated_data):
+        # Handle nested notification_setting update
+        notification_data = self.context['request'].data.get('notification_setting')
+        if notification_data:
+            # Ensure the user has a notification setting record
+            notification_setting, created = NotificationSetting.objects.get_or_create(user=instance)
+            ns_serializer = NotificationSettingSerializer(notification_setting, data=notification_data, partial=True)
+            if ns_serializer.is_valid():
+                ns_serializer.save()
+        
+        return super().update(instance, validated_data)
 
     def get_recently_played(self, obj):
         # Get unique songs recently played by this user, ordered by latest play

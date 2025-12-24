@@ -75,6 +75,38 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.phone_number
 
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        super().save(*args, **kwargs)
+        if is_new:
+            NotificationSetting.objects.get_or_create(user=self)
+
+
+class NotificationSetting(models.Model):
+    """User notification preferences"""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='notification_setting')
+    
+    # 1. New song from followed artists (Default: ON)
+    new_song_followed_artists = models.BooleanField(default=True)
+    
+    # 2. New album from followed artists (Default: ON)
+    new_album_followed_artists = models.BooleanField(default=True)
+    
+    # 3. New playlist (Default: OFF)
+    new_playlist = models.BooleanField(default=False)
+    
+    # 4. New likes (Default: ON) - (Comments removed as per request)
+    new_likes = models.BooleanField(default=True)
+    
+    # 5. New follower (Default: ON)
+    new_follower = models.BooleanField(default=True)
+    
+    # 6. System notifications / App updates (Default: ON)
+    system_notifications = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"Notification settings for {self.user.phone_number}"
+
 
 class OtpCode(models.Model):
     PURPOSE_VERIFY = 'verify_account'

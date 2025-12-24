@@ -6,6 +6,7 @@ from .views import (
     CustomTokenObtainPairView,
     CustomTokenRefreshView,
     UserProfileView,
+    NotificationSettingUpdateView,
     MyLibraryView,
     R2UploadView,
     SongUploadView,
@@ -84,6 +85,7 @@ urlpatterns = [
     
     # --- User & Profile Endpoints ---
     path('users/profile/', UserProfileView.as_view(), name='user_profile'),
+    path('users/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
     path('users/my-library/', MyLibraryView.as_view(), name='my_library'),
     path('users/songs/recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
     path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),

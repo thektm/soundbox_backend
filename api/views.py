@@ -4,12 +4,12 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
 from .models import (
-    User, Artist, Album, Playlist, Genre, Mood, Tag, SubGenre, Song, 
+    User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory
 )
 from .serializers import (
-    UserSerializer,
+    UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
     RegisterSerializer,
     CustomTokenObtainPairSerializer,
     ArtistSerializer,
@@ -85,6 +85,32 @@ class UserProfileView(APIView):
 
     def patch(self, request):
         serializer = UserSerializer(request.user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class NotificationSettingUpdateView(APIView):
+    """Update User Notification Settings"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        setting, created = NotificationSetting.objects.get_or_create(user=request.user)
+        serializer = NotificationSettingSerializer(setting)
+        return Response(serializer.data)
+
+    def put(self, request):
+        setting, created = NotificationSetting.objects.get_or_create(user=request.user)
+        serializer = NotificationSettingSerializer(setting, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request):
+        setting, created = NotificationSetting.objects.get_or_create(user=request.user)
+        serializer = NotificationSettingSerializer(setting, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
