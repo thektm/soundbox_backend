@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import User,UserPlaylist, Artist,EventPlaylist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist
+from .models import (
+    User, UserPlaylist, Artist, EventPlaylist, Album, Genre, Mood, Tag, 
+    SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection
+)
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -849,3 +852,34 @@ class EventPlaylistSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventPlaylist
         fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+
+
+class SearchSectionSerializer(serializers.ModelSerializer):
+    """Serializer for SearchSection model"""
+    songs = SongSerializer(many=True, read_only=True)
+    albums = AlbumSerializer(many=True, read_only=True)
+    playlists = PlaylistSerializer(many=True, read_only=True)
+    
+    song_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Song.objects.all(), many=True, write_only=True, source='songs', required=False
+    )
+    album_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Album.objects.all(), many=True, write_only=True, source='albums', required=False
+    )
+    playlist_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Playlist.objects.all(), many=True, write_only=True, source='playlists', required=False
+    )
+
+    created_by_name = serializers.ReadOnlyField(source='created_by.phone_number')
+    updated_by_name = serializers.ReadOnlyField(source='updated_by.phone_number')
+
+    class Meta:
+        model = SearchSection
+        fields = [
+            'id', 'type', 'title', 'icon_logo', 'item_size', 
+            'songs', 'albums', 'playlists', 
+            'song_ids', 'album_ids', 'playlist_ids',
+            'created_at', 'updated_at', 'created_by', 'updated_by',
+            'created_by_name', 'updated_by_name'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'updated_by']

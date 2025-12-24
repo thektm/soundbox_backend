@@ -494,3 +494,48 @@ class EventPlaylist(models.Model):
     
     def __str__(self):
         return f"{self.title} ({self.get_time_of_day_display()})"
+
+
+class SearchSection(models.Model):
+    """A section for search or home page containing songs, playlists, or albums"""
+    TYPE_SONG = 'song'
+    TYPE_PLAYLIST = 'playlist'
+    TYPE_ALBUM = 'album'
+    TYPE_CHOICES = [
+        (TYPE_SONG, 'Song'),
+        (TYPE_PLAYLIST, 'Playlist'),
+        (TYPE_ALBUM, 'Album'),
+    ]
+
+    SIZE_SMALL = 'small'
+    SIZE_MEDIUM = 'medium'
+    SIZE_BIG = 'big'
+    SIZE_CHOICES = [
+        (SIZE_SMALL, 'Small'),
+        (SIZE_MEDIUM, 'Medium'),
+        (SIZE_BIG, 'Big'),
+    ]
+
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    title = models.CharField(max_length=255)
+    icon_logo = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for icon logo")
+    item_size = models.CharField(max_length=20, choices=SIZE_CHOICES, default=SIZE_MEDIUM)
+    
+    # Items in the section
+    songs = models.ManyToManyField(Song, blank=True, related_name='search_sections')
+    albums = models.ManyToManyField(Album, blank=True, related_name='search_sections')
+    playlists = models.ManyToManyField(Playlist, blank=True, related_name='search_sections')
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    # Ownership
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_search_sections')
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='updated_search_sections')
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} ({self.type})"

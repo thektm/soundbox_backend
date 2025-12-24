@@ -42,6 +42,7 @@ from .views import (
     PlaylistRecommendationSaveView,
     SearchView,
     EventPlaylistView,
+    SearchSectionViewSet,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -64,6 +65,7 @@ router.register(r'genres', GenreViewSet, basename='genre')
 router.register(r'moods', MoodViewSet, basename='mood')
 router.register(r'tags', TagViewSet, basename='tag')
 router.register(r'subgenres', SubGenreViewSet, basename='subgenre')
+router.register(r'search-sections', SearchSectionViewSet, basename='search-section')
 
 urlpatterns = [
     

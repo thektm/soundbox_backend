@@ -3,7 +3,10 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from .models import User, Artist, Album,Playlist, Genre, Mood, Tag, SubGenre, Song, StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist
+from .models import (
+    User, Artist, Album, Playlist, Genre, Mood, Tag, SubGenre, Song, 
+    StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection
+)
 from .serializers import (
     UserSerializer,
     RegisterSerializer,
@@ -26,6 +29,7 @@ from .serializers import (
     RecommendedPlaylistDetailSerializer,
     SearchResultSerializer,
     EventPlaylistSerializer,
+    SearchSectionSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -2226,3 +2230,21 @@ class EventPlaylistView(APIView):
             
         serializer = EventPlaylistSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
+
+
+class SearchSectionViewSet(viewsets.ModelViewSet):
+    """ViewSet for SearchSection model"""
+    queryset = SearchSection.objects.all()
+    serializer_class = SearchSectionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            return [AllowAny()]
+        return super().get_permissions()
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
