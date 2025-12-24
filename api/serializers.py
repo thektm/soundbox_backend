@@ -828,12 +828,22 @@ class SearchResultSerializer(serializers.Serializer):
     def get_data(self, obj):
         # Return minimal specific data
         if isinstance(obj, Song):
+            # Include stream_url for songs in search results
+            stream_url = None
+            request = self.context.get('request')
+            if request and request.user.is_authenticated:
+                # We can reuse the logic from SongStreamSerializer or just call it
+                # For simplicity and consistency, we'll use the same logic
+                from .serializers import SongStreamSerializer
+                stream_url = SongStreamSerializer(obj, context=self.context).data.get('stream_url')
+
             return {
                 'duration_seconds': obj.duration_seconds,
                 'plays': obj.plays,
                 'language': obj.language,
                 'artist_name': obj.artist.name if obj.artist else None,
                 'album_name': obj.album.title if obj.album else None,
+                'stream_url': stream_url,
             }
         if isinstance(obj, Artist):
             return {
