@@ -24,12 +24,36 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined', 'followers_count', 'following_count', 'user_playlists_count']
 
     def get_recently_played(self, obj):
-        # Get unique songs recently played by this user
-        # We order by the creation date of the play count record
+        # Get unique songs recently played by this user, ordered by latest play
         from .models import Song
-        # Get the latest 10 unique songs
-        songs = Song.objects.filter(play_counts__user=obj).distinct().order_by('-play_counts__created_at')[:10]
-        return SongStreamSerializer(songs, many=True, context=self.context).data
+        from django.db.models import Max
+        
+        request = self.context.get('request')
+        page = 1
+        page_size = 10
+        if request:
+            try:
+                page = int(request.query_params.get('rp_page', 1))
+                page_size = int(request.query_params.get('rp_page_size', 10))
+            except (ValueError, TypeError):
+                pass
+
+        offset = (page - 1) * page_size
+        
+        # Annotate each song with its latest play time for this user
+        qs = Song.objects.filter(play_counts__user=obj).annotate(
+            latest_play=Max('play_counts__created_at')
+        ).order_by('-latest_play')
+        
+        total = qs.count()
+        songs = qs[offset:offset + page_size]
+        
+        return {
+            'items': SongStreamSerializer(songs, many=True, context=self.context).data,
+            'total': total,
+            'page': page,
+            'has_next': total > offset + page_size
+        }
 
 
 class RegisterSerializer(serializers.ModelSerializer):
