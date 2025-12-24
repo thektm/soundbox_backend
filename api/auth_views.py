@@ -166,19 +166,37 @@ def issue_tokens_for_user(user: User, request) -> dict:
     ua = request.META.get('HTTP_USER_AGENT', '')
     ip = request.META.get('REMOTE_ADDR', '')
 
-    RefreshToken.objects.update_or_create(
+    # Find existing session for this device to avoid duplicates
+    existing_sessions = RefreshToken.objects.filter(
         user=user,
         user_agent=ua,
         ip=ip,
         device_name=device_name,
         device_type=device_type,
-        os_info=os_info,
-        defaults={
-            'token_hash': token_hash,
-            'expires_at': expires_at,
-            'revoked_at': None
-        }
+        os_info=os_info
     )
+
+    if existing_sessions.exists():
+        # Update the most recent one and revoke/delete others if they exist
+        session = existing_sessions.order_by('-created_at').first()
+        session.token_hash = token_hash
+        session.expires_at = expires_at
+        session.revoked_at = None
+        session.save()
+        # Clean up any other duplicates for this exact device/IP/UA combo
+        existing_sessions.exclude(id=session.id).delete()
+    else:
+        RefreshToken.objects.create(
+            user=user,
+            token_hash=token_hash,
+            user_agent=ua,
+            ip=ip,
+            expires_at=expires_at,
+            device_name=device_name,
+            device_type=device_type,
+            os_info=os_info
+        )
+
     # update last_login
     user.last_login_at = timezone.now()
     user.failed_login_attempts = 0
