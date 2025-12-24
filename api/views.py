@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory
+    ArtistMonthlyListener, UserHistory, Follow
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -31,6 +31,7 @@ from .serializers import (
     SearchResultSerializer,
     EventPlaylistSerializer,
     SearchSectionSerializer,
+    FollowRequestSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -52,6 +53,7 @@ from mutagen.wave import WAVE
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q, Count, Avg, F
+from django.shortcuts import get_object_or_404
 
 
 class RegisterView(APIView):
@@ -141,6 +143,47 @@ class StreamQualityUpdateView(APIView):
 
     def patch(self, request):
         return self.put(request)
+
+
+class UserFollowView(APIView):
+    """Follow or Unfollow a User or Artist"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = FollowRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        user_id = serializer.validated_data.get('user_id')
+        artist_id = serializer.validated_data.get('artist_id')
+        
+        follower = request.user
+        # If the user has an artist profile, we could potentially follow as an artist.
+        # For now, we follow as the User account as per "users only can post to it".
+        # But we'll check if they want to follow as artist if we add that later.
+        
+        if user_id:
+            target = get_object_or_404(User, id=user_id)
+            if target == follower:
+                return Response({'error': 'You cannot follow yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            follow_qs = Follow.objects.filter(follower_user=follower, followed_user=target)
+            if follow_qs.exists():
+                follow_qs.delete()
+                return Response({'status': 'ok', 'message': 'unfollowed'}, status=status.HTTP_200_OK)
+            else:
+                Follow.objects.create(follower_user=follower, followed_user=target)
+                return Response({'status': 'ok', 'message': 'followed'}, status=status.HTTP_200_OK)
+        
+        if artist_id:
+            target = get_object_or_404(Artist, id=artist_id)
+            follow_qs = Follow.objects.filter(follower_user=follower, followed_artist=target)
+            if follow_qs.exists():
+                follow_qs.delete()
+                return Response({'status': 'ok', 'message': 'unfollowed'}, status=status.HTTP_200_OK)
+            else:
+                Follow.objects.create(follower_user=follower, followed_artist=target)
+                return Response({'status': 'ok', 'message': 'followed'}, status=status.HTTP_200_OK)
 
 
 class MyLibraryView(APIView):

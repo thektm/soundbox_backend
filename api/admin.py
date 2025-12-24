@@ -3,10 +3,29 @@ from django.contrib.auth import get_user_model
 from .models import (
     Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, NotificationSetting
+    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow
 )
 
 User = get_user_model()
+
+
+@admin.register(Follow)
+class FollowAdmin(admin.ModelAdmin):
+    list_display = ('id', 'get_follower', 'get_followed', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = (
+        'follower_user__phone_number', 'follower_artist__name',
+        'followed_user__phone_number', 'followed_artist__name'
+    )
+    readonly_fields = ('created_at',)
+
+    def get_follower(self, obj):
+        return obj.follower_user or obj.follower_artist
+    get_follower.short_description = 'Follower'
+
+    def get_followed(self, obj):
+        return obj.followed_user or obj.followed_artist
+    get_followed.short_description = 'Followed'
 
 
 @admin.register(User)
@@ -22,16 +41,12 @@ class ArtistAdmin(admin.ModelAdmin):
     list_filter = ('verified', 'created_at')
     search_fields = ('name', 'user__phone_number')
     readonly_fields = ('created_at',)
-    filter_horizontal = ('followers', 'followings')
     fieldsets = (
         ('Basic Info', {
             'fields': ('name', 'user', 'bio', 'verified')
         }),
         ('Media', {
             'fields': ('profile_image', 'banner_image')
-        }),
-        ('Social', {
-            'fields': ('followers', 'followings')
         }),
         ('Metadata', {
             'fields': ('created_at',)

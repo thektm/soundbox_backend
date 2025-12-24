@@ -49,9 +49,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     failed_login_attempts = models.IntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
 
-    # users this user follows; reverse accessor 'followers' gives users following this user
-    followings = models.ManyToManyField('self', symmetrical=False, related_name='followers', blank=True)
-
     # playlists: store as JSON (list of playlist objects or ids); can be replaced with real Playlist model later
     playlists = models.JSONField(default=list, blank=True)
 
@@ -89,6 +86,49 @@ class User(AbstractBaseUser, PermissionsMixin):
         super().save(*args, **kwargs)
         if is_new:
             NotificationSetting.objects.get_or_create(user=self)
+
+
+class Follow(models.Model):
+    """Unified follow model for User-User, User-Artist, Artist-User, Artist-Artist"""
+    # Follower
+    follower_user = models.ForeignKey('User', on_delete=models.CASCADE, null=True, blank=True, related_name='following_user_relations')
+    follower_artist = models.ForeignKey('Artist', on_delete=models.CASCADE, null=True, blank=True, related_name='following_artist_relations')
+    
+    # Followed
+    followed_user = models.ForeignKey('User', on_delete=models.CASCADE, null=True, blank=True, related_name='follower_user_relations')
+    followed_artist = models.ForeignKey('Artist', on_delete=models.CASCADE, null=True, blank=True, related_name='follower_artist_relations')
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['follower_user', 'followed_user'], 
+                name='unique_user_follow_user', 
+                condition=models.Q(follower_user__isnull=False, followed_user__isnull=False)
+            ),
+            models.UniqueConstraint(
+                fields=['follower_user', 'followed_artist'], 
+                name='unique_user_follow_artist', 
+                condition=models.Q(follower_user__isnull=False, followed_artist__isnull=False)
+            ),
+            models.UniqueConstraint(
+                fields=['follower_artist', 'followed_user'], 
+                name='unique_artist_follow_user', 
+                condition=models.Q(follower_artist__isnull=False, followed_user__isnull=False)
+            ),
+            models.UniqueConstraint(
+                fields=['follower_artist', 'followed_artist'], 
+                name='unique_artist_follow_artist', 
+                condition=models.Q(follower_artist__isnull=False, followed_artist__isnull=False)
+            ),
+        ]
+
+    def __str__(self):
+        follower = self.follower_user or self.follower_artist
+        followed = self.followed_user or self.followed_artist
+        return f"{follower} follows {followed}"
 
 
 class NotificationSetting(models.Model):
@@ -167,10 +207,6 @@ class Artist(models.Model):
     profile_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for profile image")
     banner_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for banner image")
     verified = models.BooleanField(default=False)
-    
-    # Social
-    followers = models.ManyToManyField(User, related_name='followed_artists', blank=True)
-    followings = models.ManyToManyField('self', symmetrical=False, related_name='artist_followers', blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     

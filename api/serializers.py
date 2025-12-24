@@ -2,10 +2,72 @@ from rest_framework import serializers
 from .models import (
     User, UserPlaylist, Artist,RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
-    NotificationSetting
+    NotificationSetting, Follow
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+
+class FollowableEntitySerializer(serializers.Serializer):
+    """Unified serializer for both User and Artist in follow lists"""
+    id = serializers.IntegerField()
+    type = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+    image = serializers.SerializerMethodField()
+    is_verified = serializers.SerializerMethodField()
+    followers_count = serializers.SerializerMethodField()
+    following_count = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
+
+    def get_type(self, obj):
+        return 'artist' if isinstance(obj, Artist) else 'user'
+
+    def get_name(self, obj):
+        if isinstance(obj, Artist):
+            return obj.name
+        name = f"{obj.first_name} {obj.last_name}".strip()
+        return name if name else obj.phone_number
+
+    def get_image(self, obj):
+        if isinstance(obj, Artist):
+            return obj.profile_image
+        # Users might store profile image in settings or we can return empty
+        return obj.settings.get('profile_image', '') if isinstance(obj.settings, dict) else ''
+
+    def get_is_verified(self, obj):
+        if isinstance(obj, Artist):
+            return obj.verified
+        return obj.is_verified
+
+    def get_followers_count(self, obj):
+        if isinstance(obj, Artist):
+            return Follow.objects.filter(followed_artist=obj).count()
+        return Follow.objects.filter(followed_user=obj).count()
+
+    def get_following_count(self, obj):
+        if isinstance(obj, Artist):
+            return Follow.objects.filter(follower_artist=obj).count()
+        return Follow.objects.filter(follower_user=obj).count()
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        if isinstance(obj, Artist):
+            return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
+        return Follow.objects.filter(follower_user=request.user, followed_user=obj).exists()
+
+
+class FollowRequestSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField(required=False)
+    artist_id = serializers.IntegerField(required=False)
+
+    def validate(self, data):
+        if not data.get('user_id') and not data.get('artist_id'):
+            raise serializers.ValidationError("Either user_id or artist_id must be provided.")
+        if data.get('user_id') and data.get('artist_id'):
+            raise serializers.ValidationError("Only one of user_id or artist_id should be provided.")
+        return data
 
 
 class NotificationSettingSerializer(serializers.ModelSerializer):
@@ -18,11 +80,13 @@ class NotificationSettingSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
-    followers_count = serializers.IntegerField(source='followers.count', read_only=True)
-    following_count = serializers.IntegerField(source='followings.count', read_only=True)
+    followers_count = serializers.SerializerMethodField()
+    following_count = serializers.SerializerMethodField()
     user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
     recently_played = serializers.SerializerMethodField()
     notification_setting = NotificationSettingSerializer(read_only=True)
+    followers = serializers.SerializerMethodField()
+    following = serializers.SerializerMethodField()
     
     class Meta:
         model = get_user_model()
@@ -30,13 +94,62 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'phone_number', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
             'followers_count', 'following_count', 'user_playlists_count', 
-            'recently_played', 'notification_setting', 'plan', 'stream_quality'
+            'recently_played', 'notification_setting', 'plan', 'stream_quality',
+            'followers', 'following'
         ]
         read_only_fields = [
             'id', 'is_active', 'is_staff', 'date_joined', 
             'followers_count', 'following_count', 'user_playlists_count',
-            'notification_setting'
+            'notification_setting', 'followers', 'following'
         ]
+
+    def get_followers_count(self, obj):
+        return Follow.objects.filter(followed_user=obj).count()
+
+    def get_following_count(self, obj):
+        return Follow.objects.filter(follower_user=obj).count()
+
+    def get_followers(self, obj):
+        request = self.context.get('request')
+        page, page_size = 1, 10
+        if request:
+            try:
+                page = int(request.query_params.get('f_page', 1))
+                page_size = int(request.query_params.get('f_page_size', 10))
+            except (ValueError, TypeError): pass
+        
+        offset = (page - 1) * page_size
+        qs = Follow.objects.filter(followed_user=obj).order_by('-created_at')
+        total = qs.count()
+        items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
+        
+        return {
+            'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
+            'total': total,
+            'page': page,
+            'has_next': total > offset + page_size
+        }
+
+    def get_following(self, obj):
+        request = self.context.get('request')
+        page, page_size = 1, 10
+        if request:
+            try:
+                page = int(request.query_params.get('fg_page', 1))
+                page_size = int(request.query_params.get('fg_page_size', 10))
+            except (ValueError, TypeError): pass
+        
+        offset = (page - 1) * page_size
+        qs = Follow.objects.filter(follower_user=obj).order_by('-created_at')
+        total = qs.count()
+        items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
+        
+        return {
+            'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
+            'total': total,
+            'page': page,
+            'has_next': total > offset + page_size
+        }
 
     def validate_stream_quality(self, value):
         user = self.instance
@@ -193,21 +306,69 @@ class ArtistSerializer(serializers.ModelSerializer):
     followings_count = serializers.SerializerMethodField()
     monthly_listeners_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
+    followers = serializers.SerializerMethodField()
+    following = serializers.SerializerMethodField()
     
     class Meta:
         model = Artist
         fields = [
             'id', 'name', 'user_id', 'bio', 'profile_image', 'banner_image', 
             'verified', 'followers_count', 'followings_count', 
-            'monthly_listeners_count', 'is_following', 'created_at'
+            'monthly_listeners_count', 'is_following', 'created_at',
+            'followers', 'following'
         ]
-        read_only_fields = ['id', 'created_at', 'followers_count', 'followings_count', 'monthly_listeners_count', 'is_following']
+        read_only_fields = [
+            'id', 'created_at', 'followers_count', 'followings_count', 
+            'monthly_listeners_count', 'is_following', 'followers', 'following'
+        ]
 
     def get_followers_count(self, obj):
-        return obj.followers.count()
+        return Follow.objects.filter(followed_artist=obj).count()
 
     def get_followings_count(self, obj):
-        return obj.followings.count()
+        return Follow.objects.filter(follower_artist=obj).count()
+
+    def get_followers(self, obj):
+        request = self.context.get('request')
+        page, page_size = 1, 10
+        if request:
+            try:
+                page = int(request.query_params.get('f_page', 1))
+                page_size = int(request.query_params.get('f_page_size', 10))
+            except (ValueError, TypeError): pass
+        
+        offset = (page - 1) * page_size
+        qs = Follow.objects.filter(followed_artist=obj).order_by('-created_at')
+        total = qs.count()
+        items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
+        
+        return {
+            'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
+            'total': total,
+            'page': page,
+            'has_next': total > offset + page_size
+        }
+
+    def get_following(self, obj):
+        request = self.context.get('request')
+        page, page_size = 1, 10
+        if request:
+            try:
+                page = int(request.query_params.get('fg_page', 1))
+                page_size = int(request.query_params.get('fg_page_size', 10))
+            except (ValueError, TypeError): pass
+        
+        offset = (page - 1) * page_size
+        qs = Follow.objects.filter(follower_artist=obj).order_by('-created_at')
+        total = qs.count()
+        items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
+        
+        return {
+            'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
+            'total': total,
+            'page': page,
+            'has_next': total > offset + page_size
+        }
 
     def get_monthly_listeners_count(self, obj):
         from django.utils import timezone
@@ -219,7 +380,7 @@ class ArtistSerializer(serializers.ModelSerializer):
     def get_is_following(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.followers.filter(id=request.user.id).exists()
+            return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
         return False
 
 
