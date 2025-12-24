@@ -475,7 +475,7 @@ class ArtistDetailView(APIView):
             })
             
         if list_type == 'albums':
-            qs = Album.objects.filter(artist=artist).order_by('-release_date')
+            qs = Album.objects.filter(artist=artist).exclude(title__iexact='single').order_by('-release_date')
             items = qs[offset:offset + page_size]
             data = AlbumSerializer(items, many=True, context={'request': request}).data
             return Response({
@@ -507,7 +507,7 @@ class ArtistDetailView(APIView):
         top_songs_data = SongStreamSerializer(top_songs_qs[:5], many=True, context={'request': request}).data
         
         # 2. Albums (preview)
-        albums_qs = Album.objects.filter(artist=artist).order_by('-release_date')
+        albums_qs = Album.objects.filter(artist=artist).exclude(title__iexact='single').order_by('-release_date')
         albums_data = AlbumSerializer(albums_qs[:5], many=True, context={'request': request}).data
         
         # 3. Latest Songs (preview)
