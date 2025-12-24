@@ -64,6 +64,9 @@ from .auth_views import (
     ChangePasswordView,
     TokenRefreshView as LocalTokenRefreshView,
     LogoutView,
+    SessionListView,
+    SessionRevokeView,
+    SessionRevokeOtherView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -82,6 +85,9 @@ urlpatterns = [
     path('auth/password/change/', ChangePasswordView.as_view(), name='auth_password_change'),
     path('auth/token/refresh/', LocalTokenRefreshView.as_view(), name='auth_token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth_logout'),
+    path('auth/sessions/', SessionListView.as_view(), name='session_list'),
+    path('auth/sessions/<int:pk>/revoke/', SessionRevokeView.as_view(), name='session_revoke'),
+    path('auth/sessions/revoke-others/', SessionRevokeOtherView.as_view(), name='session_revoke_others'),
     
     # --- User & Profile Endpoints ---
     path('users/profile/', UserProfileView.as_view(), name='user_profile'),

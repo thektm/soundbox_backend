@@ -969,3 +969,18 @@ class SearchSectionSerializer(serializers.ModelSerializer):
             'created_by_name', 'updated_by_name'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'updated_by']
+
+
+class SessionSerializer(serializers.ModelSerializer):
+    is_current = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RefreshToken
+        fields = ['id', 'ip', 'user_agent', 'device_name', 'device_type', 'os_info', 'created_at', 'is_current']
+
+    def get_is_current(self, obj):
+        current_token = self.context.get('current_token')
+        if not current_token:
+            return False
+        from django.contrib.auth.hashers import check_password
+        return check_password(current_token, obj.token_hash)

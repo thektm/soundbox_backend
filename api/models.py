@@ -148,12 +148,15 @@ class RefreshToken(models.Model):
     token_hash = models.CharField(max_length=255)
     user_agent = models.CharField(max_length=512, blank=True)
     ip = models.CharField(max_length=64, blank=True)
+    device_name = models.CharField(max_length=255, blank=True, null=True)
+    device_type = models.CharField(max_length=100, blank=True, null=True)
+    os_info = models.CharField(max_length=100, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     revoked_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"RefreshToken(user={self.user_id} expires={self.expires_at} revoked={self.revoked_at is not None})"
+        return f"RefreshToken(user={self.user_id} device={self.device_name} expires={self.expires_at} revoked={self.revoked_at is not None})"
 
 
 class Artist(models.Model):

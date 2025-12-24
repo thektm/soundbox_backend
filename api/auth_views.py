@@ -21,6 +21,7 @@ from .serializers import (
     TokenRefreshRequestSerializer,
     LogoutSerializer,
     ChangePasswordSerializer,
+    SessionSerializer,
 )
 from rest_framework_simplejwt.tokens import RefreshToken as SimpleRefreshToken
 from django.utils.crypto import get_random_string
@@ -130,7 +131,22 @@ def issue_tokens_for_user(user: User, request) -> dict:
     token_str = str(refresh)
     token_hash = make_password(token_str)
     expires_at = timezone.now() + timedelta(days=30)
-    RefreshToken.objects.create(user=user, token_hash=token_hash, user_agent=request.META.get('HTTP_USER_AGENT', ''), ip=request.META.get('REMOTE_ADDR', ''), expires_at=expires_at)
+    
+    # Extract device info from request data if available
+    device_name = request.data.get('device_name', '')
+    device_type = request.data.get('device_type', '')
+    os_info = request.data.get('os_info', '')
+    
+    RefreshToken.objects.create(
+        user=user, 
+        token_hash=token_hash, 
+        user_agent=request.META.get('HTTP_USER_AGENT', ''), 
+        ip=request.META.get('REMOTE_ADDR', ''), 
+        expires_at=expires_at,
+        device_name=device_name,
+        device_type=device_type,
+        os_info=os_info
+    )
     # update last_login
     user.last_login_at = timezone.now()
     user.failed_login_attempts = 0
@@ -380,7 +396,22 @@ class TokenRefreshView(APIView):
             # revoke matching stored token(s)
             hashed = make_password(refresh_token)
             RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
-            RefreshToken.objects.create(user=user, token_hash=make_password(str(new_refresh)), user_agent=request.META.get('HTTP_USER_AGENT', ''), ip=request.META.get('REMOTE_ADDR', ''), expires_at=timezone.now()+timedelta(days=30))
+            
+            # Extract device info from request data if available
+            device_name = request.data.get('device_name', '')
+            device_type = request.data.get('device_type', '')
+            os_info = request.data.get('os_info', '')
+            
+            RefreshToken.objects.create(
+                user=user, 
+                token_hash=make_password(str(new_refresh)), 
+                user_agent=request.META.get('HTTP_USER_AGENT', ''), 
+                ip=request.META.get('REMOTE_ADDR', ''), 
+                expires_at=timezone.now()+timedelta(days=30),
+                device_name=device_name,
+                device_type=device_type,
+                os_info=os_info
+            )
         except Exception:
             pass
         return Response({'accessToken': str(new_access), 'refreshToken': str(new_refresh)})
@@ -404,6 +435,53 @@ class LogoutView(APIView):
             # if token invalid, still return success to avoid token probing
             pass
         return Response({'status': 'ok'})
+
+
+class SessionListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sessions = RefreshToken.objects.filter(
+            user=request.user, 
+            revoked_at__isnull=True, 
+            expires_at__gt=timezone.now()
+        ).order_by('-created_at')
+        
+        # If the client provides their current refreshToken, we can mark it as current
+        current_token = request.query_params.get('refreshToken')
+        
+        serializer = SessionSerializer(sessions, many=True, context={'request': request, 'current_token': current_token})
+        return Response(serializer.data)
+
+
+class SessionRevokeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        session = get_object_or_404(RefreshToken, pk=pk, user=request.user)
+        session.revoked_at = timezone.now()
+        session.save()
+        return Response({'status': 'ok'})
+
+
+class SessionRevokeOtherView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_refresh = request.data.get('refreshToken')
+        if not current_refresh:
+            return Response({'error': 'refreshToken is required to keep the current session'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        sessions = RefreshToken.objects.filter(user=request.user, revoked_at__isnull=True)
+        
+        revoked_count = 0
+        for session in sessions:
+            if not check_password(current_refresh, session.token_hash):
+                session.revoked_at = timezone.now()
+                session.save()
+                revoked_count += 1
+                
+        return Response({'status': 'ok', 'revoked_count': revoked_count})
 
 
 class ChangePasswordView(APIView):
