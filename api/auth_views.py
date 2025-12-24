@@ -419,7 +419,18 @@ class TokenRefreshView(APIView):
             user = User.objects.get(id=user_id)
         except Exception:
             return Response({'error': {'code': 'TOKEN_INVALID', 'message': 'Invalid refresh token'}}, status=status.HTTP_401_UNAUTHORIZED)
-        # Optionally check DB stored hashed token exists (best-effort)
+        
+        # Check if this specific token is revoked in our DB
+        active_sessions = RefreshToken.objects.filter(user=user, revoked_at__isnull=True)
+        valid_session = None
+        for session in active_sessions:
+            if check_password(refresh_token, session.token_hash):
+                valid_session = session
+                break
+        
+        if not valid_session:
+            return Response({'error': {'code': 'TOKEN_REVOKED', 'message': 'Session has been revoked or expired'}}, status=status.HTTP_401_UNAUTHORIZED)
+
         # rotate: create new refresh and store
         new_refresh = SimpleRefreshToken.for_user(user)
         new_access = new_refresh.access_token
@@ -430,19 +441,14 @@ class TokenRefreshView(APIView):
             ua = request.META.get('HTTP_USER_AGENT', '')
             ip = request.META.get('REMOTE_ADDR', '')
             
-            RefreshToken.objects.update_or_create(
-                user=user,
-                user_agent=ua,
-                ip=ip,
-                device_name=device_name,
-                device_type=device_type,
-                os_info=os_info,
-                defaults={
-                    'token_hash': make_password(str(new_refresh)),
-                    'expires_at': timezone.now() + timedelta(days=30),
-                    'revoked_at': None
-                }
-            )
+            valid_session.token_hash = make_password(str(new_refresh))
+            valid_session.expires_at = timezone.now() + timedelta(days=30)
+            valid_session.user_agent = ua
+            valid_session.ip = ip
+            valid_session.device_name = device_name
+            valid_session.device_type = device_type
+            valid_session.os_info = os_info
+            valid_session.save()
         except Exception:
             pass
         return Response({'accessToken': str(new_access), 'refreshToken': str(new_refresh)})
@@ -533,7 +539,17 @@ class ChangePasswordView(APIView):
         user.set_password(new_password)
         user.save()
         
-        # Revoke all existing refresh tokens for security
-        RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
+        # Revoke all other sessions except the current one
+        device_name, device_type, os_info = get_device_info(request)
+        ua = request.META.get('HTTP_USER_AGENT', '')
+        ip = request.META.get('REMOTE_ADDR', '')
+
+        RefreshToken.objects.filter(user=user, revoked_at__isnull=True).exclude(
+            user_agent=ua,
+            ip=ip,
+            device_name=device_name,
+            device_type=device_type,
+            os_info=os_info
+        ).update(revoked_at=timezone.now())
         
         return Response({'status': 'ok', 'message': 'Password changed successfully'})
