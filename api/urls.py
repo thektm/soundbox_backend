@@ -2,11 +2,9 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    RegisterView,
-    CustomTokenObtainPairView,
-    CustomTokenRefreshView,
     UserProfileView,
     NotificationSettingUpdateView,
+    StreamQualityUpdateView,
     MyLibraryView,
     R2UploadView,
     SongUploadView,
@@ -63,6 +61,7 @@ from .auth_views import (
     LoginOtpVerifyView,
     ForgotPasswordView,
     PasswordResetView,
+    ChangePasswordView,
     TokenRefreshView as LocalTokenRefreshView,
     LogoutView,
 )
@@ -80,12 +79,14 @@ urlpatterns = [
     path('auth/login/otp/verify/', LoginOtpVerifyView.as_view(), name='auth_login_otp_verify'),
     path('auth/password/forgot/', ForgotPasswordView.as_view(), name='auth_password_forgot'),
     path('auth/password/reset/', PasswordResetView.as_view(), name='auth_password_reset'),
+    path('auth/password/change/', ChangePasswordView.as_view(), name='auth_password_change'),
     path('auth/token/refresh/', LocalTokenRefreshView.as_view(), name='auth_token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='auth_logout'),
     
     # --- User & Profile Endpoints ---
     path('users/profile/', UserProfileView.as_view(), name='user_profile'),
     path('users/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
+    path('users/settings/stream-quality/', StreamQualityUpdateView.as_view(), name='user_stream_quality_settings'),
     path('users/my-library/', MyLibraryView.as_view(), name='my_library'),
     path('users/songs/recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
     path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),

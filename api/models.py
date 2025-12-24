@@ -64,6 +64,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     ]
     plan = models.CharField(max_length=30, choices=PLAN_CHOICES, default=PLAN_FREE)
 
+    # Stream quality settings
+    QUALITY_MEDIUM = 'medium'
+    QUALITY_HIGH = 'high'
+    QUALITY_CHOICES = [
+        (QUALITY_MEDIUM, 'Medium'),
+        (QUALITY_HIGH, 'High'),
+    ]
+    stream_quality = models.CharField(max_length=20, choices=QUALITY_CHOICES, default=QUALITY_MEDIUM)
+
     # user-specific settings stored as JSON
     settings = models.JSONField(default=dict, blank=True)
 

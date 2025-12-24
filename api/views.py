@@ -117,6 +117,32 @@ class NotificationSettingUpdateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class StreamQualityUpdateView(APIView):
+    """Update User Stream Quality Settings"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "stream_quality": request.user.stream_quality,
+            "plan": request.user.plan
+        })
+
+    def put(self, request):
+        quality = request.data.get('stream_quality')
+        if quality not in ['medium', 'high']:
+            return Response({"detail": "Invalid quality choice."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if quality == 'high' and request.user.plan != 'premium':
+            return Response({"detail": "High quality streaming is only available for premium users."}, status=status.HTTP_403_FORBIDDEN)
+        
+        request.user.stream_quality = quality
+        request.user.save(update_fields=['stream_quality'])
+        return Response({"stream_quality": request.user.stream_quality})
+
+    def patch(self, request):
+        return self.put(request)
+
+
 class MyLibraryView(APIView):
     """
     User's library history.

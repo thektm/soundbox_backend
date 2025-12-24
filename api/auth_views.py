@@ -8,7 +8,7 @@ from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from .models import User, OtpCode, RefreshToken
 from .serializers import (
     RegisterRequestSerializer,
@@ -20,6 +20,7 @@ from .serializers import (
     PasswordResetSerializer,
     TokenRefreshRequestSerializer,
     LogoutSerializer,
+    ChangePasswordSerializer,
 )
 from rest_framework_simplejwt.tokens import RefreshToken as SimpleRefreshToken
 from django.utils.crypto import get_random_string
@@ -403,3 +404,27 @@ class LogoutView(APIView):
             # if token invalid, still return success to avoid token probing
             pass
         return Response({'status': 'ok'})
+
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        current_password = serializer.validated_data['currentPassword']
+        new_password = serializer.validated_data['newPassword']
+        user = request.user
+
+        if not user.check_password(current_password):
+            return Response({'error': {'code': 'INVALID_PASSWORD', 'message': 'Current password is incorrect'}}, status=status.HTTP_400_BAD_REQUEST)
+        
+        user.set_password(new_password)
+        user.save()
+        
+        # Revoke all existing refresh tokens for security
+        RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
+        
+        return Response({'status': 'ok', 'message': 'Password changed successfully'})

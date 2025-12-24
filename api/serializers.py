@@ -30,13 +30,19 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'phone_number', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
             'followers_count', 'following_count', 'user_playlists_count', 
-            'recently_played', 'notification_setting', 'plan'
+            'recently_played', 'notification_setting', 'plan', 'stream_quality'
         ]
         read_only_fields = [
             'id', 'is_active', 'is_staff', 'date_joined', 
             'followers_count', 'following_count', 'user_playlists_count',
             'notification_setting'
         ]
+
+    def validate_stream_quality(self, value):
+        user = self.instance
+        if value == 'high' and user.plan != 'premium':
+            raise serializers.ValidationError("High quality streaming is only available for premium users.")
+        return value
 
     def update(self, instance, validated_data):
         # Handle nested notification_setting update
@@ -168,6 +174,11 @@ class TokenRefreshRequestSerializer(serializers.Serializer):
 
 class LogoutSerializer(serializers.Serializer):
     refreshToken = serializers.CharField()
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    currentPassword = serializers.CharField(write_only=True)
+    newPassword = serializers.CharField(write_only=True)
 
 
 class ArtistSerializer(serializers.ModelSerializer):
