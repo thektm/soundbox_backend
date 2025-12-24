@@ -5,6 +5,7 @@ import logging
 import requests
 from django.contrib.auth.hashers import make_password, check_password
 from django.db import transaction
+import user_agents
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -58,6 +59,34 @@ def hash_code(code: str) -> str:
 
 def check_code_hash(raw: str, hashed: str) -> bool:
     return check_password(raw, hashed)
+
+
+def get_device_info(request):
+    """Extract device info from User-Agent and request data"""
+    ua_string = request.META.get('HTTP_USER_AGENT', '')
+    user_agent = user_agents.parse(ua_string)
+    
+    # Default from User-Agent
+    device_name = user_agent.device.family
+    if user_agent.device.brand:
+        device_name = f"{user_agent.device.brand} {user_agent.device.model}"
+    
+    device_type = "PC"
+    if user_agent.is_mobile:
+        device_type = "Mobile"
+    elif user_agent.is_tablet:
+        device_type = "Tablet"
+    elif user_agent.is_bot:
+        device_type = "Bot"
+        
+    os_info = f"{user_agent.os.family} {user_agent.os.version_string}"
+    
+    # Override with client-provided data if available
+    device_name = request.data.get('device_name') or device_name
+    device_type = request.data.get('device_type') or device_type
+    os_info = request.data.get('os_info') or os_info
+    
+    return device_name, device_type, os_info
 
 
 def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
@@ -132,10 +161,8 @@ def issue_tokens_for_user(user: User, request) -> dict:
     token_hash = make_password(token_str)
     expires_at = timezone.now() + timedelta(days=30)
     
-    # Extract device info from request data if available
-    device_name = request.data.get('device_name', '')
-    device_type = request.data.get('device_type', '')
-    os_info = request.data.get('os_info', '')
+    # Extract device info
+    device_name, device_type, os_info = get_device_info(request)
     
     RefreshToken.objects.create(
         user=user, 
