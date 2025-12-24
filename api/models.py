@@ -565,3 +565,42 @@ class SearchSection(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.type})"
+
+
+class UserHistory(models.Model):
+    """Tracks user interactions with songs, albums, playlists, and artists"""
+    TYPE_SONG = 'song'
+    TYPE_ALBUM = 'album'
+    TYPE_PLAYLIST = 'playlist'
+    TYPE_ARTIST = 'artist'
+    
+    TYPE_CHOICES = [
+        (TYPE_SONG, 'Song'),
+        (TYPE_ALBUM, 'Album'),
+        (TYPE_PLAYLIST, 'Playlist'),
+        (TYPE_ARTIST, 'Artist'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='history')
+    content_type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    
+    song = models.ForeignKey(Song, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
+    album = models.ForeignKey(Album, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
+    playlist = models.ForeignKey(Playlist, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name_plural = "User Histories"
+        # Ensure we only have one history record per user per item
+        # We'll update the updated_at field on subsequent views
+        indexes = [
+            models.Index(fields=['user', 'content_type', '-updated_at']),
+        ]
+
+    def __str__(self):
+        item = self.song or self.album or self.playlist or self.artist
+        return f"{self.user.phone_number} viewed {self.content_type}: {item}"

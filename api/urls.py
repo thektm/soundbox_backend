@@ -6,6 +6,7 @@ from .views import (
     CustomTokenObtainPairView,
     CustomTokenRefreshView,
     UserProfileView,
+    MyLibraryView,
     R2UploadView,
     SongUploadView,
     ArtistListView,
@@ -44,6 +45,7 @@ from .views import (
     DailyTopAlbumsView,
     PlaylistRecommendationsView,
     PlaylistRecommendationDetailView,
+    PlaylistDetailView,
     PlaylistRecommendationLikeView,
     PlaylistRecommendationSaveView,
     SearchView,
@@ -82,6 +84,7 @@ urlpatterns = [
     
     # --- User & Profile Endpoints ---
     path('users/profile/', UserProfileView.as_view(), name='user_profile'),
+    path('users/my-library/', MyLibraryView.as_view(), name='my_library'),
     path('users/songs/recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
     path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
     path('users/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
@@ -145,6 +148,7 @@ urlpatterns = [
     
     # --- Curated Content Endpoints ---
     path('event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
+    path('playlists/<int:pk>/', PlaylistDetailView.as_view(), name='playlist_detail'),
     path('playlists/<int:pk>/like/', PlaylistLikeView.as_view(), name='playlist_like'),
     path('search-sections/', SearchSectionListView.as_view(), name='search_section_list'),
     path('search-sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),

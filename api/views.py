@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener
+    ArtistMonthlyListener, UserHistory
 )
 from .serializers import (
     UserSerializer,
@@ -38,6 +38,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 from django.conf import settings
 import boto3
 from botocore.config import Config
@@ -74,12 +75,72 @@ class CustomTokenRefreshView(TokenRefreshView):
     permission_classes = [AllowAny]
 
 
-class UserProfileView(generics.RetrieveUpdateAPIView):
-    serializer_class = UserSerializer
+class UserProfileView(APIView):
+    """Retrieve and Update User Profile"""
     permission_classes = [IsAuthenticated]
 
-    def get_object(self):
-        return self.request.user
+    def get(self, request):
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data)
+
+    def patch(self, request):
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MyLibraryView(APIView):
+    """
+    User's library history.
+    Supports 'mix' mode (all types) or specific 'type' param.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        content_type = request.query_params.get('type')
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 20))
+        offset = (page - 1) * page_size
+
+        qs = UserHistory.objects.filter(user=request.user).order_by('-updated_at')
+
+        if content_type:
+            if content_type not in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST]:
+                return Response({"detail": "Invalid type."}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(content_type=content_type)
+
+        total = qs.count()
+        items = qs[offset:offset + page_size]
+        
+        results = []
+        for entry in items:
+            data = {
+                'id': entry.id,
+                'type': entry.content_type,
+                'viewed_at': entry.updated_at,
+            }
+            
+            if entry.content_type == UserHistory.TYPE_SONG and entry.song:
+                data['item'] = SongStreamSerializer(entry.song, context={'request': request}).data
+            elif entry.content_type == UserHistory.TYPE_ALBUM and entry.album:
+                data['item'] = AlbumSerializer(entry.album, context={'request': request}).data
+            elif entry.content_type == UserHistory.TYPE_PLAYLIST and entry.playlist:
+                data['item'] = PlaylistSerializer(entry.playlist, context={'request': request}).data
+            elif entry.content_type == UserHistory.TYPE_ARTIST and entry.artist:
+                data['item'] = ArtistSerializer(entry.artist, context={'request': request}).data
+            else:
+                continue
+                
+            results.append(data)
+
+        return Response({
+            'items': results,
+            'total': total,
+            'page': page,
+            'has_next': total > offset + page_size
+        })
 
 
 class R2UploadView(APIView):
@@ -412,6 +473,64 @@ class ArtistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class PlaylistDetailView(APIView):
+    """Retrieve, Update, and Delete Playlist (Admin/System/Audience)"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return Playlist.objects.get(pk=pk)
+        except Playlist.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        playlist = self.get_object(pk)
+        if not playlist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Record history
+        if request.user.is_authenticated:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_PLAYLIST,
+                playlist=playlist,
+                defaults={'updated_at': timezone.now()}
+            )
+            
+        serializer = PlaylistSerializer(playlist, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        playlist = self.get_object(pk)
+        if not playlist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = PlaylistSerializer(playlist, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        playlist = self.get_object(pk)
+        if not playlist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = PlaylistSerializer(playlist, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        playlist = self.get_object(pk)
+        if not playlist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        playlist.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class PlaylistLikeView(APIView):
     """Like or unlike a playlist (Admin/System/Audience)"""
     permission_classes = [IsAuthenticated]
@@ -452,6 +571,15 @@ class ArtistDetailView(APIView):
         artist = self.get_object(pk)
         if not artist:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Record history
+        if request.user.is_authenticated:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_ARTIST,
+                artist=artist,
+                defaults={'updated_at': timezone.now()}
+            )
         
         # Pagination params
         page = int(request.query_params.get('page', 1))
@@ -631,6 +759,16 @@ class AlbumDetailView(APIView):
         album = self.get_object(pk)
         if not album:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Record history
+        if request.user.is_authenticated:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_ALBUM,
+                album=album,
+                defaults={'updated_at': timezone.now()}
+            )
+            
         serializer = AlbumSerializer(album, context={'request': request})
         return Response(serializer.data)
 
@@ -955,26 +1093,67 @@ class SongListView(generics.ListCreateAPIView):
         return queryset
 
 
-class SongDetailView(generics.RetrieveUpdateDestroyAPIView):
+class SongDetailView(APIView):
     """View for retrieving, updating and deleting a song"""
-    queryset = Song.objects.all()
-    serializer_class = SongSerializer
-    permission_classes = [IsAuthenticated]
-    
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
-    
-    def get_queryset(self):
-        """Filter songs by status for non-staff users"""
-        queryset = Song.objects.all()
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            song = Song.objects.get(pk=pk)
+            # Non-authenticated or non-staff users only see published songs
+            if not self.request.user.is_authenticated or not self.request.user.is_staff:
+                if song.status != Song.STATUS_PUBLISHED:
+                    return None
+            return song
+        except Song.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        song = self.get_object(pk)
+        if not song:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         
-        # Non-authenticated or non-staff users only see published songs
-        if not self.request.user.is_authenticated or not self.request.user.is_staff:
-            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
-        
-        return queryset
+        # Record history
+        if request.user.is_authenticated:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_SONG,
+                song=song,
+                defaults={'updated_at': timezone.now()}
+            )
+            
+        serializer = SongSerializer(song, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        song = self.get_object(pk)
+        if not song:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SongSerializer(song, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        song = self.get_object(pk)
+        if not song:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SongSerializer(song, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        song = self.get_object(pk)
+        if not song:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        song.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SongLikeView(APIView):

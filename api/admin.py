@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from .models import (
     Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener
+    ArtistMonthlyListener, UserHistory
 )
 
 User = get_user_model()
@@ -45,6 +45,14 @@ class ArtistMonthlyListenerAdmin(admin.ModelAdmin):
     list_filter = ('updated_at', 'artist')
     search_fields = ('artist__name', 'user__phone_number')
     readonly_fields = ('updated_at',)
+
+
+@admin.register(UserHistory)
+class UserHistoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'content_type', 'updated_at')
+    list_filter = ('content_type', 'updated_at')
+    search_fields = ('user__phone_number', 'song__title', 'album__title', 'playlist__title', 'artist__name')
+    readonly_fields = ('created_at', 'updated_at')
 
 
 @admin.register(Album)
