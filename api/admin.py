@@ -1,6 +1,9 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from .models import Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, UserPlaylist, RecommendedPlaylist, EventPlaylist
+from .models import (
+    Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
+    UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection
+)
 
 User = get_user_model()
 
@@ -342,3 +345,32 @@ class EventPlaylistAdmin(admin.ModelAdmin):
     def playlists_count(self, obj):
         return obj.playlists.count()
     playlists_count.short_description = 'Playlists Count'
+
+
+@admin.register(SearchSection)
+class SearchSectionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'type', 'item_size', 'created_at', 'created_by')
+    list_filter = ('type', 'item_size', 'created_at')
+    search_fields = ('title',)
+    readonly_fields = ('created_at', 'updated_at', 'created_by', 'updated_by')
+    filter_horizontal = ('songs', 'albums', 'playlists')
+    
+    fieldsets = (
+        ('Basic Info', {
+            'fields': ('title', 'type', 'item_size', 'icon_logo')
+        }),
+        ('Content Items', {
+            'fields': ('songs', 'albums', 'playlists'),
+            'description': 'Select items based on the section type. Only the relevant items will be used in the API.'
+        }),
+        ('Metadata', {
+            'fields': ('created_at', 'updated_at', 'created_by', 'updated_by'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
