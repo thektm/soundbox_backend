@@ -11,15 +11,25 @@ class UserSerializer(serializers.ModelSerializer):
     followers_count = serializers.IntegerField(source='followers.count', read_only=True)
     following_count = serializers.IntegerField(source='followings.count', read_only=True)
     user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
+    recently_played = serializers.SerializerMethodField()
     
     class Meta:
         model = get_user_model()
         fields = [
             'id', 'phone_number', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
-            'followers_count', 'following_count', 'user_playlists_count', 'plan'
+            'followers_count', 'following_count', 'user_playlists_count', 
+            'recently_played', 'plan'
         ]
         read_only_fields = ['id', 'is_active', 'is_staff', 'date_joined', 'followers_count', 'following_count', 'user_playlists_count']
+
+    def get_recently_played(self, obj):
+        # Get unique songs recently played by this user
+        # We order by the creation date of the play count record
+        from .models import Song
+        # Get the latest 10 unique songs
+        songs = Song.objects.filter(play_counts__user=obj).distinct().order_by('-play_counts__created_at')[:10]
+        return SongStreamSerializer(songs, many=True, context=self.context).data
 
 
 class RegisterSerializer(serializers.ModelSerializer):
