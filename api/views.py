@@ -2232,19 +2232,69 @@ class EventPlaylistView(APIView):
         return Response(serializer.data)
 
 
-class SearchSectionViewSet(viewsets.ModelViewSet):
-    """ViewSet for SearchSection model"""
-    queryset = SearchSection.objects.all()
-    serializer_class = SearchSectionSerializer
-    permission_classes = [IsAuthenticated]
-
+class SearchSectionListView(APIView):
+    """List and Create SearchSections"""
     def get_permissions(self):
-        if self.action in ['list', 'retrieve']:
+        if self.request.method == 'GET':
             return [AllowAny()]
-        return super().get_permissions()
+        return [IsAuthenticated()]
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, updated_by=self.request.user)
+    def get(self, request):
+        sections = SearchSection.objects.all().prefetch_related('songs', 'albums', 'playlists', 'songs__artist', 'albums__artist')
+        serializer = SearchSectionSerializer(sections, many=True, context={'request': request})
+        return Response(serializer.data)
 
-    def perform_update(self, serializer):
-        serializer.save(updated_by=self.request.user)
+    def post(self, request):
+        serializer = SearchSectionSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save(created_by=request.user, updated_by=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class SearchSectionDetailView(APIView):
+    """Retrieve, Update, and Delete SearchSection"""
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_object(self, pk):
+        try:
+            return SearchSection.objects.get(pk=pk)
+        except SearchSection.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        section = self.get_object(pk)
+        if not section:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SearchSectionSerializer(section, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        section = self.get_object(pk)
+        if not section:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SearchSectionSerializer(section, data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        section = self.get_object(pk)
+        if not section:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = SearchSectionSerializer(section, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        section = self.get_object(pk)
+        if not section:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        section.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
