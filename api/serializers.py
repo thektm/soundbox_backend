@@ -498,30 +498,55 @@ class SongSerializer(serializers.ModelSerializer):
     is_liked = serializers.SerializerMethodField()
     
     # For write operations
-    genre_ids = serializers.PrimaryKeyRelatedField(
+    genre_ids_write = serializers.PrimaryKeyRelatedField(
         queryset=Genre.objects.all(), 
         many=True, 
         source='genres', 
-        required=False
+        required=False,
+        write_only=True
     )
-    sub_genre_ids = serializers.PrimaryKeyRelatedField(
+    sub_genre_ids_write = serializers.PrimaryKeyRelatedField(
         queryset=SubGenre.objects.all(), 
         many=True, 
         source='sub_genres', 
-        required=False
+        required=False,
+        write_only=True
     )
-    mood_ids = serializers.PrimaryKeyRelatedField(
+    mood_ids_write = serializers.PrimaryKeyRelatedField(
         queryset=Mood.objects.all(), 
         many=True, 
         source='moods', 
-        required=False
+        required=False,
+        write_only=True
     )
-    tag_ids = serializers.PrimaryKeyRelatedField(
+    tag_ids_write = serializers.PrimaryKeyRelatedField(
         queryset=Tag.objects.all(), 
         many=True, 
         source='tags', 
-        required=False
+        required=False,
+        write_only=True
     )
+
+    # Read-only fields with titles
+    genre_ids = serializers.SerializerMethodField()
+    sub_genre_ids = serializers.SerializerMethodField()
+    mood_ids = serializers.SerializerMethodField()
+    tag_ids = serializers.SerializerMethodField()
+
+    def get_genre_ids(self, obj):
+        return [genre.name for genre in obj.genres.all()]
+
+    def get_sub_genre_ids(self, obj):
+        return [sub_genre.name for sub_genre in obj.sub_genres.all()]
+
+    def get_mood_ids(self, obj):
+        return [mood.name for mood in obj.moods.all()]
+
+    def get_tag_ids(self, obj):
+        return [tag.name for tag in obj.tags.all()]
+    
+    # Read-only paginated similar songs block
+    similar_songs = serializers.SerializerMethodField()
     
     class Meta:
         model = Song
@@ -608,6 +633,151 @@ class SongSerializer(serializers.ModelSerializer):
             return stream_url
         
         return None
+
+    def get_similar_songs(self, obj):
+        """Return a paginated list of similar songs with next-page link.
+
+        Uses genres, moods, tags, artist match and audio-feature similarity to score candidates.
+        Query params (on the current request) control pagination:
+        - similar_page (default 1)
+        - similar_page_size (default 6)
+        """
+        request = self.context.get('request')
+        page = 1
+        page_size = 6
+        if request is not None:
+            try:
+                page = int(request.query_params.get('similar_page', 1))
+            except Exception:
+                page = 1
+            try:
+                page_size = int(request.query_params.get('similar_page_size', 6))
+            except Exception:
+                page_size = 6
+
+        from django.db.models import Q
+
+        base_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id=obj.id)
+
+        genre_ids = list(obj.genres.values_list('id', flat=True))
+        mood_ids = list(obj.moods.values_list('id', flat=True))
+        tag_ids = list(obj.tags.values_list('id', flat=True))
+
+        cand_q = Q()
+        if genre_ids:
+            cand_q |= Q(genres__in=genre_ids)
+        if mood_ids:
+            cand_q |= Q(moods__in=mood_ids)
+        if tag_ids:
+            cand_q |= Q(tags__in=tag_ids)
+        if obj.artist_id:
+            cand_q |= Q(artist=obj.artist_id)
+
+        if cand_q:
+            candidates = base_qs.filter(cand_q).distinct()
+        else:
+            candidates = base_qs
+
+        candidates = candidates.select_related('artist', 'album').prefetch_related('genres', 'moods', 'tags')[:500]
+
+        # Prioritize songs from the same 10-year era (decade) based on release_date.
+        era_candidates = []
+        try:
+            if obj.release_date and getattr(obj.release_date, 'year', None):
+                y = obj.release_date.year
+                era_start = (y // 10) * 10
+                era_end = era_start + 9
+                from django.db.models import Q
+                era_q = Q(release_date__year__gte=era_start, release_date__year__lte=era_end)
+                era_candidates = list(candidates.filter(era_q))
+        except Exception:
+            era_candidates = []
+
+        # Build ordered candidate list: era first (if any), then remaining candidates not in era.
+        era_ids = {s.id for s in era_candidates}
+        remaining = [s for s in candidates if s.id not in era_ids]
+        # Keep era candidates first to be scored with higher priority
+        ordered_candidates = era_candidates + remaining
+
+        # Limit to a reasonable number for scoring
+        candidates = ordered_candidates[:500]
+
+        def feature_similarity(a, b, weight, scale=100.0):
+            try:
+                if a is None or b is None:
+                    return 0.0
+                diff = abs((a or 0) - (b or 0))
+                return max(0.0, (scale - diff) / scale) * weight
+            except Exception:
+                return 0.0
+
+        scored = []
+        for cand in candidates:
+            score = 0.0
+            try:
+                cand_genre_ids = set(cand.genres.values_list('id', flat=True))
+                score += len(set(genre_ids) & cand_genre_ids) * 3.0
+            except Exception:
+                pass
+            try:
+                cand_mood_ids = set(cand.moods.values_list('id', flat=True))
+                score += len(set(mood_ids) & cand_mood_ids) * 2.0
+            except Exception:
+                pass
+            try:
+                cand_tag_ids = set(cand.tags.values_list('id', flat=True))
+                score += len(set(tag_ids) & cand_tag_ids) * 1.5
+            except Exception:
+                pass
+
+            if obj.artist_id and cand.artist_id == obj.artist_id:
+                score += 8.0
+
+            score += feature_similarity(obj.energy, cand.energy, 3.0)
+            score += feature_similarity(obj.danceability, cand.danceability, 2.5)
+            score += feature_similarity(obj.valence, cand.valence, 2.0)
+            score += feature_similarity(obj.tempo, cand.tempo, 1.0, scale=200.0)
+
+            try:
+                score += min((cand.plays or 0) / 10000.0, 1.0) * 0.5
+            except Exception:
+                pass
+
+            if score > 0:
+                scored.append((cand, score))
+
+        if not scored:
+            fallback = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id=obj.id).order_by('-plays')[:50]
+            scored = [(s, 0.1) for s in fallback]
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        total = len(scored)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = [item[0] for item in scored[start:end]]
+
+        from .serializers import SongStreamSerializer
+        serializer = SongStreamSerializer(page_items, many=True, context=self.context)
+        items_data = serializer.data
+
+        has_next = end < total
+        next_link = None
+        if has_next and request is not None:
+            from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+            parsed = urlparse(request.build_absolute_uri())
+            qs = parse_qs(parsed.query)
+            qs['similar_page'] = [str(page + 1)]
+            qs['similar_page_size'] = [str(page_size)]
+            new_query = urlencode(qs, doseq=True)
+            next_link = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+        return {
+            'items': items_data,
+            'total': total,
+            'page': page,
+            'has_next': has_next,
+            'next': next_link
+        }
 
 
 class SongUploadSerializer(serializers.Serializer):
