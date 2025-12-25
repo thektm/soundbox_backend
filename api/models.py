@@ -464,7 +464,7 @@ class Playlist(models.Model):
     songs = models.ManyToManyField(Song, blank=True, related_name='playlists')
 
     # Likes
-    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_admin_playlists', through='PlaylistLike')
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_admin_playlists')
     saved_by = models.ManyToManyField(User, blank=True, related_name='saved_playlists')
 
     class Meta:
