@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import (
     User, UserPlaylist, Artist,RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
-    NotificationSetting, Follow
+    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -402,11 +402,25 @@ class PopularArtistSerializer(ArtistSerializer):
 class AlbumSerializer(serializers.ModelSerializer):
     """Serializer for Album model"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
+    likes_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
     
     class Meta:
         model = Album
-        fields = ['id', 'title', 'artist', 'artist_name', 'cover_image', 'release_date', 'description', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = [
+            'id', 'title', 'artist', 'artist_name', 'cover_image', 
+            'release_date', 'description', 'created_at', 'likes_count', 'is_liked'
+        ]
+        read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
+
+    def get_likes_count(self, obj):
+        return AlbumLike.objects.filter(album=obj).count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return AlbumLike.objects.filter(user=request.user, album=obj).exists()
+        return False
 
 
 class PopularAlbumSerializer(AlbumSerializer):
@@ -533,12 +547,12 @@ class SongSerializer(serializers.ModelSerializer):
             return obj.plays or 0
 
     def get_likes_count(self, obj):
-        return obj.liked_by.count()
+        return SongLike.objects.filter(song=obj).count()
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.liked_by.filter(id=request.user.id).exists()
+            return SongLike.objects.filter(user=request.user, song=obj).exists()
         return False
 
     def get_stream_url(self, obj):
@@ -732,18 +746,29 @@ class SongStreamSerializer(serializers.ModelSerializer):
     display_title = serializers.ReadOnlyField()
     stream_url = serializers.SerializerMethodField()
     plays = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
     
     class Meta:
         model = Song
         fields = [
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
             'album', 'album_title', 'is_single', 'stream_url', 'cover_image',
-            'duration_seconds', 'duration_display', 'plays',
+            'duration_seconds', 'duration_display', 'plays', 'likes_count', 'is_liked',
             'status', 'release_date', 'language', 'description',
             'created_at', 'display_title'
         ]
-        read_only_fields = ['id', 'plays', 'created_at', 'duration_display', 'display_title']
+        read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'duration_display', 'display_title']
     
+    def get_likes_count(self, obj):
+        return SongLike.objects.filter(song=obj).count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return SongLike.objects.filter(user=request.user, song=obj).exists()
+        return False
+
     def get_stream_url(self, obj):
         """
         CRITICAL: ONLY RETURN UNWRAP LINKS HERE - NEVER DIRECT SIGNED URLS!
@@ -883,13 +908,15 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
+    playlist_ref = PlaylistSerializer(read_only=True)
     
     class Meta:
         model = RecommendedPlaylist
         fields = [
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'covers', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
-            'views', 'relevance_score', 'match_percentage', 'created_at'
+            'views', 'relevance_score', 'match_percentage', 'created_at',
+            'playlist_ref'
         ]
         read_only_fields = fields
     
@@ -940,13 +967,15 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
     is_saved = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     songs_count = serializers.SerializerMethodField()
+    playlist_ref = PlaylistSerializer(read_only=True)
     
     class Meta:
         model = RecommendedPlaylist
         fields = [
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'songs', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
-            'views', 'relevance_score', 'match_percentage', 'created_at', 'updated_at'
+            'views', 'relevance_score', 'match_percentage', 'created_at', 'updated_at',
+            'playlist_ref'
         ]
         read_only_fields = fields
     
@@ -1145,3 +1174,78 @@ class SessionSerializer(serializers.ModelSerializer):
             return False
         from django.contrib.auth.hashers import check_password
         return check_password(current_token, obj.token_hash)
+
+
+class LikedSongSerializer(serializers.ModelSerializer):
+    when_liked = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SongLike
+        fields = ['id', 'song', 'when_liked']
+    
+    def get_when_liked(self, obj):
+        from django.utils import timezone
+        delta = timezone.now() - obj.created_at
+        days = delta.days
+        if days == 0:
+            return "Today"
+        return f"{days} days ago"
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Nest the song data
+        song_data = SongStreamSerializer(instance.song, context=self.context).data
+        ret.update(song_data)
+        # Remove the 'song' ID field to avoid confusion
+        ret.pop('song', None)
+        return ret
+
+
+class LikedAlbumSerializer(serializers.ModelSerializer):
+    when_liked = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = AlbumLike
+        fields = ['id', 'album', 'when_liked']
+    
+    def get_when_liked(self, obj):
+        from django.utils import timezone
+        delta = timezone.now() - obj.created_at
+        days = delta.days
+        if days == 0:
+            return "Today"
+        return f"{days} days ago"
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Nest the album data
+        album_data = AlbumSerializer(instance.album, context=self.context).data
+        ret.update(album_data)
+        # Remove the 'album' ID field
+        ret.pop('album', None)
+        return ret
+
+
+class LikedPlaylistSerializer(serializers.ModelSerializer):
+    when_liked = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = PlaylistLike
+        fields = ['id', 'playlist', 'when_liked']
+    
+    def get_when_liked(self, obj):
+        from django.utils import timezone
+        delta = timezone.now() - obj.created_at
+        days = delta.days
+        if days == 0:
+            return "Today"
+        return f"{days} days ago"
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Nest the playlist data
+        playlist_data = PlaylistSerializer(instance.playlist, context=self.context).data
+        ret.update(playlist_data)
+        # Remove the 'playlist' ID field
+        ret.pop('playlist', None)
+        return ret

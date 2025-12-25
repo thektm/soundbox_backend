@@ -252,6 +252,19 @@ class Album(models.Model):
     def __str__(self):
         return f"{self.title} - {self.artist.name}"
 
+    # Likes
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_albums', through='AlbumLike')
+
+
+class AlbumLike(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    album = models.ForeignKey('Album', on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'album')
+        ordering = ['-created_at']
+
 
 class Genre(models.Model):
     """Music genre classification"""
@@ -410,7 +423,17 @@ class Song(models.Model):
     play_counts = models.ManyToManyField('PlayCount', blank=True, related_name='songs')
 
     # Likes
-    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_songs')
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_songs', through='SongLike')
+
+
+class SongLike(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    song = models.ForeignKey('Song', on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'song')
+        ordering = ['-created_at']
 
 
 class Playlist(models.Model):
@@ -441,13 +464,24 @@ class Playlist(models.Model):
     songs = models.ManyToManyField(Song, blank=True, related_name='playlists')
 
     # Likes
-    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_admin_playlists')
+    liked_by = models.ManyToManyField(User, blank=True, related_name='liked_admin_playlists', through='PlaylistLike')
+    saved_by = models.ManyToManyField(User, blank=True, related_name='saved_playlists')
 
     class Meta:
         ordering = ['-created_at']
 
     def __str__(self):
         return f"{self.title} ({self.created_at.date()})"
+
+
+class PlaylistLike(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    playlist = models.ForeignKey('Playlist', on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'playlist')
+        ordering = ['-created_at']
 
 
 class PlayCount(models.Model):
@@ -535,6 +569,9 @@ class RecommendedPlaylist(models.Model):
     # User for whom this playlist is recommended (null = general recommendation)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='recommended_playlists', null=True, blank=True)
     
+    # Reference to the canonical Playlist object
+    playlist_ref = models.ForeignKey('Playlist', on_delete=models.SET_NULL, null=True, blank=True, related_name='recommendations')
+
     # Playlist metadata
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)

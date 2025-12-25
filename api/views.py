@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, Follow
+    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -32,6 +32,9 @@ from .serializers import (
     EventPlaylistSerializer,
     SearchSectionSerializer,
     FollowRequestSerializer,
+    LikedSongSerializer,
+    LikedAlbumSerializer,
+    LikedPlaylistSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -184,6 +187,78 @@ class UserFollowView(APIView):
             else:
                 Follow.objects.create(follower_user=follower, followed_artist=target)
                 return Response({'status': 'ok', 'message': 'followed'}, status=status.HTTP_200_OK)
+
+
+class LikedSongsView(APIView):
+    """List of songs liked by the user, paginated and sorted by date"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        qs = SongLike.objects.filter(user=user).order_by('-created_at')
+        
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = LikedSongSerializer(result_page, many=True, context={'request': request})
+        
+        return paginator.get_paginated_response(serializer.data)
+
+
+class LikedAlbumsView(APIView):
+    """List of albums liked by the user, paginated and sorted by date"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        qs = AlbumLike.objects.filter(user=user).order_by('-created_at')
+        
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = LikedAlbumSerializer(result_page, many=True, context={'request': request})
+        
+        return paginator.get_paginated_response(serializer.data)
+
+
+class LikedPlaylistsView(APIView):
+    """List of playlists liked by the user, paginated and sorted by date"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        qs = PlaylistLike.objects.filter(user=user).order_by('-created_at')
+        
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = LikedPlaylistSerializer(result_page, many=True, context={'request': request})
+        
+        return paginator.get_paginated_response(serializer.data)
+
+
+class MyArtistsView(APIView):
+    """List of artists followed by the user, paginated and sorted by date"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        # Filter follows where this user is the follower and the target is an artist
+        qs = Follow.objects.filter(follower_user=user, followed_artist__isnull=False).order_by('-created_at')
+        
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        
+        # We want to return the artist data, but we have Follow objects.
+        # We can use a SerializerMethodField or just map them.
+        results = []
+        for follow in result_page:
+            artist_data = ArtistSerializer(follow.followed_artist, context={'request': request}).data
+            artist_data['followed_at'] = follow.created_at
+            results.append(artist_data)
+            
+        return paginator.get_paginated_response(results)
 
 
 class MyLibraryView(APIView):
@@ -636,11 +711,13 @@ class PlaylistLikeView(APIView):
         except Playlist.DoesNotExist:
             return Response({"detail": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
         
-        if playlist.liked_by.filter(id=request.user.id).exists():
-            playlist.liked_by.remove(request.user)
+        user = request.user
+        like_qs = PlaylistLike.objects.filter(user=user, playlist=playlist)
+        if like_qs.exists():
+            like_qs.delete()
             liked = False
         else:
-            playlist.liked_by.add(request.user)
+            PlaylistLike.objects.create(user=user, playlist=playlist)
             liked = True
             
         return Response({
@@ -1262,16 +1339,42 @@ class SongLikeView(APIView):
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
             
         user = request.user
-        if song.liked_by.filter(id=user.id).exists():
-            song.liked_by.remove(user)
+        like_qs = SongLike.objects.filter(user=user, song=song)
+        if like_qs.exists():
+            like_qs.delete()
             liked = False
         else:
-            song.liked_by.add(user)
+            SongLike.objects.create(user=user, song=song)
             liked = True
             
         return Response({
             'liked': liked,
-            'likes_count': song.liked_by.count()
+            'likes_count': SongLike.objects.filter(song=song).count()
+        })
+
+
+class AlbumLikeView(APIView):
+    """Toggle like status for an album"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk=None):
+        try:
+            album = Album.objects.get(pk=pk)
+        except Album.DoesNotExist:
+            return Response({'error': 'Album not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        user = request.user
+        like_qs = AlbumLike.objects.filter(user=user, album=album)
+        if like_qs.exists():
+            like_qs.delete()
+            liked = False
+        else:
+            AlbumLike.objects.create(user=user, album=album)
+            liked = True
+            
+        return Response({
+            'liked': liked,
+            'likes_count': AlbumLike.objects.filter(album=album).count()
         })
 
 
@@ -2706,12 +2809,28 @@ class PlaylistRecommendationsView(generics.ListAPIView):
 
     def _save_playlist(self, user, playlist_data):
         """Save or update a recommended playlist"""
-        from .models import RecommendedPlaylist
+        from .models import RecommendedPlaylist, Playlist
         
         # Check if playlist with this unique_id already exists
         existing = RecommendedPlaylist.objects.filter(
             unique_id=playlist_data['unique_id']
         ).first()
+        
+        # Create or update the canonical Playlist object
+        if existing and existing.playlist_ref:
+            pl = existing.playlist_ref
+            pl.title = playlist_data['title']
+            pl.description = playlist_data['description']
+            pl.save()
+        else:
+            pl = Playlist.objects.create(
+                title=playlist_data['title'],
+                description=playlist_data['description'],
+                created_by=Playlist.CREATED_BY_SYSTEM
+            )
+        
+        # Sync songs to the canonical playlist
+        pl.songs.set(playlist_data['songs'])
         
         if existing:
             # Update existing
@@ -2721,6 +2840,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             existing.match_percentage = playlist_data.get('match_percentage', 0.0)
             existing.updated_at = timezone.now()
             existing.expires_at = timezone.now() + timedelta(days=7)
+            existing.playlist_ref = pl
             # Update songs: clear/add then set a randomized explicit order
             existing.songs.clear()
             existing.songs.add(*playlist_data['songs'])
@@ -2743,7 +2863,8 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 playlist_type=playlist_data['playlist_type'],
                 relevance_score=playlist_data['relevance_score'],
                 match_percentage=playlist_data.get('match_percentage', 0.0),
-                expires_at=timezone.now() + timedelta(days=7)
+                expires_at=timezone.now() + timedelta(days=7),
+                playlist_ref=pl
             )
             playlist.songs.add(*playlist_data['songs'])
             try:
@@ -2837,6 +2958,25 @@ class PlaylistRecommendationSaveView(APIView):
             # Save
             playlist.saved_by.add(request.user)
             return Response({'status': 'saved'})
+
+
+class PlaylistSaveToggleView(APIView):
+    """Toggle save/unsave for canonical Playlist objects"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        try:
+            playlist = Playlist.objects.get(id=pk)
+        except Playlist.DoesNotExist:
+            return Response({'detail': 'playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        if playlist.saved_by.filter(id=user.id).exists():
+            playlist.saved_by.remove(user)
+            return Response({'status': 'unsaved'}, status=status.HTTP_200_OK)
+        else:
+            playlist.saved_by.add(user)
+            return Response({'status': 'saved'}, status=status.HTTP_200_OK)
 
 
 class SearchView(APIView):

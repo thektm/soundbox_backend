@@ -6,6 +6,10 @@ from .views import (
     NotificationSettingUpdateView,
     StreamQualityUpdateView,
     UserFollowView,
+    LikedSongsView,
+    LikedAlbumsView,
+    LikedPlaylistsView,
+    MyArtistsView,
     MyLibraryView,
     R2UploadView,
     SongUploadView,
@@ -13,6 +17,7 @@ from .views import (
     ArtistDetailView,
     AlbumListView,
     AlbumDetailView,
+    AlbumLikeView,
     GenreListView,
     GenreDetailView,
     MoodListView,
@@ -48,6 +53,7 @@ from .views import (
     PlaylistDetailView,
     PlaylistRecommendationLikeView,
     PlaylistRecommendationSaveView,
+    PlaylistSaveToggleView,
     SearchView,
     EventPlaylistView,
     SearchSectionListView,
@@ -95,6 +101,10 @@ urlpatterns = [
     path('users/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
     path('users/settings/stream-quality/', StreamQualityUpdateView.as_view(), name='user_stream_quality_settings'),
     path('users/follow/', UserFollowView.as_view(), name='user_follow'),
+    path('users/liked-songs/', LikedSongsView.as_view(), name='liked_songs'),
+    path('users/liked-albums/', LikedAlbumsView.as_view(), name='liked_albums'),
+    path('users/liked-playlists/', LikedPlaylistsView.as_view(), name='liked_playlists'),
+    path('users/my-artists/', MyArtistsView.as_view(), name='my_artists'),
     path('users/my-library/', MyLibraryView.as_view(), name='my_library'),
     path('users/songs/recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
     path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
@@ -122,6 +132,7 @@ urlpatterns = [
     # --- Album Endpoints ---
     path('albums/', AlbumListView.as_view(), name='album_list'),
     path('albums/<int:pk>/', AlbumDetailView.as_view(), name='album_detail'),
+    path('albums/<int:pk>/like/', AlbumLikeView.as_view(), name='album_like'),
 
     # --- Genre & SubGenre Endpoints ---
     path('genres/', GenreListView.as_view(), name='genre_list'),
@@ -161,6 +172,7 @@ urlpatterns = [
     path('event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
     path('playlists/<int:pk>/', PlaylistDetailView.as_view(), name='playlist_detail'),
     path('playlists/<int:pk>/like/', PlaylistLikeView.as_view(), name='playlist_like'),
+    path('playlists/<int:pk>/save/', PlaylistSaveToggleView.as_view(), name='playlist_save_toggle'),
     path('search-sections/', SearchSectionListView.as_view(), name='search_section_list'),
     path('search-sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
     
