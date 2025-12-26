@@ -221,6 +221,12 @@ class RefreshToken(models.Model):
 class Artist(models.Model):
     """Artist model - can be linked to a user account or standalone"""
     name = models.CharField(max_length=255, unique=True)
+    artistic_name = models.CharField(max_length=255, blank=True, help_text="Artistic/stage name")
+    email = models.EmailField(blank=True, null=True)
+    city = models.CharField(max_length=200, blank=True)
+    date_of_birth = models.DateField(null=True, blank=True)
+    address = models.TextField(blank=True)
+    id_number = models.CharField(max_length=100, blank=True)
     user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='artist_profile')
     bio = models.TextField(blank=True)
     profile_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for profile image")

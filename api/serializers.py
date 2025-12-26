@@ -320,7 +320,8 @@ class ArtistSerializer(serializers.ModelSerializer):
     class Meta:
         model = Artist
         fields = [
-            'id', 'name', 'user_id', 'bio', 'profile_image', 'banner_image', 
+            'id', 'name', 'artistic_name', 'user_id', 'bio', 'profile_image', 'banner_image', 
+            'email', 'city', 'date_of_birth', 'address', 'id_number',
             'verified', 'followers_count', 'followings_count', 
             'monthly_listeners_count', 'is_following', 'created_at',
             'followers', 'following'
