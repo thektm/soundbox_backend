@@ -213,11 +213,21 @@ class AuthRegisterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
+        artist_flag = serializer.validated_data.get('artist', False)
+        artist_password = serializer.validated_data.get('artistPassword')
         # If user exists
         existing = User.objects.filter(phone_number=phone).first()
         if existing:
             # If already verified, block registration
             if existing.is_verified:
+                # If client requested artist role, add it to the existing user
+                if artist_flag:
+                    # set role to artist (overwrites current roles field)
+                    existing.roles = User.ROLE_ARTIST
+                    if artist_password:
+                        existing.set_artist_password(artist_password)
+                    existing.save()
+                    return Response({'status': 'ok', 'message': 'Artist role added to user'}, status=status.HTTP_200_OK)
                 return Response({'error': {'code': 'USER_EXISTS', 'message': 'Phone already registered'}}, status=status.HTTP_409_CONFLICT)
             # Not verified: allow resend but rate-limit to 1 minute since last verify OTP
             last_otp = OtpCode.objects.filter(user=existing, purpose=OtpCode.PURPOSE_VERIFY).order_by('-created_at').first()
@@ -234,7 +244,12 @@ class AuthRegisterView(APIView):
             return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # create user with is_verified False
-        user = User.objects.create_user(phone_number=phone, password=password)
+        create_kwargs = {}
+        if artist_flag:
+            create_kwargs['roles'] = User.ROLE_ARTIST
+        if artist_password:
+            create_kwargs['artist_password'] = artist_password
+        user = User.objects.create_user(phone_number=phone, password=password, **create_kwargs)
         user.is_verified = False
         user.save(update_fields=['is_verified'])
         # create OTP and attempt to send SMS
@@ -254,6 +269,8 @@ class AuthVerifyView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         otp = serializer.validated_data['otp']
+        artist_flag = serializer.validated_data.get('artist', False)
+        artist_password = serializer.validated_data.get('artistPassword')
         purpose = OtpCode.PURPOSE_VERIFY
         user = get_object_or_404(User, phone_number=phone)
         # find latest unconsumed otp
@@ -273,7 +290,12 @@ class AuthVerifyView(APIView):
         otp_obj.consumed = True
         otp_obj.save(update_fields=['consumed'])
         user.is_verified = True
-        user.save(update_fields=['is_verified'])
+        # If client requested artist role during verify, add artist role and set separate artist password
+        if artist_flag:
+            user.roles = User.ROLE_ARTIST
+            if artist_password:
+                user.set_artist_password(artist_password)
+        user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])
         tokens = issue_tokens_for_user(user, request)
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
@@ -287,6 +309,7 @@ class LoginPasswordView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
+        artist_flag = serializer.validated_data.get('artist', False)
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
@@ -294,7 +317,14 @@ class LoginPasswordView(APIView):
         # lockout check
         if user.locked_until and user.locked_until > timezone.now():
             return Response({'error': {'code': 'ACCOUNT_LOCKED', 'message': 'Account temporarily locked'}}, status=status.HTTP_403_FORBIDDEN)
-        if not user.check_password(password):
+        # choose which password to validate
+        password_ok = False
+        if artist_flag:
+            password_ok = user.check_artist_password(password)
+        else:
+            password_ok = user.check_password(password)
+
+        if not password_ok:
             user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
             if user.failed_login_attempts >= 5:
                 user.locked_until = timezone.now() + timedelta(minutes=15)
@@ -377,6 +407,7 @@ class ForgotPasswordView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
+        # Keep the OTP purpose same; client will indicate in reset whether it's for artist password
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
@@ -397,6 +428,7 @@ class PasswordResetView(APIView):
         phone = serializer.validated_data.get('phone')
         otp = serializer.validated_data.get('otp')
         new_password = serializer.validated_data.get('newPassword')
+        artist_flag = serializer.validated_data.get('artist', False)
         if phone:
             phone = normalize_phone(phone)
             try:
@@ -414,7 +446,11 @@ class PasswordResetView(APIView):
             # valid
             otp_obj.consumed = True
             otp_obj.save(update_fields=['consumed'])
-            user.set_password(new_password)
+            # If client specified artist, reset artist password, otherwise reset main password
+            if artist_flag:
+                user.set_artist_password(new_password)
+            else:
+                user.set_password(new_password)
             user.save()
             # revoke refresh tokens
             RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
@@ -549,12 +585,18 @@ class ChangePasswordView(APIView):
         
         current_password = serializer.validated_data['currentPassword']
         new_password = serializer.validated_data['newPassword']
+        artist_flag = serializer.validated_data.get('artist', False)
         user = request.user
 
-        if not user.check_password(current_password):
-            return Response({'error': {'code': 'INVALID_PASSWORD', 'message': 'Current password is incorrect'}}, status=status.HTTP_400_BAD_REQUEST)
-        
-        user.set_password(new_password)
+        # Validate with the correct password type
+        if artist_flag:
+            if not user.check_artist_password(current_password):
+                return Response({'error': {'code': 'INVALID_PASSWORD', 'message': 'Current password is incorrect'}}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_artist_password(new_password)
+        else:
+            if not user.check_password(current_password):
+                return Response({'error': {'code': 'INVALID_PASSWORD', 'message': 'Current password is incorrect'}}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_password(new_password)
         user.save()
         
         # Revoke all other sessions except the current one

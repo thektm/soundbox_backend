@@ -12,8 +12,12 @@ class UserManager(BaseUserManager):
         if not phone_number:
             raise ValueError('The phone number must be set')
         phone_number = str(phone_number)
+        # allow caller to pass artist_password in extra_fields
+        artist_password = extra_fields.pop('artist_password', None)
         user = self.model(phone_number=phone_number, roles=roles, **extra_fields)
         user.set_password(password)
+        if artist_password:
+            user.set_artist_password(artist_password)
         user.save(using=self._db)
         return user
 
@@ -72,6 +76,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     # user-specific settings stored as JSON
     settings = models.JSONField(default=dict, blank=True)
+    # Optional separate password for artist dashboard / artist-specific login
+    artist_password = models.CharField(max_length=255, blank=True, null=True)
 
     objects = UserManager()
 
@@ -80,6 +86,19 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.phone_number
+
+    def set_artist_password(self, raw_password):
+        from django.contrib.auth.hashers import make_password
+        if raw_password:
+            self.artist_password = make_password(raw_password)
+        else:
+            self.artist_password = None
+
+    def check_artist_password(self, raw_password):
+        from django.contrib.auth.hashers import check_password
+        if not self.artist_password:
+            return False
+        return check_password(raw_password, self.artist_password)
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
