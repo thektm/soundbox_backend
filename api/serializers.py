@@ -560,7 +560,7 @@ class SongSerializer(serializers.ModelSerializer):
             'danceability', 'valence', 'acousticness', 'instrumentalness',
             'live_performed', 'speechiness', 'label', 'producers', 'composers',
             'lyricists', 'credits', 'uploader', 'uploader_phone', 'created_at',
-            'updated_at', 'display_title'
+            'updated_at', 'display_title', 'similar_songs'
         ]
         read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
 
