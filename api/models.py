@@ -246,6 +246,16 @@ class Artist(models.Model):
     def __str__(self):
         return self.name
 
+    @property
+    def live_listeners(self):
+        """Count unique active listeners for this artist's songs"""
+        from django.utils import timezone
+        now = timezone.now()
+        return ActivePlayback.objects.filter(
+            song__artist=self,
+            expiration_time__gt=now
+        ).values('user').distinct().count()
+
 
 def validate_file_size(value):
     limit = 5 * 1024 * 1024  # 5MB
@@ -549,6 +559,23 @@ class SongLike(models.Model):
     class Meta:
         unique_together = ('user', 'song')
         ordering = ['-created_at']
+
+
+class ActivePlayback(models.Model):
+    """Track currently playing songs for live listener count"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='active_playbacks')
+    song = models.ForeignKey('Song', on_delete=models.CASCADE, related_name='active_playbacks')
+    start_time = models.DateTimeField(auto_now_add=True)
+    expiration_time = models.DateTimeField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['expiration_time']),
+            models.Index(fields=['user']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.phone_number} playing {self.song.title} (expires: {self.expiration_time})"
 
 
 class Playlist(models.Model):

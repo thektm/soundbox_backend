@@ -313,6 +313,7 @@ class ArtistSerializer(serializers.ModelSerializer):
     followers_count = serializers.SerializerMethodField()
     followings_count = serializers.SerializerMethodField()
     monthly_listeners_count = serializers.SerializerMethodField()
+    live_listeners = serializers.ReadOnlyField()
     is_following = serializers.SerializerMethodField()
     followers = serializers.SerializerMethodField()
     following = serializers.SerializerMethodField()
@@ -323,12 +324,12 @@ class ArtistSerializer(serializers.ModelSerializer):
             'id', 'name', 'artistic_name', 'user_id', 'bio', 'profile_image', 'banner_image', 
             'email', 'city', 'date_of_birth', 'address', 'id_number',
             'verified', 'followers_count', 'followings_count', 
-            'monthly_listeners_count', 'is_following', 'created_at',
+            'monthly_listeners_count', 'live_listeners', 'is_following', 'created_at',
             'followers', 'following'
         ]
         read_only_fields = [
             'id', 'created_at', 'followers_count', 'followings_count', 
-            'monthly_listeners_count', 'is_following', 'followers', 'following'
+            'monthly_listeners_count', 'live_listeners', 'is_following', 'followers', 'following'
         ]
 
     def get_followers_count(self, obj):

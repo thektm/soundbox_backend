@@ -1498,6 +1498,21 @@ class UnwrapStreamView(APIView):
             stream_access.unwrapped_at = timezone.now()
             stream_access.save(update_fields=['unwrapped', 'unwrapped_at'])
             
+            # Record active playback for live listener count
+            from .models import ActivePlayback
+            # Delete previous records for this user (only one active song at a time)
+            ActivePlayback.objects.filter(user=request.user).delete()
+            
+            # Calculate expiration time based on song duration
+            duration = stream_access.song.duration_seconds or 0
+            expiration_time = timezone.now() + timedelta(seconds=duration)
+            
+            ActivePlayback.objects.create(
+                user=request.user,
+                song=stream_access.song,
+                expiration_time=expiration_time
+            )
+
             # Count unwrapped streams for this user (last 24 hours for fairness)
             cutoff_time = timezone.now() - timedelta(hours=24)
             unwrapped_count = StreamAccess.objects.filter(
@@ -1639,6 +1654,21 @@ class StreamShortRedirectView(APIView):
             stream_access.one_time_used = False
             stream_access.one_time_expires_at = timezone.now() + timedelta(seconds=3600)
             stream_access.save(update_fields=['one_time_token', 'one_time_used', 'one_time_expires_at'])
+
+            # Record active playback for live listener count
+            from .models import ActivePlayback
+            # Delete previous records for this user (only one active song at a time)
+            ActivePlayback.objects.filter(user=request.user).delete()
+            
+            # Calculate expiration time based on song duration
+            duration = stream_access.song.duration_seconds or 0
+            expiration_time = timezone.now() + timedelta(seconds=duration)
+            
+            ActivePlayback.objects.create(
+                user=request.user,
+                song=stream_access.song,
+                expiration_time=expiration_time
+            )
 
             access_path = reverse('stream-access', kwargs={'token': one_time_token})
             access_url = request.build_absolute_uri(access_path)
