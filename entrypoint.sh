@@ -11,6 +11,7 @@ if [ -n "$DB_HOST" ]; then
 fi
 
 # Run migrations and collectstatic
+python manage.py makemigrations --noinput
 python manage.py migrate --noinput
 python manage.py collectstatic --noinput
 

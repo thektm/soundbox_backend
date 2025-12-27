@@ -70,7 +70,7 @@ DATABASES = {
         'NAME': os.environ.get('DB_NAME', 'soundbox_db'),
         'USER': os.environ.get('DB_USER', 'soundbox_user'),
         'PASSWORD': os.environ.get('DB_PASSWORD', 'postgres'),
-        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
+        'HOST': os.environ.get('DB_HOST', 'db'),
         'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
