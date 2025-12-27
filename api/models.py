@@ -746,3 +746,45 @@ class UserHistory(models.Model):
     def __str__(self):
         item = self.song or self.album or self.playlist or self.artist
         return f"{self.user.phone_number} viewed {self.content_type}: {item}"
+
+
+class Rules(models.Model):
+    title = models.CharField(max_length=255)
+    content = models.TextField()
+    version = models.CharField(max_length=20, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.title} (v{self.version})"
+
+    def save(self, *args, **kwargs):
+        if not self.version:
+            self.version = self._generate_next_version()
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def _generate_next_version():
+        latest = Rules.objects.order_by('-created_at').first()
+        if not latest:
+            return "1.0.0"
+        
+        # Parse version like 1.0.0
+        parts = latest.version.split('.')
+        if len(parts) != 3:
+            return "1.0.0"  # fallback
+        
+        major, minor, patch = map(int, parts)
+        
+        # Increment patch
+        patch += 1
+        if patch > 9:
+            patch = 0
+            minor += 1
+            if minor > 9:
+                minor = 0
+                major += 1
+        
+        return f"{major}.{minor}.{patch}"

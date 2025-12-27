@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike
+    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -35,6 +35,7 @@ from .serializers import (
     LikedSongSerializer,
     LikedAlbumSerializer,
     LikedPlaylistSerializer,
+    RulesSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -3191,4 +3192,64 @@ class SearchSectionDetailView(APIView):
         if not section:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         section.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class RulesListCreateView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        rules = Rules.objects.all()
+        serializer = RulesSerializer(rules, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = RulesSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RulesDetailView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_object(self, pk):
+        try:
+            return Rules.objects.get(pk=pk)
+        except Rules.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        rule = self.get_object(pk)
+        if not rule:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = RulesSerializer(rule)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        rule = self.get_object(pk)
+        if not rule:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = RulesSerializer(rule, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, pk):
+        rule = self.get_object(pk)
+        if not rule:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = RulesSerializer(rule, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        rule = self.get_object(pk)
+        if not rule:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        rule.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

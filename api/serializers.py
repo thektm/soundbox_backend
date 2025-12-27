@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import (
     User, UserPlaylist, Artist,RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
-    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike
+    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -1429,3 +1429,10 @@ class LikedPlaylistSerializer(serializers.ModelSerializer):
         # Remove the 'playlist' ID field
         ret.pop('playlist', None)
         return ret
+
+
+class RulesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Rules
+        fields = ['id', 'title', 'content', 'version', 'created_at']
+        read_only_fields = ['version', 'created_at']

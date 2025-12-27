@@ -59,6 +59,8 @@ from .views import (
     SearchSectionListView,
     SearchSectionDetailView,
     PlaylistLikeView,
+    RulesListCreateView,
+    RulesDetailView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -181,6 +183,10 @@ urlpatterns = [
     path('user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
     path('user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
     path('user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
+    
+    # --- Rules Endpoints ---
+    path('rules/', RulesListCreateView.as_view(), name='rules_list_create'),
+    path('rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
     
     # Include router URLs (if any)
     path('', include(router.urls)),
