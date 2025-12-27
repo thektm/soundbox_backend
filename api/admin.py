@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from .models import (
     Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow
+    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules
 )
 
 User = get_user_model()
@@ -416,3 +416,20 @@ class SearchSectionAdmin(admin.ModelAdmin):
             obj.created_by = request.user
         obj.updated_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(Rules)
+class RulesAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'version', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = ('title', 'content', 'version')
+    readonly_fields = ('version', 'created_at')
+    fieldsets = (
+        ('Basic Info', {
+            'fields': ('title', 'content')
+        }),
+        ('Versioning', {
+            'fields': ('version', 'created_at'),
+            'classes': ('collapse',)
+        }),
+    )
