@@ -1436,3 +1436,9 @@ class RulesSerializer(serializers.ModelSerializer):
         model = Rules
         fields = ['id', 'title', 'content', 'version', 'created_at']
         read_only_fields = ['version', 'created_at']
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Ensure `updated_at` is never returned in API responses
+        ret.pop('updated_at', None)
+        return ret

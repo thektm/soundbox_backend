@@ -118,6 +118,7 @@ class Follow(models.Model):
     followed_artist = models.ForeignKey('Artist', on_delete=models.CASCADE, null=True, blank=True, related_name='follower_artist_relations')
     
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-created_at']
