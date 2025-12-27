@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import (
     User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
-    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules
+    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -1469,3 +1469,10 @@ class RulesSerializer(serializers.ModelSerializer):
         # Ensure `updated_at` is never returned in API responses
         ret.pop('updated_at', None)
         return ret
+
+
+class PlayConfigurationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlayConfiguration
+        fields = ['free_play_worth', 'premium_play_worth', 'updated_at']
+        read_only_fields = ['updated_at']

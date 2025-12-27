@@ -1,9 +1,11 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.urls import reverse
+from django.http import HttpResponseRedirect
 from .models import (
     Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules
+    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration
 )
 
 User = get_user_model()
@@ -447,3 +449,20 @@ class RulesAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+
+@admin.register(PlayConfiguration)
+class PlayConfigurationAdmin(admin.ModelAdmin):
+    list_display = ('free_play_worth', 'premium_play_worth', 'updated_at')
+    
+    def has_add_permission(self, request):
+        return not PlayConfiguration.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        obj = PlayConfiguration.objects.first()
+        if obj:
+            return HttpResponseRedirect(reverse('admin:api_playconfiguration_change', args=(obj.pk,)))
+        return super().changelist_view(request, extra_context=extra_context)

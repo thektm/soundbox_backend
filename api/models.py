@@ -605,6 +605,7 @@ class PlayCount(models.Model):
     country = models.CharField(max_length=100)
     city = models.CharField(max_length=100)
     ip = models.GenericIPAddressField()
+    pay = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -612,6 +613,20 @@ class PlayCount(models.Model):
 
     def __str__(self):
         return f"PlayCount(user={self.user_id}, {self.city}, {self.country}, {self.created_at})"
+
+
+class PlayConfiguration(models.Model):
+    """Configuration for play worth based on user plan"""
+    free_play_worth = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
+    premium_play_worth = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Play Configuration"
+        verbose_name_plural = "Play Configuration"
+
+    def __str__(self):
+        return "Play Configuration"
 
 
 class UserPlaylist(models.Model):

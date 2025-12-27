@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules
+    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -36,6 +36,7 @@ from .serializers import (
     LikedAlbumSerializer,
     LikedPlaylistSerializer,
     RulesSerializer,
+    PlayConfigurationSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -1744,11 +1745,21 @@ class PlayCountView(APIView):
             song = stream_access.song
             ip = get_client_ip(request)
 
+            # Get latest configuration
+            config = PlayConfiguration.objects.last()
+            pay_value = 0.000000
+            if config:
+                if request.user.plan == User.PLAN_PREMIUM:
+                    pay_value = config.premium_play_worth
+                else:
+                    pay_value = config.free_play_worth
+
             play_count = PlayCount.objects.create(
                 user=request.user,
                 country=country,
                 city=city,
-                ip=ip
+                ip=ip,
+                pay=pay_value
             )
             song.play_counts.add(play_count)
 
@@ -3242,6 +3253,32 @@ class RulesDetailView(APIView):
         if not rule:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         serializer = RulesSerializer(rule, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PlayConfigurationView(APIView):
+    """View to get or update the play configuration. Only one record should exist."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        config = PlayConfiguration.objects.last()
+        if not config:
+            config = PlayConfiguration.objects.create()
+        serializer = PlayConfigurationSerializer(config)
+        return Response(serializer.data)
+
+    def post(self, request):
+        if not request.user.is_staff:
+            return Response({'error': 'Only staff can update configuration'}, status=status.HTTP_403_FORBIDDEN)
+        
+        config = PlayConfiguration.objects.last()
+        if not config:
+            config = PlayConfiguration.objects.create()
+        
+        serializer = PlayConfigurationSerializer(config, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)

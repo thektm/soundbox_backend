@@ -61,6 +61,7 @@ from .views import (
     PlaylistLikeView,
     RulesListCreateView,
     RulesDetailView,
+    PlayConfigurationView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -168,6 +169,7 @@ urlpatterns = [
     
     # --- Analytics & Search ---
     path('play/count/', PlayCountView.as_view(), name='play_count'),
+    path('play/configuration/', PlayConfigurationView.as_view(), name='play_configuration'),
     path('search/', SearchView.as_view(), name='search'),
     
     # --- Curated Content Endpoints ---
