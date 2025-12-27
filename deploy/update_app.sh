@@ -79,6 +79,17 @@ sleep 4
 
 echo "Running migrations inside web container"
 # use -T to avoid tty issues in non-interactive scripts
+$COMPOSE_CMD exec -T "$WEB_SERVICE" python manage.py makemigrations --noinput || {
+  echo "Warning: makemigrations failed via compose exec; attempting docker exec by container name"
+  # fallback: find container name and exec into it
+  CONTAINER_NAME=$(docker ps --filter "name=${WEB_SERVICE}" --format "{{.Names}}" | head -n1)
+  if [ -n "$CONTAINER_NAME" ]; then
+    docker exec -i "$CONTAINER_NAME" python manage.py makemigrations --noinput
+  else
+    echo "Could not find running container for service $WEB_SERVICE to run makemigrations." >&2
+    exit 1
+  fi
+}
 $COMPOSE_CMD exec -T "$WEB_SERVICE" python manage.py migrate --noinput || {
   echo "Warning: migrations failed to run via compose exec; attempting docker exec by container name"
   # fallback: find container name and exec into it
