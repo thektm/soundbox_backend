@@ -5,6 +5,10 @@ from django.contrib.auth.models import (
     PermissionsMixin,
 )
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator, RegexValidator
+import os
 
 
 class UserManager(BaseUserManager):
@@ -241,6 +245,91 @@ class Artist(models.Model):
     
     def __str__(self):
         return self.name
+
+
+def validate_file_size(value):
+    limit = 5 * 1024 * 1024  # 5MB
+    try:
+        size = value.size
+    except Exception:
+        # If value doesn't have size (unlikely in normal ImageField usage), skip
+        return
+    if size > limit:
+        raise ValidationError('Max file size is 5MB')
+
+
+class ArtistAuth(models.Model):
+    """Artist authentication / verification submissions.
+
+    Captures identity details and uploaded national ID image used for
+    verifying an artist (existing or fresh).
+    """
+    AUTH_EXISTING = 'existing_artist'
+    AUTH_FRESH = 'fresh_artist'
+
+    AUTH_CHOICES = [
+        (AUTH_EXISTING, 'Existing Artist'),
+        (AUTH_FRESH, 'Fresh Artist'),
+    ]
+
+    user = models.OneToOneField('User', on_delete=models.CASCADE, null=True, blank=True, related_name='artist_auth')
+    auth_type = models.CharField(max_length=30, choices=AUTH_CHOICES, default=AUTH_FRESH)
+
+    # Personal fields (Persian form mapping provided by frontend)
+    first_name = models.CharField(max_length=150)
+    last_name = models.CharField(max_length=150)
+    stage_name = models.CharField(max_length=200)
+    birth_date = models.DateField()
+
+    national_id_validator = RegexValidator(regex=r'^\d{10}$', message='National ID must be exactly 10 digits')
+    national_id = models.CharField(max_length=10, validators=[national_id_validator])
+
+    phone_validator = RegexValidator(regex=r'^09\d{9}$', message='Phone number must be 11 digits and start with 09')
+    phone_number = models.CharField(max_length=20, validators=[phone_validator])
+
+    email = models.EmailField(blank=True, null=True)
+    city = models.CharField(max_length=100)
+    address = models.TextField(blank=True, null=True)
+    biography = models.TextField(blank=True, null=True)
+
+    national_id_image = models.ImageField(
+        upload_to='national_ids/',
+        validators=[FileExtensionValidator(['jpg', 'jpeg', 'png']), validate_file_size]
+    )
+
+    # Verification status for the submission
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_ACCEPTED, 'Accepted'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+
+    is_verified = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.stage_name} ({self.user.phone_number if self.user else 'no-user'})"
+
+    def clean(self):
+        # Ensure national id has correct format (redundant with validator but safe)
+        if self.national_id and (not self.national_id.isdigit() or len(self.national_id) != 10):
+            raise ValidationError({'national_id': 'National ID must be exactly 10 digits'})
+        # Phone number basic normalization check
+        if self.phone_number:
+            digits = ''.join(ch for ch in self.phone_number if ch.isdigit())
+            if not digits.startswith('09') or len(digits) != 11:
+                raise ValidationError({'phone_number': 'Phone number must be in local format starting with 09 and 11 digits'})
 
 
 class ArtistMonthlyListener(models.Model):

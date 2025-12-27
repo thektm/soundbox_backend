@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
 from .models import User, OtpCode, RefreshToken
 from .serializers import (
     RegisterRequestSerializer,
@@ -22,6 +23,7 @@ from .serializers import (
     TokenRefreshRequestSerializer,
     LogoutSerializer,
     ChangePasswordSerializer,
+    ArtistAuthSerializer,
     SessionSerializer,
 )
 from rest_framework_simplejwt.tokens import RefreshToken as SimpleRefreshToken
@@ -397,6 +399,41 @@ class LoginOtpVerifyView(APIView):
             user.save(update_fields=['is_verified'])
         tokens = issue_tokens_for_user(user, request)
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
+
+
+class ArtistAuthView(APIView):
+    """Create / retrieve / update artist authentication submissions for the authenticated user."""
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        try:
+            auth = request.user.artist_auth
+        except Exception:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ArtistAuthSerializer(auth, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        # create or replace submission for this user
+        if hasattr(request.user, 'artist_auth'):
+            return Response({'detail': 'Submission already exists. Use PATCH to update.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = ArtistAuthSerializer(data=request.data, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save(user=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def patch(self, request):
+        try:
+            auth = request.user.artist_auth
+        except Exception:
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ArtistAuthSerializer(auth, data=request.data, partial=True, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class ForgotPasswordView(APIView):

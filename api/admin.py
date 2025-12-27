@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from .models import (
-    Artist, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
+    Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules
 )
@@ -51,6 +51,20 @@ class ArtistAdmin(admin.ModelAdmin):
         ('Metadata', {
             'fields': ('created_at',)
         }),
+    )
+
+
+@admin.register(ArtistAuth)
+class ArtistAuthAdmin(admin.ModelAdmin):
+    list_display = ('id', 'stage_name', 'first_name', 'last_name', 'user', 'auth_type', 'status', 'is_verified', 'created_at')
+    list_filter = ('auth_type', 'status', 'is_verified', 'created_at')
+    search_fields = ('stage_name', 'first_name', 'last_name', 'user__phone_number', 'national_id')
+    readonly_fields = ('created_at', 'updated_at')
+    fieldsets = (
+        ('Personal', {'fields': ('user', 'auth_type', 'first_name', 'last_name', 'stage_name', 'birth_date')}),
+        ('Contact', {'fields': ('phone_number', 'email', 'city', 'address')}),
+        ('Verification', {'fields': ('national_id', 'national_id_image', 'biography', 'status', 'is_verified')}),
+        ('Timestamps', {'fields': ('created_at', 'updated_at')})
     )
 
 

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    User, UserPlaylist, Artist,RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
+    User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules
 )
@@ -398,6 +398,33 @@ class PopularArtistSerializer(ArtistSerializer):
     total_plays = serializers.IntegerField(read_only=True)
     total_likes = serializers.IntegerField(read_only=True)
     total_playlist_adds = serializers.IntegerField(read_only=True)
+
+
+class ArtistAuthSerializer(serializers.ModelSerializer):
+    """Serializer for ArtistAuth verification submissions."""
+    user_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), source='user', required=False, allow_null=True
+    )
+    national_id_image = serializers.ImageField(required=True)
+
+    class Meta:
+        model = ArtistAuth
+        fields = [
+            'id', 'user_id', 'auth_type', 'first_name', 'last_name', 'stage_name',
+            'birth_date', 'national_id', 'phone_number', 'email', 'city', 'address',
+            'biography', 'national_id_image', 'is_verified', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'is_verified', 'status', 'created_at', 'updated_at']
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and getattr(request, 'user', None) and request.user.is_authenticated:
+            # prefer the authenticated user over supplied user_id
+            validated_data['user'] = request.user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        return super().update(instance, validated_data)
     weekly_plays = serializers.IntegerField(read_only=True)
     daily_plays = serializers.IntegerField(read_only=True)
     score = serializers.IntegerField(read_only=True)
