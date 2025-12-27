@@ -8,3 +8,4 @@ boto3>=1.28
 mutagen>=1.47
 requests>=2.31
 user-agents>=2.2.0
+Pillow
