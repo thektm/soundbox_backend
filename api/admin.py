@@ -7,6 +7,7 @@ from .models import (
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration
 )
+from .models import ActivePlayback
 
 User = get_user_model()
 
@@ -454,15 +455,12 @@ class RulesAdmin(admin.ModelAdmin):
 @admin.register(PlayConfiguration)
 class PlayConfigurationAdmin(admin.ModelAdmin):
     list_display = ('free_play_worth', 'premium_play_worth', 'updated_at')
-    
-    def has_add_permission(self, request):
-        return not PlayConfiguration.objects.exists()
+    readonly_fields = ('updated_at',)
 
-    def has_delete_permission(self, request, obj=None):
-        return False
 
-    def changelist_view(self, request, extra_context=None):
-        obj = PlayConfiguration.objects.first()
-        if obj:
-            return HttpResponseRedirect(reverse('admin:api_playconfiguration_change', args=(obj.pk,)))
-        return super().changelist_view(request, extra_context=extra_context)
+@admin.register(ActivePlayback)
+class ActivePlaybackAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'song', 'start_time', 'expiration_time')
+    list_filter = ('start_time', 'expiration_time')
+    search_fields = ('user__phone_number', 'song__title')
+    readonly_fields = ('start_time',)
