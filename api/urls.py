@@ -18,6 +18,7 @@ from .views import (
     ArtistHomeView,
     ArtistLiveListenersView,
     ArtistLiveListenersPollView,
+    ArtistSongsManagementView,
     AlbumListView,
     AlbumDetailView,
     AlbumLikeView,
@@ -72,6 +73,7 @@ from .auth_views import (
     LoginPasswordView,
     LoginOtpRequestView,
     LoginOtpVerifyView,
+    ArtistAuthView,
     ForgotPasswordView,
     PasswordResetView,
     ChangePasswordView,
@@ -87,7 +89,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 router = DefaultRouter()
 
 urlpatterns = [
-    # --- Authentication Endpoints ---
+    # --- Authentication Endpoints (Shared by User and Artist Apps) ---
     path('auth/register/', AuthRegisterView.as_view(), name='auth_register'),
     path('auth/verify/', AuthVerifyView.as_view(), name='auth_verify'),
     path('auth/login/password/', LoginPasswordView.as_view(), name='auth_login_password'),
@@ -131,10 +133,15 @@ urlpatterns = [
     path('users/playlist-recommendations/<str:unique_id>/like/', PlaylistRecommendationLikeView.as_view(), name='user_playlist_recommendation_like'),
     path('users/playlist-recommendations/<str:unique_id>/save/', PlaylistRecommendationSaveView.as_view(), name='user_playlist_recommendation_save'),
     
-    # --- Artist Endpoints ---
+    # --- Artist App Endpoints ---
     path('artist/home/', ArtistHomeView.as_view(), name='artist_home'),
     path('artist/live-listeners/', ArtistLiveListenersView.as_view(), name='artist_live_listeners'),
     path('artist/live-listeners/poll/', ArtistLiveListenersPollView.as_view(), name='artist_live_listeners_poll'),
+    path('artist/songs-management/', ArtistSongsManagementView.as_view(), name='artist_songs_management'),
+    path('artist/auth/', ArtistAuthView.as_view(), name='artist_auth'),
+    path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
+
+    # --- Artist Discovery Endpoints ---
     path('artists/', ArtistListView.as_view(), name='artist_list'),
     path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
 
@@ -162,7 +169,6 @@ urlpatterns = [
     
     # --- Media Upload Endpoints ---
     path('upload/', R2UploadView.as_view(), name='r2_upload'),
-    path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
     
     # --- Streaming & Playback Endpoints ---
     path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),

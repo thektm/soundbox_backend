@@ -3497,3 +3497,36 @@ class ArtistLiveListenersPollView(APIView):
             "live_listeners": len(initial_listeners),
             "changed": False
         })
+
+
+class ArtistSongsManagementView(APIView):
+    """
+    View for artists to manage their own songs.
+    Supports pagination, sorting by latest release, and filtering by status.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        queryset = Song.objects.filter(artist=artist).order_by('-release_date', '-created_at')
+        
+        status_param = request.query_params.get('status')
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        if page is not None:
+            serializer = SongSerializer(page, many=True, context={'request': request})
+            return paginator.get_paginated_response(serializer.data)
+
+        serializer = SongSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
