@@ -467,6 +467,7 @@ class Song(models.Model):
 
     # Files (R2 CDN URLs)
     audio_file = models.URLField(max_length=500, help_text="R2 CDN URL for audio file")
+    converted_audio_url = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for converted 128kbps audio file")
     cover_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for cover image")
     original_format = models.CharField(max_length=10, blank=True, help_text="Original upload format (mp3, wav, etc.)")
 

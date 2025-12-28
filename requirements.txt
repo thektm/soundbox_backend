@@ -9,3 +9,5 @@ mutagen>=1.47
 requests>=2.31
 user-agents>=2.2.0
 Pillow
+pydub>=0.25.1
+ffmpeg-python>=0.2.0

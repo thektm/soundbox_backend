@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from .utils import generate_signed_r2_url
 from .models import (
     User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
@@ -589,7 +590,7 @@ class SongSerializer(serializers.ModelSerializer):
         model = Song
         fields = [
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
-            'album', 'album_title', 'is_single', 'stream_url', 'cover_image',
+            'album', 'album_title', 'is_single', 'stream_url', 'audio_file', 'converted_audio_url', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
             'likes_count', 'is_liked',
             'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
@@ -617,6 +618,17 @@ class SongSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return SongLike.objects.filter(user=request.user, song=obj).exists()
         return False
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Sign URLs if they are on our CDN
+        if ret.get('cover_image'):
+            ret['cover_image'] = generate_signed_r2_url(ret['cover_image'])
+        if ret.get('audio_file'):
+            ret['audio_file'] = generate_signed_r2_url(ret['audio_file'])
+        if ret.get('converted_audio_url'):
+            ret['converted_audio_url'] = generate_signed_r2_url(ret['converted_audio_url'])
+        return ret
 
     def get_stream_url(self, obj):
         """

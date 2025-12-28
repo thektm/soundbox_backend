@@ -46,6 +46,10 @@ from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, Decim
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.conf import settings
+from .utils import (
+    upload_file_to_r2, generate_signed_r2_url, 
+    get_audio_info, convert_to_128kbps
+)
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -402,110 +406,8 @@ class R2UploadView(APIView):
         return Response({'key': key, 'url': url}, status=status.HTTP_201_CREATED)
 
 
-def upload_file_to_r2(file_obj, folder='', custom_filename=None):
-    """
-    Helper function to upload a file to R2 and return the CDN URL.
-    
-    Args:
-        file_obj: Django UploadedFile object
-        folder: Optional folder path in bucket
-        custom_filename: Optional custom filename (will preserve extension)
-    
-    Returns:
-        tuple: (cdn_url, original_format) or raises Exception
-    """
-    original_filename = getattr(file_obj, 'name', None) or 'upload'
-    
-    if custom_filename:
-        _, original_ext = os.path.splitext(original_filename)
-        _, custom_ext = os.path.splitext(custom_filename)
-        if custom_ext:
-            filename = custom_filename
-        else:
-            filename = f"{custom_filename}{original_ext}"
-    else:
-        filename = original_filename
-    
-    # Get original format
-    _, ext = os.path.splitext(original_filename)
-    original_format = ext.lstrip('.').lower()
-    
-    # Build key
-    key = f"{folder + '/' if folder else ''}{filename}"
-    
-    # Build boto3 client
-    client_kwargs = {
-        'service_name': 's3',
-        'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
-        'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
-        'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
-        'config': Config(signature_version='s3v4'),
-    }
-    session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
-    if session_token:
-        client_kwargs['aws_session_token'] = session_token
-    
-    client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
-    s3 = boto3.client(**client_kwargs)
-    
-    # Detect content type
-    content_type, _ = mimetypes.guess_type(filename)
-    if not content_type:
-        content_type = 'application/octet-stream'
-    
-    # Upload
-    s3.upload_fileobj(
-        file_obj,
-        getattr(settings, 'R2_BUCKET_NAME'),
-        key,
-        ExtraArgs={'ContentType': content_type}
-    )
-    
-    # Build CDN URL
-    cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-    url = f"{cdn_base}/{key}"
-    
-    return url, original_format
+# Helper functions moved to utils.py
 
-
-def get_audio_duration(file_obj, format_ext):
-    """
-    Extract duration from audio file.
-    
-    Args:
-        file_obj: Django UploadedFile object
-        format_ext: File extension (mp3, wav, etc.)
-    
-    Returns:
-        int: Duration in seconds or None
-    """
-    try:
-        # Save to temporary file to read metadata
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{format_ext}') as tmp_file:
-            for chunk in file_obj.chunks():
-                tmp_file.write(chunk)
-            tmp_path = tmp_file.name
-        
-        # Reset file pointer
-        file_obj.seek(0)
-        
-        # Read duration based on format
-        duration = None
-        if format_ext == 'mp3':
-            audio = MP3(tmp_path)
-            duration = int(audio.info.length)
-        elif format_ext == 'wav':
-            audio = WAVE(tmp_path)
-            duration = int(audio.info.length)
-        
-        # Clean up temp file
-        os.unlink(tmp_path)
-        
-        return duration
-    except Exception as e:
-        print(f"Error extracting audio duration: {e}")
-        return None
 
 
 class SongUploadView(APIView):
@@ -544,8 +446,10 @@ class SongUploadView(APIView):
                 custom_filename=audio_filename
             )
             
-            # Get audio duration
-            duration = get_audio_duration(audio_file, original_format)
+            # Get audio info
+            duration, bitrate, original_format = get_audio_info(audio_file)
+            if not original_format:
+                original_format = audio_file.name.split('.')[-1].lower()
             
             # Upload cover image if provided
             cover_url = ""
@@ -1435,41 +1339,8 @@ class SongStreamListView(generics.ListAPIView):
         return queryset.distinct()
 
 
-def generate_signed_r2_url(object_key, expiration=3600):
-    """
-    Generate a short-lived signed URL for R2 object.
-    
-    Args:
-        object_key: The key of the object in R2 bucket (e.g., 'songs/artist-title.mp3')
-        expiration: URL expiration time in seconds (default 1 hour)
-    
-    Returns:
-        str: Signed URL
-    """
-    client_kwargs = {
-        'service_name': 's3',
-        'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
-        'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
-        'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
-        'config': Config(signature_version='s3v4'),
-    }
-    session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
-    if session_token:
-        client_kwargs['aws_session_token'] = session_token
-    
-    client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
-    s3 = boto3.client(**client_kwargs)
-    
-    bucket_name = getattr(settings, 'R2_BUCKET_NAME')
-    
-    # Generate presigned URL
-    signed_url = s3.generate_presigned_url(
-        'get_object',
-        Params={'Bucket': bucket_name, 'Key': object_key},
-        ExpiresIn=expiration
-    )
-    
-    return signed_url
+# Helper functions moved to utils.py
+
 
 
 class UnwrapStreamView(APIView):
@@ -3502,19 +3373,23 @@ class ArtistLiveListenersPollView(APIView):
 class ArtistSongsManagementView(APIView):
     """
     View for artists to manage their own songs.
-    Supports pagination, sorting by latest release, and filtering by status.
+    Supports listing, uploading, and updating songs.
     """
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_artist(self, user):
+        if user.roles != User.ROLE_ARTIST:
+            return None
+        try:
+            return user.artist_profile
+        except Artist.DoesNotExist:
+            return None
 
     def get(self, request):
-        user = request.user
-        if user.roles != User.ROLE_ARTIST:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
-        
-        try:
-            artist = user.artist_profile
-        except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         queryset = Song.objects.filter(artist=artist).order_by('-release_date', '-created_at')
         
@@ -3530,3 +3405,154 @@ class ArtistSongsManagementView(APIView):
 
         serializer = SongSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
+
+    def post(self, request):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        audio_file = request.FILES.get('audio_file')
+        if not audio_file:
+            return Response({"error": "audio_file is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        title = request.data.get('title', 'Untitled')
+        
+        # Determine artist name for filename
+        artist_name = artist.artistic_name
+        if not artist_name:
+            artist_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        if not artist_name:
+            artist_name = request.user.phone_number
+
+        # Get audio info
+        duration, bitrate, format_ext = get_audio_info(audio_file)
+        if not format_ext:
+            # Fallback to extension
+            _, ext = os.path.splitext(audio_file.name)
+            format_ext = ext.lstrip('.').lower()
+        
+        bitrate_str = str(bitrate) if bitrate else "wav"
+        
+        # Versioning
+        version = Song.objects.filter(artist=artist, title=title).count() + 1
+        
+        # Final filename
+        # mohsen yegane - rage khab (128)1.mp3
+        safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+        safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+        filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
+        
+        # Upload original
+        audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+        
+        converted_url = None
+        if format_ext == 'mp3' and bitrate and bitrate > 128:
+            try:
+                converted_file = convert_to_128kbps(audio_file)
+                conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
+                converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+            except Exception as e:
+                print(f"Conversion failed: {e}")
+
+        # Handle cover image
+        cover_image = request.FILES.get('cover_image')
+        cover_url = ""
+        if cover_image:
+            cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+
+        # Create song
+        data = request.data.copy()
+        
+        # Map user-friendly field names to serializer write_only fields
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+            if field in data and f"{field}_write" not in data:
+                data[f"{field}_write"] = data.getlist(field) if hasattr(data, 'getlist') else data[field]
+
+        data['artist'] = artist.id
+        data['audio_file'] = audio_url
+        data['converted_audio_url'] = converted_url
+        data['cover_image'] = cover_url
+        data['duration_seconds'] = duration
+        data['original_format'] = format_ext
+        data['uploader'] = request.user.id
+        
+        serializer = SongSerializer(data=data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "message": "OK",
+                "song": serializer.data
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk=None):
+        return self.update(request, pk, partial=False)
+
+    def patch(self, request, pk=None):
+        return self.update(request, pk, partial=True)
+
+    def update(self, request, pk, partial=False):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        song = get_object_or_404(Song, pk=pk, artist=artist)
+        
+        data = request.data.copy()
+
+        # Map user-friendly field names to serializer write_only fields
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+            if field in data and f"{field}_write" not in data:
+                data[f"{field}_write"] = data.getlist(field) if hasattr(data, 'getlist') else data[field]
+        
+        audio_file = request.FILES.get('audio_file')
+        if audio_file:
+            title = data.get('title', song.title)
+            artist_name = artist.artistic_name or f"{request.user.first_name} {request.user.last_name}".strip() or request.user.phone_number
+            
+            duration, bitrate, format_ext = get_audio_info(audio_file)
+            bitrate_str = str(bitrate) if bitrate else "wav"
+            
+            # Increment version for re-upload
+            # We can extract version from current filename or just count
+            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            
+            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
+            
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+            data['audio_file'] = audio_url
+            data['duration_seconds'] = duration
+            data['original_format'] = format_ext
+            
+            if format_ext == 'mp3' and bitrate and bitrate > 128:
+                try:
+                    converted_file = convert_to_128kbps(audio_file)
+                    conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                    data['converted_audio_url'] = converted_url
+                except Exception as e:
+                    print(f"Conversion failed: {e}")
+
+        cover_image = request.FILES.get('cover_image')
+        if cover_image:
+            title = data.get('title', song.title)
+            artist_name = artist.artistic_name or f"{request.user.first_name} {request.user.last_name}".strip() or request.user.phone_number
+            version = Song.objects.filter(artist=artist, title=title).count()
+            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            data['cover_image'] = cover_url
+
+        serializer = SongSerializer(song, data=data, partial=partial, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "message": "OK",
+                "song": serializer.data
+            })
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
