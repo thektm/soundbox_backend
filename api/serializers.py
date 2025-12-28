@@ -697,6 +697,9 @@ class SongSerializer(serializers.ModelSerializer):
         - similar_page_size (default 6)
         """
         request = self.context.get('request')
+        if request and '/artist/' in request.path:
+            return None
+        
         page = 1
         page_size = 6
         if request is not None:
