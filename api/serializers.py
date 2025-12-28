@@ -533,6 +533,7 @@ class SongSerializer(serializers.ModelSerializer):
     stream_url = serializers.SerializerMethodField()
     plays = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
+    added_to_playlists_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     
     # For write operations
@@ -592,7 +593,7 @@ class SongSerializer(serializers.ModelSerializer):
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
             'album', 'album_title', 'is_single', 'stream_url', 'audio_file', 'converted_audio_url', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
-            'likes_count', 'is_liked',
+            'likes_count', 'added_to_playlists_count', 'is_liked',
             'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
             'mood_ids', 'tag_ids', 'description', 'lyrics', 'tempo', 'energy',
             'danceability', 'valence', 'acousticness', 'instrumentalness',
@@ -601,7 +602,7 @@ class SongSerializer(serializers.ModelSerializer):
             'updated_at', 'display_title', 'similar_songs',
             'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write', 'tag_ids_write'
         ]
-        read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
+        read_only_fields = ['id', 'plays', 'likes_count', 'added_to_playlists_count', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
 
     def get_plays(self, obj):
         # Return the sum of the legacy 'plays' field and the actual PlayCount records
@@ -612,6 +613,9 @@ class SongSerializer(serializers.ModelSerializer):
 
     def get_likes_count(self, obj):
         return SongLike.objects.filter(song=obj).count()
+
+    def get_added_to_playlists_count(self, obj):
+        return obj.user_playlists.count()
 
     def get_is_liked(self, obj):
         request = self.context.get('request')

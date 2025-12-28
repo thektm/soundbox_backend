@@ -43,7 +43,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
@@ -1205,7 +1205,60 @@ class SongDetailView(APIView):
             )
             
         serializer = SongSerializer(song, context={'request': request})
-        return Response(serializer.data)
+        data = serializer.data
+
+        # If the user is the artist of this song, add detailed analytics
+        is_artist = False
+        if request.user.is_authenticated:
+            try:
+                artist_profile = request.user.artist_profile
+                if song.artist == artist_profile:
+                    is_artist = True
+            except Artist.DoesNotExist:
+                pass
+
+        if is_artist:
+            try:
+                days = int(request.query_params.get('days', 30))
+            except (ValueError, TypeError):
+                days = 30
+            
+            start_date = timezone.now() - timedelta(days=days)
+            period_plays = song.play_counts.filter(created_at__gte=start_date)
+            total_period_plays = period_plays.count()
+            
+            daily_plays = period_plays.annotate(date=TruncDate('created_at')) \
+                .values('date').annotate(count=Count('id')).order_by('date')
+            
+            city_dist = period_plays.values('city').annotate(count=Count('id')).order_by('-count')
+            city_data = []
+            for item in city_dist:
+                percentage = (item['count'] / total_period_plays * 100) if total_period_plays > 0 else 0
+                city_data.append({
+                    'city': item['city'],
+                    'count': item['count'],
+                    'percentage': round(percentage, 2)
+                })
+                
+            country_dist = period_plays.values('country').annotate(count=Count('id')).order_by('-count')
+            country_data = []
+            for item in country_dist:
+                percentage = (item['count'] / total_period_plays * 100) if total_period_plays > 0 else 0
+                country_data.append({
+                    'country': item['country'],
+                    'count': item['count'],
+                    'percentage': round(percentage, 2)
+                })
+                
+            data['analytics'] = {
+                'days': days,
+                'total_period_plays': total_period_plays,
+                'daily_plays': list(daily_plays),
+                'city_distribution': city_data,
+                'country_distribution': country_data
+            }
+
+        return Response(data)
 
     def put(self, request, pk):
         song = self.get_object(pk)
@@ -3386,10 +3439,67 @@ class ArtistSongsManagementView(APIView):
         except Artist.DoesNotExist:
             return None
 
-    def get(self, request):
+    def get(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        if pk:
+            song = get_object_or_404(Song, pk=pk, artist=artist)
+            
+            # Analytics parameters
+            try:
+                days = int(request.query_params.get('days', 30))
+            except (ValueError, TypeError):
+                days = 30
+            
+            start_date = timezone.now() - timedelta(days=days)
+            
+            # Total stats
+            total_plays = (song.plays or 0) + song.play_counts.count()
+            total_likes = song.liked_by.count()
+            added_to_playlists = song.user_playlists.count()
+            
+            # Analytics for the period
+            period_plays = song.play_counts.filter(created_at__gte=start_date)
+            total_period_plays = period_plays.count()
+            
+            # Daily plays for chart
+            daily_plays = period_plays.annotate(date=TruncDate('created_at')) \
+                .values('date').annotate(count=Count('id')).order_by('date')
+            
+            # City distribution
+            city_dist = period_plays.values('city').annotate(count=Count('id')).order_by('-count')
+            city_data = []
+            for item in city_dist:
+                percentage = (item['count'] / total_period_plays * 100) if total_period_plays > 0 else 0
+                city_data.append({
+                    'city': item['city'],
+                    'count': item['count'],
+                    'percentage': round(percentage, 2)
+                })
+                
+            # Country distribution
+            country_dist = period_plays.values('country').annotate(count=Count('id')).order_by('-count')
+            country_data = []
+            for item in country_dist:
+                percentage = (item['count'] / total_period_plays * 100) if total_period_plays > 0 else 0
+                country_data.append({
+                    'country': item['country'],
+                    'count': item['count'],
+                    'percentage': round(percentage, 2)
+                })
+                
+            serializer = SongSerializer(song, context={'request': request})
+            data = serializer.data
+            data['analytics'] = {
+                'days': days,
+                'total_period_plays': total_period_plays,
+                'daily_plays': list(daily_plays),
+                'city_distribution': city_data,
+                'country_distribution': country_data
+            }
+            return Response(data)
 
         queryset = Song.objects.filter(artist=artist).order_by('-release_date', '-created_at')
         
