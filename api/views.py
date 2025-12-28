@@ -42,7 +42,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch
+from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.conf import settings
@@ -53,6 +53,7 @@ import uuid
 import os
 import mimetypes
 import random
+import time
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
@@ -3320,3 +3321,179 @@ class PlayConfigurationView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         rule.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ArtistHomeView(APIView):
+    """
+    Artist Dashboard Home Endpoint.
+    Provides income summary, play counts, daily play details, and top songs.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        # Check if user has artist role
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday_start = today_start - timedelta(days=1)
+        
+        last_7d_start = today_start - timedelta(days=7)
+        prev_7d_start = last_7d_start - timedelta(days=7)
+        
+        last_30d_start = today_start - timedelta(days=30)
+        prev_30d_start = last_30d_start - timedelta(days=30)
+
+        def get_stats(start_date, end_date=None):
+            qs = PlayCount.objects.filter(songs__artist=artist, created_at__gte=start_date)
+            if end_date:
+                qs = qs.filter(created_at__lt=end_date)
+            
+            stats = qs.aggregate(
+                total_income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=10, decimal_places=6))),
+                total_plays=Count('id')
+            )
+            return stats
+
+        def format_growth(current, previous):
+            if not previous or previous == 0:
+                return None
+            growth = ((float(current) - float(previous)) / float(previous)) * 100
+            if growth >= 0:
+                return f"{growth:.1f}%+"
+            else:
+                return f"{abs(growth):.1f}%-"
+
+        # Stats
+        today_stats = get_stats(today_start)
+        yesterday_stats = get_stats(yesterday_start, today_start)
+        
+        last_7d_stats = get_stats(last_7d_start)
+        prev_7d_stats = get_stats(prev_7d_start, last_7d_start)
+        
+        last_30d_stats = get_stats(last_30d_start)
+        prev_30d_stats = get_stats(prev_30d_start, last_30d_start)
+
+        # Income Summary
+        income_summary = {
+            "today": today_stats['total_income'],
+            "last_7_days": last_7d_stats['total_income'],
+            "last_30_days": last_30d_stats['total_income'],
+            "growth": {
+                "today": format_growth(today_stats['total_income'], yesterday_stats['total_income']),
+                "last_7_days": format_growth(last_7d_stats['total_income'], prev_7d_stats['total_income']),
+                "last_30_days": format_growth(last_30d_stats['total_income'], prev_30d_stats['total_income']),
+            }
+        }
+
+        # Play Counts Summary
+        plays_summary = {
+            "today": today_stats['total_plays'],
+            "last_7_days": last_7d_stats['total_plays'],
+            "last_30_days": last_30d_stats['total_plays'],
+            "growth": {
+                "today": format_growth(today_stats['total_plays'], yesterday_stats['total_plays']),
+                "last_7_days": format_growth(last_7d_stats['total_plays'], prev_7d_stats['total_plays']),
+                "last_30_days": format_growth(last_30d_stats['total_plays'], prev_30d_stats['total_plays']),
+            }
+        }
+
+        # Daily plays for last 7 days (including today)
+        daily_plays = []
+        for i in range(7):
+            day_start = today_start - timedelta(days=i)
+            day_end = day_start + timedelta(days=1)
+            count = PlayCount.objects.filter(songs__artist=artist, created_at__gte=day_start, created_at__lt=day_end).count()
+            daily_plays.append({
+                "date": day_start.date().isoformat(),
+                "count": count
+            })
+        daily_plays.reverse()
+
+        # Top 6 songs
+        top_songs_qs = Song.objects.filter(artist=artist).annotate(
+            total_plays_calc=F('plays') + Count('play_counts')
+        ).order_by('-total_plays_calc')[:6]
+        
+        top_songs = SongSerializer(top_songs_qs, many=True, context={'request': request}).data
+
+        return Response({
+            "income_summary": income_summary,
+            "plays_summary": plays_summary,
+            "daily_plays": daily_plays,
+            "top_songs": top_songs
+        })
+
+
+class ArtistLiveListenersView(APIView):
+    """
+    Retrieve the current live listener count for the authenticated artist.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "artist_id": artist.id,
+            "artist_name": artist.name,
+            "live_listeners": artist.live_listeners
+        })
+
+
+class ArtistLiveListenersPollView(APIView):
+    """
+    Long-polling endpoint for live listener updates.
+    Blocks until the set of live listeners changes or a timeout occurs.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        def get_current_listeners():
+            return set(ActivePlayback.objects.filter(
+                song__artist=artist,
+                expiration_time__gt=timezone.now()
+            ).values_list('user_id', flat=True).distinct())
+
+        initial_listeners = get_current_listeners()
+        
+        # Long polling loop
+        timeout = 30  # seconds
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            current_listeners = get_current_listeners()
+            if current_listeners != initial_listeners:
+                return Response({
+                    "live_listeners": len(current_listeners),
+                    "changed": True
+                })
+            time.sleep(3)  # Check every 3 seconds
+            
+        return Response({
+            "live_listeners": len(initial_listeners),
+            "changed": False
+        })

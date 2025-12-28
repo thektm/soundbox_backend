@@ -15,6 +15,9 @@ from .views import (
     SongUploadView,
     ArtistListView,
     ArtistDetailView,
+    ArtistHomeView,
+    ArtistLiveListenersView,
+    ArtistLiveListenersPollView,
     AlbumListView,
     AlbumDetailView,
     AlbumLikeView,
@@ -129,6 +132,9 @@ urlpatterns = [
     path('users/playlist-recommendations/<str:unique_id>/save/', PlaylistRecommendationSaveView.as_view(), name='user_playlist_recommendation_save'),
     
     # --- Artist Endpoints ---
+    path('artist/home/', ArtistHomeView.as_view(), name='artist_home'),
+    path('artist/live-listeners/', ArtistLiveListenersView.as_view(), name='artist_live_listeners'),
+    path('artist/live-listeners/poll/', ArtistLiveListenersPollView.as_view(), name='artist_live_listeners_poll'),
     path('artists/', ArtistListView.as_view(), name='artist_list'),
     path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
 
@@ -153,7 +159,6 @@ urlpatterns = [
     path('songs/', SongListView.as_view(), name='song_list'),
     path('songs/<int:pk>/', SongDetailView.as_view(), name='song_detail'),
     path('songs/<int:pk>/like/', SongLikeView.as_view(), name='song_like'),
-    path('songs/<int:pk>/increment_plays/', SongIncrementPlaysView.as_view(), name='song_increment_plays'),
     
     # --- Media Upload Endpoints ---
     path('upload/', R2UploadView.as_view(), name='r2_upload'),
