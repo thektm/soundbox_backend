@@ -3,7 +3,8 @@ from .utils import generate_signed_r2_url
 from .models import (
     User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
-    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration
+    NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
+    DepositRequest
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -443,11 +444,41 @@ class AlbumSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     
+    # For write operations
+    genre_ids_write = serializers.PrimaryKeyRelatedField(
+        queryset=Genre.objects.all(), 
+        many=True, 
+        source='genres', 
+        required=False,
+        write_only=True
+    )
+    sub_genre_ids_write = serializers.PrimaryKeyRelatedField(
+        queryset=SubGenre.objects.all(), 
+        many=True, 
+        source='sub_genres', 
+        required=False,
+        write_only=True
+    )
+    mood_ids_write = serializers.PrimaryKeyRelatedField(
+        queryset=Mood.objects.all(), 
+        many=True, 
+        source='moods', 
+        required=False,
+        write_only=True
+    )
+
+    # Read-only fields with titles
+    genre_ids = serializers.SerializerMethodField()
+    sub_genre_ids = serializers.SerializerMethodField()
+    mood_ids = serializers.SerializerMethodField()
+
     class Meta:
         model = Album
         fields = [
             'id', 'title', 'artist', 'artist_name', 'cover_image', 
-            'release_date', 'description', 'created_at', 'likes_count', 'is_liked'
+            'release_date', 'description', 'created_at', 'likes_count', 'is_liked',
+            'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write',
+            'genre_ids', 'sub_genre_ids', 'mood_ids'
         ]
         read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
@@ -458,6 +489,15 @@ class AlbumSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return AlbumLike.objects.filter(user=request.user, album=obj).exists()
+
+    def get_genre_ids(self, obj):
+        return [genre.name for genre in obj.genres.all()]
+
+    def get_sub_genre_ids(self, obj):
+        return [sub_genre.name for sub_genre in obj.sub_genres.all()]
+
+    def get_mood_ids(self, obj):
+        return [mood.name for mood in obj.moods.all()]
         return False
 
 
@@ -1489,6 +1529,18 @@ class RulesSerializer(serializers.ModelSerializer):
         # Ensure `updated_at` is never returned in API responses
         ret.pop('updated_at', None)
         return ret
+
+
+class DepositRequestSerializer(serializers.ModelSerializer):
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+
+    class Meta:
+        model = DepositRequest
+        fields = [
+            'id', 'artist', 'artist_name', 'amount', 'status', 
+            'transaction_id', 'submission_date', 'status_change_date', 'summary'
+        ]
+        read_only_fields = ['id', 'artist', 'status', 'submission_date', 'status_change_date', 'summary']
 
 
 class PlayConfigurationSerializer(serializers.ModelSerializer):

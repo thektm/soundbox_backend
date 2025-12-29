@@ -6,7 +6,8 @@ from rest_framework.decorators import action
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration
+    ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
+    ActivePlayback, DepositRequest
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -37,13 +38,14 @@ from .serializers import (
     LikedPlaylistSerializer,
     RulesSerializer,
     PlayConfigurationSerializer,
+    DepositRequestSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField
-from django.db.models.functions import Coalesce, TruncDate
+from django.db.models.functions import Coalesce, TruncDate, TruncHour
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
@@ -3423,6 +3425,223 @@ class ArtistLiveListenersPollView(APIView):
         })
 
 
+class ArtistAnalyticsView(APIView):
+    """
+    Comprehensive Artist Analytics Endpoint.
+    Provides summary stats (plays, likes, income, followers), 
+    play charts (hourly/daily), city distribution, and top songs.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        period = request.query_params.get('period')  # today, 7d, 30d, or None (all-time)
+        chart_type = request.query_params.get('chart', 'daily')  # hourly, daily
+        
+        now = timezone.now()
+        start_date = None
+        
+        if period == 'today':
+            start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if 'chart' not in request.query_params:
+                chart_type = 'hourly'
+        elif period == '7d':
+            start_date = now - timedelta(days=7)
+        elif period == '30d':
+            start_date = now - timedelta(days=30)
+
+        # 1. Summary Stats
+        # Plays
+        play_counts_qs = PlayCount.objects.filter(songs__artist=artist)
+        if start_date:
+            play_counts_qs = play_counts_qs.filter(created_at__gte=start_date)
+        
+        total_plays_period = play_counts_qs.count()
+        if not start_date:
+            legacy_plays = Song.objects.filter(artist=artist).aggregate(total=Sum('plays'))['total'] or 0
+            total_plays = total_plays_period + legacy_plays
+        else:
+            total_plays = total_plays_period
+
+        # Likes
+        song_likes_qs = SongLike.objects.filter(song__artist=artist)
+        if start_date:
+            song_likes_qs = song_likes_qs.filter(created_at__gte=start_date)
+        total_likes = song_likes_qs.count()
+
+        # Income
+        total_income = play_counts_qs.aggregate(
+            total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=10, decimal_places=6)))
+        )['total']
+
+        # Followers
+        followers_qs = Follow.objects.filter(followed_artist=artist)
+        if start_date:
+            followers_qs = followers_qs.filter(created_at__gte=start_date)
+            total_followers = followers_qs.count() # New followers in period
+        else:
+            total_followers = followers_qs.count() # Total followers all-time
+
+        summary = {
+            "total_plays": total_plays,
+            "total_likes": total_likes,
+            "total_income": total_income,
+            "total_followers": total_followers,
+            "period": period or "all-time"
+        }
+
+        # 2. Play Chart Data
+        chart_data = []
+        if chart_type == 'hourly':
+            # If period is today, show today's hours. Otherwise last 24 hours.
+            c_start = start_date if period == 'today' else now - timedelta(hours=24)
+            plays_by_hour = PlayCount.objects.filter(
+                songs__artist=artist, 
+                created_at__gte=c_start
+            ).annotate(hour=TruncHour('created_at')).values('hour').annotate(count=Count('id')).order_by('hour')
+            
+            for item in plays_by_hour:
+                chart_data.append({
+                    "time": item['hour'].isoformat(),
+                    "count": item['count']
+                })
+        else:
+            # Daily chart
+            # If no period, default to last 30 days for chart
+            c_start = start_date if start_date else now - timedelta(days=30)
+            plays_by_day = PlayCount.objects.filter(
+                songs__artist=artist, 
+                created_at__gte=c_start
+            ).annotate(day=TruncDate('created_at')).values('day').annotate(count=Count('id')).order_by('day')
+            
+            for item in plays_by_day:
+                chart_data.append({
+                    "time": item['day'].isoformat(),
+                    "count": item['count']
+                })
+
+        # 3. City Distribution
+        city_dist = play_counts_qs.values('city').annotate(count=Count('id')).order_by('-count')
+        city_data = []
+        for item in city_dist:
+            percentage = (item['count'] / total_plays_period * 100) if total_plays_period > 0 else 0
+            city_data.append({
+                'city': item['city'] or "Unknown",
+                'count': item['count'],
+                'percentage': round(percentage, 2)
+            })
+
+        # 4. Most Played Songs
+        # We'll use the period plays for ranking
+        top_songs_qs = Song.objects.filter(artist=artist).annotate(
+            period_plays_count=Count('play_counts', filter=Q(play_counts__created_at__gte=start_date) if start_date else Q())
+        )
+        
+        if not start_date:
+            top_songs_qs = top_songs_qs.annotate(
+                total_plays_calc=F('plays') + F('period_plays_count')
+            ).order_by('-total_plays_calc')[:10]
+        else:
+            top_songs_qs = top_songs_qs.order_by('-period_plays_count')[:10]
+            
+        top_songs = []
+        for s in top_songs_qs:
+            top_songs.append({
+                "id": s.id,
+                "title": s.title,
+                "plays": s.total_plays_calc if not start_date else s.period_plays_count,
+                "cover_image": s.cover_image
+            })
+
+        return Response({
+            "summary": summary,
+            "chart": {
+                "type": chart_type,
+                "data": chart_data
+            },
+            "city_distribution": city_data,
+            "top_songs": top_songs
+        })
+
+
+class DepositRequestView(APIView):
+    """
+    View for artists to manage their deposit requests.
+    Artists can list their requests and submit new ones.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        requests = DepositRequest.objects.filter(artist=artist)
+        serializer = DepositRequestSerializer(requests, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check if there's already a pending request
+        if DepositRequest.objects.filter(artist=artist, status=DepositRequest.STATUS_PENDING).exists():
+            return Response({"error": "You already have a pending deposit request"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Calculate summary of plays to pay
+        plays = PlayCount.objects.filter(songs__artist=artist)
+        total_plays = plays.count()
+        
+        if total_plays == 0:
+            return Response({"error": "No plays found to request deposit"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        free_plays = plays.filter(user__plan=User.PLAN_FREE).count()
+        premium_plays = plays.filter(user__plan=User.PLAN_PREMIUM).count()
+        
+        free_percentage = (free_plays / total_plays) * 100 if total_plays > 0 else 0
+        premium_percentage = (premium_plays / total_plays) * 100 if total_plays > 0 else 0
+        
+        summary = {
+            "total_plays": total_plays,
+            "free_plays": free_plays,
+            "premium_plays": premium_plays,
+            "free_percentage": f"{free_percentage:.1f}%",
+            "premium_percentage": f"{premium_percentage:.1f}%",
+            "text": f"{free_percentage:.1f}% free account plays and {premium_percentage:.1f}% paid accounts"
+        }
+        
+        # Calculate total amount to pay (sum of 'pay' field in PlayCount)
+        total_amount = plays.aggregate(total=Sum('pay'))['total'] or 0
+        
+        deposit_request = DepositRequest.objects.create(
+            artist=artist,
+            amount=total_amount,
+            summary=summary
+        )
+        
+        serializer = DepositRequestSerializer(deposit_request)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
 class ArtistSongsManagementView(APIView):
     """
     View for artists to manage their own songs.
@@ -3665,4 +3884,222 @@ class ArtistSongsManagementView(APIView):
                 "song": serializer.data
             })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ArtistAlbumsManagementView(APIView):
+    """
+    View for artists to manage their own albums.
+    Supports listing, creating (with multiple songs), and updating albums.
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_artist(self, user):
+        if user.roles != User.ROLE_ARTIST:
+            return None
+        try:
+            return user.artist_profile
+        except Artist.DoesNotExist:
+            return None
+
+    def get(self, request, pk=None):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        if pk:
+            album = get_object_or_404(Album, pk=pk, artist=artist)
+            serializer = AlbumSerializer(album, context={'request': request})
+            data = serializer.data
+            # Include songs in detail view
+            songs_qs = Song.objects.filter(album=album).order_by('id')
+            data['songs'] = SongSerializer(songs_qs, many=True, context={'request': request}).data
+            return Response(data)
+
+        queryset = Album.objects.filter(artist=artist).order_by('-release_date', '-created_at')
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        if page is not None:
+            serializer = AlbumSerializer(page, many=True, context={'request': request})
+            return paginator.get_paginated_response(serializer.data)
+
+        serializer = AlbumSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    def post(self, request):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        # 1. Create Album
+        album_data = request.data.copy()
+        
+        # Map user-friendly field names to serializer write_only fields for album
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
+            if field in album_data and f"{field}_write" not in album_data:
+                album_data[f"{field}_write"] = album_data.getlist(field) if hasattr(album_data, 'getlist') else album_data[field]
+
+        # Handle album cover
+        album_cover = request.FILES.get('cover_image')
+        if album_cover:
+            safe_title = "".join([c for c in album_data.get('title', 'album') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in (artist.artistic_name or artist.name) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            cover_filename = f"{safe_artist} - {safe_title}_album_cover"
+            cover_url, _ = upload_file_to_r2(album_cover, folder='covers', custom_filename=cover_filename)
+            album_data['cover_image'] = cover_url
+
+        album_data['artist'] = artist.id
+        
+        album_serializer = AlbumSerializer(data=album_data, context={'request': request})
+        if not album_serializer.is_valid():
+            return Response(album_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        album = album_serializer.save()
+
+        # 2. Process Songs
+        # Handle existing songs
+        existing_song_ids = request.data.getlist('existing_song_ids')
+        if existing_song_ids:
+            Song.objects.filter(id__in=existing_song_ids, artist=artist).update(album=album)
+
+        # Process new songs
+        song_index = 1
+        created_songs = []
+        while True:
+            prefix = f"song{song_index}-"
+            title = request.data.get(f"{prefix}title")
+            audio_file = request.FILES.get(f"{prefix}audio_file")
+            
+            # If we don't find title or audio, we might have reached the end
+            if not title and not audio_file:
+                if song_index > 50: # Reasonable limit
+                    break
+                song_index += 1
+                continue
+            
+            if not audio_file:
+                song_index += 1
+                continue
+
+            # Process this song
+            artist_name = artist.artistic_name or f"{request.user.first_name} {request.user.last_name}".strip() or request.user.phone_number
+            duration, bitrate, format_ext = get_audio_info(audio_file)
+            if not format_ext:
+                _, ext = os.path.splitext(audio_file.name)
+                format_ext = ext.lstrip('.').lower()
+            
+            bitrate_str = str(bitrate) if bitrate else "wav"
+            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            
+            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
+            
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+            
+            converted_url = None
+            if format_ext == 'mp3' and bitrate and bitrate > 128:
+                try:
+                    converted_file = convert_to_128kbps(audio_file)
+                    conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                except Exception:
+                    pass
+
+            song_cover = request.FILES.get(f"{prefix}cover_image")
+            song_cover_url = ""
+            if song_cover:
+                cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+                song_cover_url, _ = upload_file_to_r2(song_cover, folder='covers', custom_filename=cover_filename)
+            else:
+                song_cover_url = album.cover_image
+
+            # Prepare song data for serializer
+            song_data = {
+                'title': title,
+                'artist': artist.id,
+                'album': album.id,
+                'audio_file': audio_url,
+                'converted_audio_url': converted_url,
+                'cover_image': song_cover_url,
+                'duration_seconds': duration,
+                'original_format': format_ext,
+                'uploader': request.user.id,
+                'status': Song.STATUS_PUBLISHED,
+                'lyrics': request.data.get(f"{prefix}lyrics", ""),
+                'description': request.data.get(f"{prefix}description", ""),
+                'release_date': album.release_date,
+                'language': request.data.get(f"{prefix}language", "fa"),
+            }
+            
+            # Handle JSON fields
+            for list_field in ['featured_artists', 'producers', 'composers', 'lyricists']:
+                val = request.data.getlist(f"{prefix}{list_field}")
+                if val:
+                    song_data[list_field] = val
+
+            # Handle ManyToMany IDs
+            for id_field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+                val = request.data.getlist(f"{prefix}{id_field}")
+                if val:
+                    song_data[f"{id_field}_write"] = val
+
+            song_serializer = SongSerializer(data=song_data, context={'request': request})
+            if song_serializer.is_valid():
+                song_serializer.save()
+                created_songs.append(song_serializer.data)
+            
+            song_index += 1
+
+        return Response({
+            "message": "Album created successfully",
+            "album": album_serializer.data,
+            "new_songs": created_songs
+        }, status=status.HTTP_201_CREATED)
+
+    def put(self, request, pk=None):
+        return self.update(request, pk, partial=False)
+
+    def patch(self, request, pk=None):
+        return self.update(request, pk, partial=True)
+
+    def update(self, request, pk, partial=False):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        album = get_object_or_404(Album, pk=pk, artist=artist)
+        
+        album_data = request.data.copy()
+        
+        # Map user-friendly field names to serializer write_only fields for album
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
+            if field in album_data and f"{field}_write" not in album_data:
+                album_data[f"{field}_write"] = album_data.getlist(field) if hasattr(album_data, 'getlist') else album_data[field]
+
+        album_cover = request.FILES.get('cover_image')
+        if album_cover:
+            safe_title = "".join([c for c in album_data.get('title', album.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in (artist.artistic_name or artist.name) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            cover_filename = f"{safe_artist} - {safe_title}_album_cover"
+            cover_url, _ = upload_file_to_r2(album_cover, folder='covers', custom_filename=cover_filename)
+            album_data['cover_image'] = cover_url
+
+        serializer = AlbumSerializer(album, data=album_data, partial=partial, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "message": "Album updated successfully",
+                "album": serializer.data
+            })
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        album = get_object_or_404(Album, pk=pk, artist=artist)
+        album.delete()
+        return Response({"message": "Album deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 

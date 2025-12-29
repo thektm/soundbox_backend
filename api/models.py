@@ -921,3 +921,31 @@ class Rules(models.Model):
                 major += 1
         
         return f"{major}.{minor}.{patch}"
+
+
+class DepositRequest(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_DONE = 'done'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_REJECTED, 'Rejected'),
+        (STATUS_DONE, 'Done'),
+    ]
+
+    artist = models.ForeignKey('Artist', on_delete=models.CASCADE, related_name='deposit_requests')
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    transaction_id = models.CharField(max_length=255, null=True, blank=True)
+    submission_date = models.DateTimeField(auto_now_add=True)
+    status_change_date = models.DateTimeField(null=True, blank=True)
+    summary = models.JSONField(default=dict, help_text="Summary of plays (e.g., free vs paid accounts)")
+    
+    class Meta:
+        ordering = ['-submission_date']
+
+    def __str__(self):
+        return f"DepositRequest({self.artist.name}, {self.amount}, {self.status})"

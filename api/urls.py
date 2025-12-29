@@ -16,9 +16,12 @@ from .views import (
     ArtistListView,
     ArtistDetailView,
     ArtistHomeView,
+    ArtistAnalyticsView,
     ArtistLiveListenersView,
     ArtistLiveListenersPollView,
     ArtistSongsManagementView,
+    ArtistAlbumsManagementView,
+    DepositRequestView,
     AlbumListView,
     AlbumDetailView,
     AlbumLikeView,
@@ -135,11 +138,15 @@ urlpatterns = [
     
     # --- Artist App Endpoints ---
     path('artist/home/', ArtistHomeView.as_view(), name='artist_home'),
+    path('artist/analytics/', ArtistAnalyticsView.as_view(), name='artist_analytics'),
     path('artist/live-listeners/', ArtistLiveListenersView.as_view(), name='artist_live_listeners'),
     path('artist/live-listeners/poll/', ArtistLiveListenersPollView.as_view(), name='artist_live_listeners_poll'),
     path('artist/songs-management/', ArtistSongsManagementView.as_view(), name='artist_songs_management'),
     path('artist/songs/upload/', ArtistSongsManagementView.as_view(), name='artist_songs_upload'),
     path('artist/songs/<int:pk>/', ArtistSongsManagementView.as_view(), name='artist_songs_detail'),
+    path('artist/albums/', ArtistAlbumsManagementView.as_view(), name='artist_albums_management'),
+    path('artist/albums/<int:pk>/', ArtistAlbumsManagementView.as_view(), name='artist_albums_detail'),
+    path('artist/deposit-request/', DepositRequestView.as_view(), name='artist_deposit_request'),
     path('artist/auth/', ArtistAuthView.as_view(), name='artist_auth'),
     path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
 
