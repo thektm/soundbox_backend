@@ -224,8 +224,9 @@ class AuthRegisterView(APIView):
             if existing.is_verified:
                 # If client requested artist role, add it to the existing user
                 if artist_flag:
-                    # set role to artist (overwrites current roles field)
-                    existing.roles = User.ROLE_ARTIST
+                    # add artist role to existing roles
+                    if User.ROLE_ARTIST not in existing.roles:
+                        existing.roles.append(User.ROLE_ARTIST)
                     if artist_password:
                         existing.set_artist_password(artist_password)
                     existing.save()
@@ -248,7 +249,7 @@ class AuthRegisterView(APIView):
         # create user with is_verified False
         create_kwargs = {}
         if artist_flag:
-            create_kwargs['roles'] = User.ROLE_ARTIST
+            create_kwargs['roles'] = [User.ROLE_AUDIENCE, User.ROLE_ARTIST]
         if artist_password:
             create_kwargs['artist_password'] = artist_password
         user = User.objects.create_user(phone_number=phone, password=password, **create_kwargs)
@@ -294,7 +295,8 @@ class AuthVerifyView(APIView):
         user.is_verified = True
         # If client requested artist role during verify, add artist role and set separate artist password
         if artist_flag:
-            user.roles = User.ROLE_ARTIST
+            if User.ROLE_ARTIST not in user.roles:
+                user.roles.append(User.ROLE_ARTIST)
             if artist_password:
                 user.set_artist_password(artist_password)
         user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])

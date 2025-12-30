@@ -152,6 +152,8 @@ urlpatterns = [
     path('artist/finance/', __import__('api.views', fromlist=['ArtistFinanceView']).ArtistFinanceView.as_view(), name='artist_finance'),
     path('artist/finance/songs/', __import__('api.views', fromlist=['ArtistFinanceSongsView']).ArtistFinanceSongsView.as_view(), name='artist_finance_songs'),
     path('artist/auth/', ArtistAuthView.as_view(), name='artist_auth'),
+    path('artist/settings/', __import__('api.views', fromlist=['ArtistSettingsView']).ArtistSettingsView.as_view(), name='artist_settings'),
+    path('artist/settings/password/', __import__('api.views', fromlist=['ArtistChangePasswordView']).ArtistChangePasswordView.as_view(), name='artist_change_password'),
     path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
 
     # --- Artist Discovery Endpoints ---
@@ -212,6 +214,7 @@ urlpatterns = [
     
     # --- Rules Endpoints ---
     path('rules/', RulesListCreateView.as_view(), name='rules_list_create'),
+    path('rules/latest/', __import__('api.views', fromlist=['RulesLatestView']).RulesLatestView.as_view(), name='rules_latest'),
     path('rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
     
     # Include router URLs (if any)

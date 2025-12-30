@@ -12,12 +12,16 @@ import os
 
 
 class UserManager(BaseUserManager):
-    def create_user(self, phone_number, password=None, roles='audience', **extra_fields):
+    def create_user(self, phone_number, password=None, roles=None, **extra_fields):
         if not phone_number:
             raise ValueError('The phone number must be set')
         phone_number = str(phone_number)
         # allow caller to pass artist_password in extra_fields
         artist_password = extra_fields.pop('artist_password', None)
+        if roles is None:
+            roles = [User.ROLE_AUDIENCE]
+        elif isinstance(roles, str):
+            roles = [roles]
         user = self.model(phone_number=phone_number, roles=roles, **extra_fields)
         user.set_password(password)
         if artist_password:
@@ -28,7 +32,7 @@ class UserManager(BaseUserManager):
     def create_superuser(self, phone_number, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
-        return self.create_user(phone_number, password=password, roles='admin', **extra_fields)
+        return self.create_user(phone_number, password=password, roles=[User.ROLE_ADMIN], **extra_fields)
 
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -48,7 +52,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
     email = models.EmailField(blank=True, null=True)
-    roles = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_AUDIENCE)
+    roles = models.JSONField(default=list)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True)

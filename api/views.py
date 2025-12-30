@@ -3205,6 +3205,20 @@ class RulesDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+class RulesLatestView(APIView):
+    """Return the latest Rules entry (single item) for public consumption.
+    Accessible by both audience and artists.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        latest = Rules.objects.order_by('-created_at').first()
+        if not latest:
+            return Response({"detail": "No rules found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = RulesSerializer(latest)
+        return Response(serializer.data)
+
     def patch(self, request, pk):
         rule = self.get_object(pk)
         if not rule:
@@ -3259,7 +3273,7 @@ class ArtistHomeView(APIView):
     def get(self, request):
         user = request.user
         # Check if user has artist role
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3366,7 +3380,7 @@ class ArtistLiveListenersView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3390,7 +3404,7 @@ class ArtistLiveListenersPollView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3435,7 +3449,7 @@ class ArtistAnalyticsView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3581,7 +3595,7 @@ class DepositRequestView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3595,7 +3609,7 @@ class DepositRequestView(APIView):
 
     def post(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3653,7 +3667,7 @@ class ArtistWalletView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
         
         try:
@@ -3713,7 +3727,7 @@ class ArtistFinanceView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -3890,7 +3904,7 @@ class ArtistFinanceSongsView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -3941,6 +3955,99 @@ class ArtistFinanceSongsView(APIView):
         return Response(results)
 
 
+class ArtistSettingsView(APIView):
+    """Allow an artist to update their profile information and photos.
+    Supports PUT (full replace) and PATCH (partial update).
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_artist(self, user):
+        if User.ROLE_ARTIST not in user.roles:
+            return None
+        try:
+            return user.artist_profile
+        except Artist.DoesNotExist:
+            return None
+
+    def put(self, request):
+        return self._update(request, partial=False)
+
+    def patch(self, request):
+        return self._update(request, partial=True)
+
+    def _update(self, request, partial=True):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data.copy()
+
+        # Handle images (upload to R2 and store URL)
+        profile_file = request.FILES.get('profile_image')
+        if profile_file:
+            try:
+                url, _ = upload_file_to_r2(profile_file, folder='artists', custom_filename=None)
+                artist.profile_image = url
+            except Exception as e:
+                return Response({"error": f"Profile image upload failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        banner_file = request.FILES.get('banner_image')
+        if banner_file:
+            try:
+                url, _ = upload_file_to_r2(banner_file, folder='artists', custom_filename=None)
+                artist.banner_image = url
+            except Exception as e:
+                return Response({"error": f"Banner image upload failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Updatable fields
+        updatable = ['name', 'artistic_name', 'email', 'city', 'date_of_birth', 'address', 'id_number', 'bio']
+        for f in updatable:
+            if f in data:
+                val = data.get(f)
+                # date_of_birth may come as empty string; handle null
+                if f == 'date_of_birth' and val in (None, '', 'null'):
+                    setattr(artist, f, None)
+                else:
+                    setattr(artist, f, val)
+
+        try:
+            artist.save()
+        except Exception as e:
+            return Response({"error": f"Failed to save artist: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = ArtistSerializer(artist, context={'request': request})
+        return Response(serializer.data)
+
+
+class ArtistChangePasswordView(APIView):
+    """Change user's account password using current password and new password."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if User.ROLE_ARTIST not in user.roles:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+
+        current = request.data.get('current_password')
+        new = request.data.get('new_password')
+
+        if not current or not new:
+            return Response({"error": "Both 'current_password' and 'new_password' are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.check_password(current):
+            return Response({"error": "Current password is incorrect."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Basic validation for new password length
+        if len(new) < 6:
+            return Response({"error": "New password must be at least 6 characters long."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new)
+        user.save()
+
+        return Response({"status": "password_changed"}, status=status.HTTP_200_OK)
+
+
 class ArtistSongsManagementView(APIView):
     """
     View for artists to manage their own songs.
@@ -3950,7 +4057,7 @@ class ArtistSongsManagementView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_artist(self, user):
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return None
         try:
             return user.artist_profile
@@ -4194,7 +4301,7 @@ class ArtistAlbumsManagementView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_artist(self, user):
-        if user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in user.roles:
             return None
         try:
             return user.artist_profile
