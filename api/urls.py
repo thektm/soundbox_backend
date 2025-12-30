@@ -22,6 +22,7 @@ from .views import (
     ArtistSongsManagementView,
     ArtistAlbumsManagementView,
     DepositRequestView,
+    ArtistWalletView,
     AlbumListView,
     AlbumDetailView,
     AlbumLikeView,
@@ -147,6 +148,9 @@ urlpatterns = [
     path('artist/albums/', ArtistAlbumsManagementView.as_view(), name='artist_albums_management'),
     path('artist/albums/<int:pk>/', ArtistAlbumsManagementView.as_view(), name='artist_albums_detail'),
     path('artist/deposit-request/', DepositRequestView.as_view(), name='artist_deposit_request'),
+    path('artist/wallet/', ArtistWalletView.as_view(), name='artist_wallet'),
+    path('artist/finance/', __import__('api.views', fromlist=['ArtistFinanceView']).ArtistFinanceView.as_view(), name='artist_finance'),
+    path('artist/finance/songs/', __import__('api.views', fromlist=['ArtistFinanceSongsView']).ArtistFinanceSongsView.as_view(), name='artist_finance_songs'),
     path('artist/auth/', ArtistAuthView.as_view(), name='artist_auth'),
     path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
 

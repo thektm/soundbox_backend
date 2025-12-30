@@ -237,6 +237,11 @@ class Artist(models.Model):
     profile_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for profile image")
     banner_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for banner image")
     verified = models.BooleanField(default=False)
+    # Social accounts (Instagram, Twitter, YouTube, Telegram)
+    # Uses a through table `ArtistSocialAccount` to store the platform-specific URL/username
+    social_accounts = models.ManyToManyField(
+        'SocialPlatform', through='ArtistSocialAccount', blank=True, related_name='artists'
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     
@@ -255,6 +260,36 @@ class Artist(models.Model):
             song__artist=self,
             expiration_time__gt=now
         ).values('user').distinct().count()
+
+
+class SocialPlatform(models.Model):
+    """Represents a supported social platform (Instagram, Twitter, YouTube, Telegram)."""
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=100, unique=True)
+    base_url = models.URLField(max_length=255, blank=True, help_text="Canonical base URL for the platform, e.g. https://instagram.com/")
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class ArtistSocialAccount(models.Model):
+    """Through model linking an Artist to a SocialPlatform with a specific URL or username."""
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name='social_account_links')
+    platform = models.ForeignKey(SocialPlatform, on_delete=models.CASCADE, related_name='account_links')
+    username = models.CharField(max_length=255, blank=True, help_text='Platform username or handle')
+    url = models.URLField(max_length=500, blank=True, help_text='Full URL to the social profile')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('artist', 'platform')
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f"{self.artist.name} @ {self.platform.name}: {self.username or self.url}" 
 
 
 def validate_file_size(value):

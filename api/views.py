@@ -45,7 +45,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField
-from django.db.models.functions import Coalesce, TruncDate, TruncHour
+from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
@@ -3640,6 +3640,305 @@ class DepositRequestView(APIView):
         
         serializer = DepositRequestSerializer(deposit_request)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ArtistWalletView(APIView):
+    """
+    View to get artist's financial summary:
+    - Total Credit: Sum of all 'pay' from PlayCount.
+    - Requested Credit: Sum of 'amount' from DepositRequest (Pending, Approved, Done).
+    - Available Credit: Total - Requested.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # 1. Total Credit
+        total_credit = PlayCount.objects.filter(songs__artist=artist).aggregate(
+            total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6)))
+        )['total']
+
+        # 2. Requested Credit (Pending, Approved, Done)
+        requested_credit = DepositRequest.objects.filter(
+            artist=artist,
+            status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE]
+        ).aggregate(
+            total=Coalesce(Sum('amount'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=2)))
+        )['total']
+
+        # 3. Available Credit
+        available_credit = total_credit - requested_credit
+
+        # Deposit request counts breakdown
+        requests_qs = DepositRequest.objects.filter(artist=artist)
+        total_submissions = requests_qs.count()
+        pending_count = requests_qs.filter(status=DepositRequest.STATUS_PENDING).count()
+        approved_count = requests_qs.filter(status=DepositRequest.STATUS_APPROVED).count()
+        rejected_count = requests_qs.filter(status=DepositRequest.STATUS_REJECTED).count()
+        done_count = requests_qs.filter(status=DepositRequest.STATUS_DONE).count()
+
+        return Response({
+            "total_credit": total_credit,
+            "requested_credit": requested_credit,
+            "available_credit": max(0, available_credit),
+            "deposit_requests": {
+                "total_submissions": total_submissions,
+                "pending": pending_count,
+                "approved": approved_count,
+                "rejected": rejected_count,
+                "done": done_count
+            }
+        })
+
+
+class ArtistFinanceView(APIView):
+    """
+    Artist financial overview endpoint.
+    - GET /artist/finance/?period=<all|daily|weekly|monthly|today|7d|30d>
+    - No param -> all-time
+
+    Returns summary (income amount, percent change, plays) and chart data.
+    If period is `all` (no param) chart shows free vs premium totals.
+    If period is `daily|weekly|monthly` chart returns one data point per day/week/month.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        period = request.query_params.get('period')  # None=all, 'daily','weekly','monthly','today','7d','30d'
+        now = timezone.now()
+
+        # Determine current and previous windows for percent change
+        if not period or period == 'all':
+            # All time: we compute totals and breakdown by free/premium
+            plays_qs = PlayCount.objects.filter(songs__artist=artist)
+
+            total_income = plays_qs.aggregate(total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))))['total']
+            free_income = plays_qs.filter(user__plan=User.PLAN_FREE).aggregate(total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))))['total']
+            premium_income = plays_qs.filter(user__plan=User.PLAN_PREMIUM).aggregate(total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))))['total']
+
+            total_plays = plays_qs.count()
+
+            # No meaningful previous period for all-time; set change to None
+            change_pct = None
+
+            chart = [
+                {"label": "free", "amount": free_income},
+                {"label": "premium", "amount": premium_income}
+            ]
+
+            summary = {
+                "income_change_pct": f"{change_pct}" if change_pct is not None else None,
+                "income_amount": total_income,
+                "currency": "تومان",
+                "plays_count": total_plays
+            }
+
+            return Response({"summary": summary, "chart": chart})
+
+        # For time-bounded periods: compute start and previous window
+        if period == 'today':
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            prev_start = start - timedelta(days=1)
+            prev_end = start
+            group = 'daily'
+        elif period == '7d':
+            start = now - timedelta(days=7)
+            prev_start = start - timedelta(days=7)
+            prev_end = start
+            group = 'daily'
+        elif period == '30d':
+            start = now - timedelta(days=30)
+            prev_start = start - timedelta(days=30)
+            prev_end = start
+            group = 'daily'
+        elif period == 'daily':
+            # Last 30 days by day
+            start = now - timedelta(days=30)
+            prev_start = start - timedelta(days=30)
+            prev_end = start
+            group = 'daily'
+        elif period == 'weekly':
+            # Last 12 weeks
+            start = now - timedelta(weeks=12)
+            prev_start = start - timedelta(weeks=12)
+            prev_end = start
+            group = 'weekly'
+        elif period == 'monthly':
+            # Last 12 months
+            start = now - timedelta(days=365)
+            prev_start = start - timedelta(days=365)
+            prev_end = start
+            group = 'monthly'
+        else:
+            # Fallback: treat as last 30 days
+            start = now - timedelta(days=30)
+            prev_start = start - timedelta(days=30)
+            prev_end = start
+            group = 'daily'
+
+        # Current and previous sums
+        current_qs = PlayCount.objects.filter(songs__artist=artist, created_at__gte=start)
+        prev_qs = PlayCount.objects.filter(songs__artist=artist, created_at__gte=prev_start, created_at__lt=prev_end)
+
+        current_income = current_qs.aggregate(total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))))['total']
+        prev_income = prev_qs.aggregate(total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))))['total']
+
+        # percent change
+        def pct_change(current, previous):
+            try:
+                if previous in (None, 0):
+                    return None
+                return round(((float(current) - float(previous)) / float(previous)) * 100, 1)
+            except Exception:
+                return None
+
+        change_pct = pct_change(current_income, prev_income)
+
+        total_plays = current_qs.count()
+
+        # Build chart grouped by requested granularity
+        chart = []
+        if group == 'daily':
+            rows = current_qs.annotate(period=TruncDate('created_at')).values('period').annotate(
+                income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                plays=Count('id')
+            ).order_by('period')
+
+            for r in rows:
+                chart.append({
+                    'time': r['period'].isoformat(),
+                    'income': r['income'],
+                    'free_income': r['free_income'],
+                    'premium_income': r['premium_income'],
+                    'plays': r['plays']
+                })
+
+        elif group == 'weekly':
+            rows = current_qs.annotate(period=TruncWeek('created_at')).values('period').annotate(
+                income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                plays=Count('id')
+            ).order_by('period')
+
+            for r in rows:
+                chart.append({
+                    'time': r['period'].isoformat(),
+                    'income': r['income'],
+                    'free_income': r['free_income'],
+                    'premium_income': r['premium_income'],
+                    'plays': r['plays']
+                })
+
+        else:  # monthly
+            rows = current_qs.annotate(period=TruncMonth('created_at')).values('period').annotate(
+                income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                plays=Count('id')
+            ).order_by('period')
+
+            for r in rows:
+                chart.append({
+                    'time': r['period'].isoformat(),
+                    'income': r['income'],
+                    'free_income': r['free_income'],
+                    'premium_income': r['premium_income'],
+                    'plays': r['plays']
+                })
+
+        summary = {
+            'income_change_pct': f"{change_pct}%" if change_pct is not None else None,
+            'income_amount': current_income,
+            'currency': 'تومان',
+            'plays_count': total_plays,
+            'period': period
+        }
+
+        return Response({
+            'summary': summary,
+            'chart': chart
+        })
+
+
+class ArtistFinanceSongsView(APIView):
+    """
+    Return paginated list of artist's songs with total income and plays.
+    - default sort: most income (desc)
+    - query param `sort=release_date` will sort by release_date (desc)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.roles != User.ROLE_ARTIST:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        sort = request.query_params.get('sort')
+
+        # Annotate songs with income and play counts
+        qs = Song.objects.filter(artist=artist).annotate(
+            play_counts_count=Count('play_counts'),
+            income=Coalesce(Sum('play_counts__pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6)))
+        ).annotate(
+            total_plays=F('plays') + F('play_counts_count')
+        )
+
+        # Sorting
+        if sort == 'release_date':
+            qs = qs.order_by('-release_date', '-income')
+        else:
+            # default: sort by income desc, tie-breaker total_plays desc
+            qs = qs.order_by('-income', '-total_plays')
+
+        # Pagination
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(qs, request)
+        if page is not None:
+            serializer = SongSerializer(page, many=True, context={'request': request})
+            results = []
+            for song_obj, song_data in zip(page, serializer.data):
+                results.append({
+                    **song_data,
+                    'income': getattr(song_obj, 'income', 0),
+                    'total_plays': int(getattr(song_obj, 'total_plays', 0))
+                })
+            return paginator.get_paginated_response(results)
+
+        # non-paginated fallback
+        serializer = SongSerializer(qs, many=True, context={'request': request})
+        results = []
+        for song_obj, song_data in zip(qs, serializer.data):
+            results.append({
+                **song_data,
+                'income': getattr(song_obj, 'income', 0),
+                'total_plays': int(getattr(song_obj, 'total_plays', 0))
+            })
+        return Response(results)
 
 
 class ArtistSongsManagementView(APIView):
