@@ -34,7 +34,7 @@ class AdminArtistAuthSerializer(serializers.ModelSerializer):
     class Meta:
         model = ArtistAuth
         fields = [
-            'id', 'user', 'auth_type', 'first_name', 'last_name', 'stage_name',
+            'id', 'user', 'auth_type', 'artist_claimed', 'first_name', 'last_name', 'stage_name',
             'birth_date', 'national_id', 'phone_number', 'email', 'city', 'address',
             'biography', 'national_id_image', 'status', 'is_verified', 'created_at', 'updated_at'
         ]

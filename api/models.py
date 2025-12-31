@@ -328,6 +328,13 @@ class ArtistAuth(models.Model):
     user = models.OneToOneField('User', on_delete=models.CASCADE, null=True, blank=True, related_name='artist_auth')
     auth_type = models.CharField(max_length=30, choices=AUTH_CHOICES, default=AUTH_FRESH)
 
+    # If the submission is a claim for an existing artist profile,
+    # link to that Artist. Nullable so users can submit without claiming.
+    artist_claimed = models.ForeignKey(
+        'Artist', on_delete=models.SET_NULL, null=True, blank=True, related_name='artist_auth_claims',
+        help_text='If the user is claiming an existing artist, link it here'
+    )
+
     # Personal fields (Persian form mapping provided by frontend)
     first_name = models.CharField(max_length=150)
     last_name = models.CharField(max_length=150)
@@ -372,7 +379,8 @@ class ArtistAuth(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.stage_name} ({self.user.phone_number if self.user else 'no-user'})"
+        claimed = f" claimed: {self.artist_claimed.name}" if self.artist_claimed else ""
+        return f"{self.stage_name} ({self.user.phone_number if self.user else 'no-user'}){claimed}"
 
     def clean(self):
         # Ensure national id has correct format (redundant with validator but safe)

@@ -425,11 +425,14 @@ class ArtistAuthSerializer(serializers.ModelSerializer):
         queryset=User.objects.all(), source='user', required=False, allow_null=True
     )
     national_id_image = serializers.ImageField(required=True)
+    artist_claimed = serializers.PrimaryKeyRelatedField(
+        queryset=Artist.objects.all(), source='artist_claimed', required=False, allow_null=True
+    )
 
     class Meta:
         model = ArtistAuth
         fields = [
-            'id', 'user_id', 'auth_type', 'first_name', 'last_name', 'stage_name',
+            'id', 'user_id', 'auth_type', 'artist_claimed', 'first_name', 'last_name', 'stage_name',
             'birth_date', 'national_id', 'phone_number', 'email', 'city', 'address',
             'biography', 'national_id_image', 'is_verified', 'created_at', 'updated_at'
         ]
@@ -441,6 +444,15 @@ class ArtistAuthSerializer(serializers.ModelSerializer):
             # prefer the authenticated user over supplied user_id
             validated_data['user'] = request.user
         return super().create(validated_data)
+
+    def validate(self, data):
+        # If author is claiming an existing artist, require artist_claimed
+        auth_type = data.get('auth_type') or getattr(self.instance, 'auth_type', None)
+        artist_claimed = data.get('artist_claimed') or getattr(self.instance, 'artist_claimed', None)
+        from .models import ArtistAuth
+        if auth_type == ArtistAuth.AUTH_EXISTING and not artist_claimed:
+            raise serializers.ValidationError({'artist_claimed': 'This field is required when auth_type is existing_artist.'})
+        return data
 
     def update(self, instance, validated_data):
         return super().update(instance, validated_data)
