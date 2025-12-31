@@ -409,7 +409,7 @@ class ArtistAuthView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request):
-        if request.user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in (request.user.roles or []):
             return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
         try:
             auth = request.user.artist_auth
@@ -419,7 +419,7 @@ class ArtistAuthView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        if request.user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in (request.user.roles or []):
             return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
         # create or replace submission for this user
         if hasattr(request.user, 'artist_auth'):
@@ -431,7 +431,7 @@ class ArtistAuthView(APIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def patch(self, request):
-        if request.user.roles != User.ROLE_ARTIST:
+        if User.ROLE_ARTIST not in (request.user.roles or []):
             return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
         try:
             auth = request.user.artist_auth

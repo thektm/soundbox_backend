@@ -206,13 +206,17 @@ class UserSerializer(serializers.ModelSerializer):
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
+    # allow callers to request artist role at registration time (boolean)
+    artist = serializers.BooleanField(write_only=True, required=False)
+    artistPassword = serializers.CharField(write_only=True, required=False)
 
     playlists = serializers.JSONField(required=False)
     settings = serializers.JSONField(required=False)
 
     class Meta:
         model = User
-        fields = ['phone_number', 'password', 'roles', 'first_name', 'last_name', 'email', 'playlists', 'plan', 'settings']
+        # Do NOT allow clients to set `roles` directly via this serializer.
+        fields = ['phone_number', 'password', 'first_name', 'last_name', 'email', 'playlists', 'plan', 'settings', 'artist', 'artistPassword']
 
     def validate_phone_number(self, value):
         if User.objects.filter(phone_number=value).exists():
@@ -221,7 +225,19 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop('password')
-        user = User.objects.create_user(password=password, **validated_data)
+        artist_flag = validated_data.pop('artist', False)
+        artist_password = validated_data.pop('artistPassword', None)
+
+        create_kwargs = {}
+        if artist_flag:
+            create_kwargs['roles'] = [User.ROLE_AUDIENCE, User.ROLE_ARTIST]
+        else:
+            create_kwargs['roles'] = [User.ROLE_AUDIENCE]
+
+        if artist_password:
+            create_kwargs['artist_password'] = artist_password
+
+        user = User.objects.create_user(password=password, **{**validated_data, **create_kwargs})
         return user
 
 
