@@ -4,6 +4,9 @@ from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
 from .models import User, Artist, ArtistAuth
+from .models import PlayCount
+from django.utils import timezone
+from datetime import timedelta
 from .admin_serializers import AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer
 from rest_framework.parsers import MultiPartParser, FormParser
 
@@ -140,3 +143,35 @@ class AdminPendingArtistDetailView(APIView):
         auth = get_object_or_404(ArtistAuth, pk=pk)
         auth.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminStreamSummaryView(APIView):
+        """Return overall play counts summary for admin dashboards.
+
+        Response:
+        {
+            "total": int,
+            "last_30_days": int,
+            "last_7_days": int,
+            "last_24_hours": int
+        }
+        """
+        permission_classes = [permissions.IsAdminUser]
+
+        def get(self, request):
+                now = timezone.now()
+                last_24 = now - timedelta(days=1)
+                last_7 = now - timedelta(days=7)
+                last_30 = now - timedelta(days=30)
+
+                total = PlayCount.objects.count()
+                last_30_count = PlayCount.objects.filter(created_at__gte=last_30).count()
+                last_7_count = PlayCount.objects.filter(created_at__gte=last_7).count()
+                last_24_count = PlayCount.objects.filter(created_at__gte=last_24).count()
+
+                return Response({
+                        'total': total,
+                        'last_30_days': last_30_count,
+                        'last_7_days': last_7_count,
+                        'last_24_hours': last_24_count,
+                })

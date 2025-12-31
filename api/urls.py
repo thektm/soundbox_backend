@@ -232,6 +232,7 @@ urlpatterns = [
     path('admin/artists/<int:pk>/', AdminArtistDetailView.as_view(), name='admin_artist_detail'),
     path('admin/pend_artists/', AdminPendingArtistListView.as_view(), name='admin_pending_artist_list'),
     path('admin/pend_artists/<int:pk>/', AdminPendingArtistDetailView.as_view(), name='admin_pending_artist_detail'),
+    path('admin/stream-summary/', __import__('api.admin_views', fromlist=['AdminStreamSummaryView']).AdminStreamSummaryView.as_view(), name='admin_stream_summary'),
 
     # Include router URLs (if any)
     path('', include(router.urls)),
