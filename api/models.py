@@ -39,11 +39,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     ROLE_AUDIENCE = 'audience'
     ROLE_ARTIST = 'artist'
     ROLE_ADMIN = 'admin'
+    ROLE_MANAGER = 'manager'
+    ROLE_SUPERVISOR = 'supervisor'
 
     ROLE_CHOICES = [
         (ROLE_AUDIENCE, 'Audience'),
         (ROLE_ARTIST, 'Artist'),
         (ROLE_ADMIN, 'Admin'),
+        (ROLE_MANAGER, 'Manager'),
+        (ROLE_SUPERVISOR, 'Supervisor'),
     ]
 
     phone_number = models.CharField(max_length=20, unique=True)
