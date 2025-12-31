@@ -71,6 +71,14 @@ from .views import (
     RulesDetailView,
     PlayConfigurationView,
 )
+from .admin_views import (
+    AdminUserListView,
+    AdminUserDetailView,
+    AdminArtistListView,
+    AdminArtistDetailView,
+    AdminPendingArtistListView,
+    AdminPendingArtistDetailView,
+)
 from .auth_views import (
     AuthRegisterView,
     AuthVerifyView,
@@ -217,6 +225,14 @@ urlpatterns = [
     path('rules/latest/', __import__('api.views', fromlist=['RulesLatestView']).RulesLatestView.as_view(), name='rules_latest'),
     path('rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
     
+    # --- Admin Endpoints ---
+    path('admin/users/', AdminUserListView.as_view(), name='admin_user_list'),
+    path('admin/users/<int:pk>/', AdminUserDetailView.as_view(), name='admin_user_detail'),
+    path('admin/artists/', AdminArtistListView.as_view(), name='admin_artist_list'),
+    path('admin/artists/<int:pk>/', AdminArtistDetailView.as_view(), name='admin_artist_detail'),
+    path('admin/pend_artists/', AdminPendingArtistListView.as_view(), name='admin_pending_artist_list'),
+    path('admin/pend_artists/<int:pk>/', AdminPendingArtistDetailView.as_view(), name='admin_pending_artist_detail'),
+
     # Include router URLs (if any)
     path('', include(router.urls)),
 ]
