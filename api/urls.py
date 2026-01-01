@@ -102,6 +102,8 @@ from .admin_views import (
     AdminEventPlaylistDetailView,
     AdminPlaylistListView,
     AdminPlaylistDetailView,
+    AdminEmployeeListView,
+    AdminEmployeeDetailView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -279,6 +281,8 @@ urlpatterns = [
     path('admin/event-playlist/<int:pk>/', AdminEventPlaylistDetailView.as_view(), name='admin_event_playlist_detail'),
     path('admin/playlists/', AdminPlaylistListView.as_view(), name='admin_playlist_list'),
     path('admin/playlists/<int:pk>/', AdminPlaylistDetailView.as_view(), name='admin_playlist_detail'),
+    path('admin/employees/', AdminEmployeeListView.as_view(), name='admin_employee_list'),
+    path('admin/employees/<int:pk>/', AdminEmployeeDetailView.as_view(), name='admin_employee_detail'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),

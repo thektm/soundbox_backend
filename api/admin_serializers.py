@@ -18,6 +18,34 @@ class AdminUserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'date_joined', 'last_login_at']
 
+class AdminEmployeeSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False)
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'phone_number', 'first_name', 'last_name', 'email',
+            'roles', 'is_active', 'is_verified', 'date_joined',
+            'permissions', 'password'
+        ]
+        read_only_fields = ['id', 'date_joined']
+
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().create(validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
+
 class AdminArtistSerializer(serializers.ModelSerializer):
     has_user = serializers.SerializerMethodField()
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)

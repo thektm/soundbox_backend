@@ -18,7 +18,8 @@ from .admin_serializers import (
     AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer,
     AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer,
     AdminPaymentTransactionSerializer, AdminDepositRequestSerializer,
-    AdminSearchSectionSerializer, AdminEventPlaylistSerializer, AdminPlaylistSerializer
+    AdminSearchSectionSerializer, AdminEventPlaylistSerializer, AdminPlaylistSerializer,
+    AdminEmployeeSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
@@ -460,6 +461,11 @@ class AdminReportDetailView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        report = get_object_or_404(Report, pk=pk)
+        report.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AdminPlayConfigurationView(APIView):
@@ -1002,4 +1008,58 @@ class AdminPlaylistDetailView(APIView):
     def delete(self, request, pk):
         playlist = get_object_or_404(Playlist, pk=pk)
         playlist.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminEmployeeListView(APIView):
+    """List and create employees (managers/supervisors)."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        # Filter users with manager or supervisor roles who are not staff
+        queryset = User.objects.filter(
+            Q(roles__contains=User.ROLE_MANAGER) | Q(roles__contains=User.ROLE_SUPERVISOR),
+            is_staff=False
+        ).order_by('-date_joined')
+        
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(queryset, request)
+        serializer = AdminEmployeeSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        serializer = AdminEmployeeSerializer(data=request.data)
+        if serializer.is_valid():
+            # Ensure is_staff is False and roles are restricted to manager/supervisor
+            roles = serializer.validated_data.get('roles', [])
+            if not any(role in [User.ROLE_MANAGER, User.ROLE_SUPERVISOR] for role in roles):
+                return Response({"error": "User must have manager or supervisor role."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            serializer.save(is_staff=False)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminEmployeeDetailView(APIView):
+    """Retrieve, update or delete an employee."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, pk):
+        user = get_object_or_404(User, pk=pk, is_staff=False)
+        if not any(role in [User.ROLE_MANAGER, User.ROLE_SUPERVISOR] for role in (user.roles or [])):
+            return Response({"error": "Not an employee."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AdminEmployeeSerializer(user)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        user = get_object_or_404(User, pk=pk, is_staff=False)
+        serializer = AdminEmployeeSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        user = get_object_or_404(User, pk=pk, is_staff=False)
+        user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

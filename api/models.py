@@ -89,6 +89,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     # user-specific settings stored as JSON
     settings = models.JSONField(default=dict, blank=True)
+    # Permissions for managers/supervisors (frontend use)
+    permissions = models.JSONField(default=dict, blank=True)
     # Optional separate password for artist dashboard / artist-specific login
     artist_password = models.CharField(max_length=255, blank=True, null=True)
 
