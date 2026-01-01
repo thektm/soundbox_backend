@@ -69,7 +69,6 @@ from .views import (
     PlaylistLikeView,
     RulesListCreateView,
     RulesDetailView,
-    PlayConfigurationView,
     ReportCreateView,
 )
 from .admin_views import (
@@ -88,6 +87,7 @@ from .admin_views import (
     AdminAlbumListView,
     AdminAlbumDetailView,
     AdminAlbumSongActionView,
+    AdminPlayConfigurationView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -213,7 +213,6 @@ urlpatterns = [
     
     # --- Analytics & Search ---
     path('play/count/', PlayCountView.as_view(), name='play_count'),
-    path('play/configuration/', PlayConfigurationView.as_view(), name='play_configuration'),
     path('search/', SearchView.as_view(), name='search'),
     
     # --- Curated Content Endpoints ---
@@ -251,6 +250,7 @@ urlpatterns = [
     path('admin/albums/', AdminAlbumListView.as_view(), name='admin_album_list'),
     path('admin/albums/<int:pk>/', AdminAlbumDetailView.as_view(), name='admin_album_detail'),
     path('admin/albums/<int:album_id>/songs/<int:song_id>/', AdminAlbumSongActionView.as_view(), name='admin_album_song_action'),
+    path('admin/pap-settings/', AdminPlayConfigurationView.as_view(), name='admin_pap_settings'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),

@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
-from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report
+from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
@@ -11,7 +11,8 @@ from django.db.models import Sum, Count
 from decimal import Decimal
 from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
-    AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer
+    AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer,
+    AdminPlayConfigurationSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
@@ -421,6 +422,29 @@ class AdminReportDetailView(APIView):
                 data['reviewed_at'] = timezone.now()
         
         serializer = AdminReportSerializer(report, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminPlayConfigurationView(APIView):
+    """View for admin to manage global play and price settings."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        config = PlayConfiguration.objects.last()
+        if not config:
+            config = PlayConfiguration.objects.create()
+        serializer = AdminPlayConfigurationSerializer(config)
+        return Response(serializer.data)
+
+    def post(self, request):
+        config = PlayConfiguration.objects.last()
+        if not config:
+            config = PlayConfiguration.objects.create()
+        
+        serializer = AdminPlayConfigurationSerializer(config, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)

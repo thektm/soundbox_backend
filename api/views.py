@@ -37,7 +37,6 @@ from .serializers import (
     LikedAlbumSerializer,
     LikedPlaylistSerializer,
     RulesSerializer,
-    PlayConfigurationSerializer,
     DepositRequestSerializer,
     ReportSerializer,
 )
@@ -1449,8 +1448,11 @@ class UnwrapStreamView(APIView):
                 unwrapped_at__gte=cutoff_time
             ).count()
             
-            # Every 15th unwrap gets an ad
-            if unwrapped_count % 15 == 0:
+            # Use ad frequency from configuration
+            config = PlayConfiguration.objects.last()
+            ad_freq = config.ad_frequency if config else 15
+            
+            if ad_freq > 0 and unwrapped_count % ad_freq == 0:
                 ad_url = getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
                 return Response({
                     'type': 'ad',
@@ -3229,39 +3231,6 @@ class RulesLatestView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class PlayConfigurationView(APIView):
-    """View to get or update the play configuration. Only one record should exist."""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        config = PlayConfiguration.objects.last()
-        if not config:
-            config = PlayConfiguration.objects.create()
-        serializer = PlayConfigurationSerializer(config)
-        return Response(serializer.data)
-
-    def post(self, request):
-        if not request.user.is_staff:
-            return Response({'error': 'Only staff can update configuration'}, status=status.HTTP_403_FORBIDDEN)
-        
-        config = PlayConfiguration.objects.last()
-        if not config:
-            config = PlayConfiguration.objects.create()
-        
-        serializer = PlayConfigurationSerializer(config, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def delete(self, request, pk):
-        rule = self.get_object(pk)
-        if not rule:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        rule.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ArtistHomeView(APIView):

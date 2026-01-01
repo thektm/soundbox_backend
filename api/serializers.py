@@ -733,6 +733,16 @@ class SongSerializer(serializers.ModelSerializer):
             if not unique_otplay_id:
                 unique_otplay_id = uuid4().hex
 
+            # Check for ad frequency for free users
+            if request.user.plan != User.PLAN_PREMIUM:
+                config = PlayConfiguration.objects.last()
+                if config and config.ad_frequency > 0:
+                    total_requests = StreamAccess.objects.filter(user=request.user).count()
+                    if (total_requests + 1) % config.ad_frequency == 0:
+                        # Return ad URL instead of song wrapper
+                        from django.conf import settings
+                        return getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
+
             # Create StreamAccess record
             StreamAccess.objects.create(
                 user=request.user,
@@ -1094,6 +1104,16 @@ class SongStreamSerializer(serializers.ModelSerializer):
                     break
             if not unique_otplay_id:
                 unique_otplay_id = uuid4().hex
+
+            # Check for ad frequency for free users
+            if request.user.plan != User.PLAN_PREMIUM:
+                config = PlayConfiguration.objects.last()
+                if config and config.ad_frequency > 0:
+                    total_requests = StreamAccess.objects.filter(user=request.user).count()
+                    if (total_requests + 1) % config.ad_frequency == 0:
+                        # Return ad URL instead of song wrapper
+                        from django.conf import settings
+                        return getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
 
             # Create StreamAccess record
             StreamAccess.objects.create(
@@ -1569,13 +1589,6 @@ class DepositRequestSerializer(serializers.ModelSerializer):
             'transaction_id', 'submission_date', 'status_change_date', 'summary'
         ]
         read_only_fields = ['id', 'artist', 'status', 'submission_date', 'status_change_date', 'summary']
-
-
-class PlayConfigurationSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PlayConfiguration
-        fields = ['free_play_worth', 'premium_play_worth', 'updated_at']
-        read_only_fields = ['updated_at']
 
 
 class ReportSerializer(serializers.ModelSerializer):

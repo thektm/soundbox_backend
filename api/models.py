@@ -695,9 +695,11 @@ class PlayCount(models.Model):
 
 
 class PlayConfiguration(models.Model):
-    """Configuration for play worth based on user plan"""
-    free_play_worth = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
-    premium_play_worth = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
+    """Configuration for play worth based on user plan and other settings"""
+    free_play_worth = models.DecimalField(max_digits=12, decimal_places=8, default=0.000000)
+    premium_play_worth = models.DecimalField(max_digits=12, decimal_places=8, default=0.000000)
+    premium_plan_price = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
+    ad_frequency = models.PositiveIntegerField(default=0, help_text="Number of songs between ads for free users")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
