@@ -1643,3 +1643,4 @@ class AudioAdSerializer(serializers.ModelSerializer):
     class Meta:
         model = AudioAd
         fields = ['id', 'title', 'audio_url', 'image_cover', 'navigate_link', 'duration', 'skippable_after']
+

@@ -216,3 +216,4 @@ class AdminEventPlaylistSerializer(serializers.ModelSerializer):
         model = EventPlaylist
         fields = ['id', 'title', 'time_of_day', 'cover_image', 'cover_image_upload', 'playlists', 'created_at', 'updated_at']
         read_only_fields = ['id', 'cover_image', 'created_at', 'updated_at']
+

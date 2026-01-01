@@ -489,3 +489,4 @@ class AudioAdAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'created_at')
     search_fields = ('title', 'navigate_link')
     readonly_fields = ('created_at', 'updated_at')
+

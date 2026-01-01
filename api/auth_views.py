@@ -803,3 +803,4 @@ class ChangePasswordView(APIView):
         ).update(revoked_at=timezone.now())
         
         return Response({'status': 'ok', 'message': 'Password changed successfully'})
+

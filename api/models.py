@@ -1116,3 +1116,4 @@ class Notification(models.Model):
         target = f"User: {self.user.phone_number}" if self.user else f"Artist: {self.artist.name}"
         return f"Notification for {target}: {self.text[:20]}..."
         return self.song or self.artist
+

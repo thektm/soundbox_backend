@@ -154,7 +154,7 @@ class CustomTokenRefreshView(TokenRefreshView):
         return super().post(request, *args, **kwargs)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class UserProfileView(APIView):
     """Retrieve and Update User Profile"""
     permission_classes = [IsAuthenticated]
@@ -182,7 +182,7 @@ class UserProfileView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class NotificationSettingUpdateView(APIView):
     """Update User Notification Settings"""
     permission_classes = [IsAuthenticated]
@@ -226,7 +226,7 @@ class NotificationSettingUpdateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class StreamQualityUpdateView(APIView):
     """Update User Stream Quality Settings"""
     permission_classes = [IsAuthenticated]
@@ -284,7 +284,7 @@ class StreamQualityUpdateView(APIView):
         return self.put(request)
 
 
-@extend_schema(tags=['Utility'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class UserFollowView(APIView):
     """Follow or Unfollow a User or Artist"""
     permission_classes = [IsAuthenticated]
@@ -332,7 +332,7 @@ class UserFollowView(APIView):
                 return Response({'status': 'ok', 'message': 'followed'}, status=status.HTTP_200_OK)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class LikedSongsView(APIView):
     """List of songs liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
@@ -354,7 +354,7 @@ class LikedSongsView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class LikedAlbumsView(APIView):
     """List of albums liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
@@ -376,7 +376,7 @@ class LikedAlbumsView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class LikedPlaylistsView(APIView):
     """List of playlists liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
@@ -398,7 +398,7 @@ class LikedPlaylistsView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class MyArtistsView(APIView):
     """List of artists followed by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
@@ -428,7 +428,7 @@ class MyArtistsView(APIView):
         return paginator.get_paginated_response(results)
 
 
-@extend_schema(tags=['Library'])
+@extend_schema(tags=['Library page endpoint'])
 class MyLibraryView(APIView):
     """
     User's library history.
@@ -491,6 +491,7 @@ class MyLibraryView(APIView):
         })
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class R2UploadView(APIView):
     """Upload a file to an S3-compatible R2 bucket and return a CDN URL."""
     permission_classes = [AllowAny]
@@ -587,6 +588,7 @@ class R2UploadView(APIView):
 
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class SongUploadView(APIView):
     """
     Upload song with audio file and metadata.
@@ -713,6 +715,7 @@ class SongUploadView(APIView):
             )
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class ArtistListView(APIView):
     """List and Create Artists"""
     def get_permissions(self):
@@ -744,6 +747,7 @@ class ArtistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class PlaylistDetailView(APIView):
     """Retrieve, Update, and Delete Playlist (Admin/System/Audience)"""
     def get_permissions(self):
@@ -824,6 +828,7 @@ class PlaylistDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class PlaylistLikeView(APIView):
     """Like or unlike a playlist (Admin/System/Audience)"""
     permission_classes = [IsAuthenticated]
@@ -854,6 +859,7 @@ class PlaylistLikeView(APIView):
         })
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class ArtistDetailView(APIView):
     """Retrieve, Update, and Delete Artist"""
     def get_permissions(self):
@@ -1080,6 +1086,7 @@ class ArtistDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class AlbumListView(APIView):
     """List and Create Albums"""
     def get_permissions(self):
@@ -1111,6 +1118,7 @@ class AlbumListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class AlbumDetailView(APIView):
     """Retrieve, Update, and Delete Album"""
     def get_permissions(self):
@@ -1598,6 +1606,7 @@ class SubGenreDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class SongListView(generics.ListCreateAPIView):
     """View for listing and creating songs"""
     serializer_class = SongSerializer
@@ -1636,6 +1645,7 @@ class SongListView(generics.ListCreateAPIView):
         return queryset
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class SongDetailView(APIView):
     """View for retrieving, updating and deleting a song"""
     def get_permissions(self):
@@ -1766,6 +1776,7 @@ class SongDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class SongLikeView(APIView):
     """Toggle like status for a song"""
     permission_classes = [IsAuthenticated]
@@ -1796,6 +1807,7 @@ class SongLikeView(APIView):
         })
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class AlbumLikeView(APIView):
     """Toggle like status for an album"""
     permission_classes = [IsAuthenticated]
@@ -1826,6 +1838,7 @@ class AlbumLikeView(APIView):
         })
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class SongIncrementPlaysView(APIView):
     """Increment play count for a song"""
     permission_classes = [IsAuthenticated]
@@ -1846,6 +1859,7 @@ class SongIncrementPlaysView(APIView):
         return Response({'plays': song.plays})
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class SongStreamListView(generics.ListAPIView):
     """
     List songs with wrapper stream URLs that require unwrapping.
@@ -1903,6 +1917,7 @@ class SongStreamListView(generics.ListAPIView):
 
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class UnwrapStreamView(APIView):
     """
     Unwrap a stream URL token to get the actual signed URL.
@@ -2039,6 +2054,7 @@ class UnwrapStreamView(APIView):
         })
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class StreamShortRedirectView(APIView):
     """
     Short URL redirect that generates signed URL on-the-fly.
@@ -2125,6 +2141,7 @@ class StreamShortRedirectView(APIView):
             )
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class AdSubmitView(APIView):
     """
     Endpoint to submit an ad as seen and get the final stream URL.
@@ -2246,6 +2263,7 @@ def get_client_ip(request):
     return ip
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class PlayCountView(APIView):
     """Endpoint to record play counts for songs."""
     permission_classes = [IsAuthenticated]
@@ -2317,7 +2335,7 @@ class PlayCountView(APIView):
             return Response({'error': 'Invalid unique_otplay_id'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class UserPlaylistListCreateView(APIView):
     """List all user playlists or create a new one"""
     permission_classes = [IsAuthenticated]
@@ -2344,7 +2362,7 @@ class UserPlaylistListCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class UserPlaylistDetailView(APIView):
     """Retrieve, update, or delete a specific user playlist"""
     permission_classes = [IsAuthenticated]
@@ -2399,7 +2417,7 @@ class UserPlaylistDetailView(APIView):
         return Response({'message': 'Playlist deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class UserPlaylistAddSongView(APIView):
     """Add a song to a user playlist"""
     permission_classes = [IsAuthenticated]
@@ -2438,7 +2456,7 @@ class UserPlaylistAddSongView(APIView):
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-@extend_schema(tags=['Profile'])
+@extend_schema(tags=['Profile Page Endpoints'])
 class UserPlaylistRemoveSongView(APIView):
     """Remove a song from a user playlist"""
     permission_classes = [IsAuthenticated]
@@ -2464,7 +2482,7 @@ class UserPlaylistRemoveSongView(APIView):
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class UserRecommendationView(APIView):
     """
     Spotify-level recommendation engine.
@@ -2587,7 +2605,7 @@ class StandardResultsSetPagination(PageNumberPagination):
     max_page_size = 100
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class LatestReleasesView(generics.ListAPIView):
     """Return songs ordered by release date (newest first), paginated with next link."""
     serializer_class = SongSerializer
@@ -2627,7 +2645,7 @@ class LatestReleasesView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class PopularArtistsView(generics.ListAPIView):
     """Return artists ordered by a popularity score (plays + likes + playlist adds)."""
     permission_classes = [permissions.IsAuthenticated]
@@ -2678,7 +2696,7 @@ class PopularArtistsView(generics.ListAPIView):
         return queryset
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class PopularAlbumsView(generics.ListAPIView):
     """Return albums ordered by combined popularity (album likes + song likes + song plays).
 
@@ -2728,7 +2746,7 @@ class PopularAlbumsView(generics.ListAPIView):
         return queryset
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class DailyTopSongsView(generics.ListAPIView):
     """Return songs ordered by play count in the last 24 hours (Global)."""
     serializer_class = SongSerializer
@@ -2756,7 +2774,7 @@ class DailyTopSongsView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class DailyTopArtistsView(generics.ListAPIView):
     """Return artists ordered by total play count of their songs in the last 24 hours (Global)."""
     serializer_class = PopularArtistSerializer
@@ -2785,7 +2803,7 @@ class DailyTopArtistsView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class DailyTopAlbumsView(generics.ListAPIView):
     """Return albums ordered by total play count of their songs in the last 24 hours (Global)."""
     serializer_class = PopularAlbumSerializer
@@ -2814,7 +2832,7 @@ class DailyTopAlbumsView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class WeeklyTopSongsView(generics.ListAPIView):
     """Return songs ordered by play count in the last 7 days (Global)."""
     serializer_class = SongSerializer
@@ -2844,7 +2862,7 @@ class WeeklyTopSongsView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class WeeklyTopArtistsView(generics.ListAPIView):
     """Return artists ordered by total play count of their songs in the last 7 days (Global)."""
     serializer_class = PopularArtistSerializer
@@ -2875,7 +2893,7 @@ class WeeklyTopArtistsView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class WeeklyTopAlbumsView(generics.ListAPIView):
     """Return albums ordered by total play count of their songs in the last 7 days (Global)."""
     serializer_class = PopularAlbumSerializer
@@ -2906,7 +2924,7 @@ class WeeklyTopAlbumsView(generics.ListAPIView):
         return queryset.distinct()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class PlaylistRecommendationsView(generics.ListAPIView):
     """
     Auto-generate and return personalized playlist recommendations.
@@ -3567,7 +3585,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 playlist.save()
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
     """
     Detail view for a specific recommended playlist.
@@ -3609,7 +3627,7 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
         return Response(serializer.data)
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class PlaylistRecommendationLikeView(APIView):
     """Like or unlike a recommended playlist"""
     permission_classes = [IsAuthenticated]
@@ -3640,7 +3658,7 @@ class PlaylistRecommendationLikeView(APIView):
             return Response({'status': 'liked', 'likes_count': playlist.liked_by.count()})
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Home Page Endpoints'])
 class PlaylistRecommendationSaveView(APIView):
     """Save or unsave a recommended playlist"""
     permission_classes = [IsAuthenticated]
@@ -3671,7 +3689,7 @@ class PlaylistRecommendationSaveView(APIView):
             return Response({'status': 'saved'})
 
 
-@extend_schema(tags=['Home'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class PlaylistSaveToggleView(APIView):
     """Toggle save/unsave for canonical Playlist objects"""
     permission_classes = [IsAuthenticated]
@@ -3696,6 +3714,7 @@ class PlaylistSaveToggleView(APIView):
             return Response({'status': 'saved'}, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=['Search Page Endpoints'])
 class SearchView(APIView):
     """
     Unified search endpoint for songs, artists, albums, and playlists.
@@ -3834,6 +3853,7 @@ class SearchView(APIView):
         return admin_qs.order_by('-created_at')
 
 
+@extend_schema(tags=['Search Page Endpoints'])
 class EventPlaylistView(APIView):
     """Return event playlist groups with all details."""
     permission_classes = [permissions.AllowAny]
@@ -3863,6 +3883,7 @@ class EventPlaylistView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema(tags=['Search Page Endpoints'])
 class SearchSectionListView(APIView):
     """List and Create SearchSections"""
     def get_permissions(self):
@@ -3894,6 +3915,7 @@ class SearchSectionListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Search Page Endpoints'])
 class SearchSectionDetailView(APIView):
     """Retrieve, Update, and Delete SearchSection"""
     def get_permissions(self):
@@ -3964,6 +3986,7 @@ class SearchSectionDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class RulesListCreateView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -3993,6 +4016,7 @@ class RulesListCreateView(APIView):
 
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class RulesDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -4042,6 +4066,7 @@ class RulesDetailView(APIView):
 
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class RulesLatestView(APIView):
     """Return the latest Rules entry (single item) for public consumption.
     Accessible by both audience and artists.
@@ -4748,7 +4773,6 @@ class ArtistFinanceView(APIView):
 
 
 @extend_schema(tags=['Artist App Endpoints'])
-@extend_schema(tags=['Artist App Endpoints'])
 class ArtistFinanceSongsView(APIView):
     """
     Return paginated list of artist's songs with total income and plays.
@@ -4818,7 +4842,6 @@ class ArtistFinanceSongsView(APIView):
         return Response(results)
 
 
-@extend_schema(tags=['Artist App Endpoints'])
 @extend_schema(tags=['Artist App Endpoints'])
 class ArtistSettingsView(APIView):
     """Allow an artist to update their profile information and photos.
@@ -5506,6 +5529,7 @@ class ArtistAlbumsManagementView(APIView):
         return Response({"message": "Album deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class ReportCreateView(generics.CreateAPIView):
     """Endpoint for users to submit reports for songs or artists."""
     permission_classes = [permissions.IsAuthenticated]
@@ -5523,6 +5547,7 @@ class ReportCreateView(generics.CreateAPIView):
         serializer.save(user=self.request.user)
 
 
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class NotificationListView(generics.ListAPIView):
     """List notifications for the authenticated user or their artist profile."""
     permission_classes = [permissions.IsAuthenticated]
@@ -5641,7 +5666,7 @@ class NotificationListView(generics.ListAPIView):
         return Response(serializer.data)
 
 
-@extend_schema(tags=['Artist App Endpoints'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class NotificationMarkReadView(APIView):
     """Mark a specific notification or all notifications as read."""
     permission_classes = [permissions.IsAuthenticated]
@@ -5678,4 +5703,5 @@ class NotificationMarkReadView(APIView):
             Notification.objects.filter(user=user, has_read=False).update(has_read=True)
             
         return Response({"message": "All notifications marked as read"})
+
 

@@ -1466,3 +1466,4 @@ class AdminEmployeeDetailView(APIView):
         user = get_object_or_404(User, pk=pk, is_staff=False)
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+

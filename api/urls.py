@@ -277,3 +277,4 @@ urlpatterns = [
     path('admin/rules/', RulesListCreateView.as_view(), name='rules_list_create'),
     path('admin/rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
 ]
+
