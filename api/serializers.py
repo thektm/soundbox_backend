@@ -273,9 +273,6 @@ class RegisterRequestSerializer(serializers.Serializer):
 class VerifySerializer(serializers.Serializer):
     phone = serializers.CharField()
     otp = serializers.CharField()
-    context = serializers.CharField(required=False, allow_blank=True)
-    artist = serializers.BooleanField(required=False)
-    artistPassword = serializers.CharField(write_only=True, required=False)
 
 
 class LoginPasswordSerializer(serializers.Serializer):

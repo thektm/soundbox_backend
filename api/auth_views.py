@@ -227,8 +227,7 @@ class AuthRegisterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
-        artist_flag = serializer.validated_data.get('artist', False)
-        artist_password = serializer.validated_data.get('artistPassword')
+        # No artist or artistPassword accepted here; verification only requires phone+otp
         # If user exists
         existing = User.objects.filter(phone_number=phone).first()
         if existing:
@@ -314,13 +313,7 @@ class AuthVerifyView(APIView):
         otp_obj.consumed = True
         otp_obj.save(update_fields=['consumed'])
         user.is_verified = True
-        # If client requested artist role during verify, add artist role and set separate artist password
-        if artist_flag:
-            if User.ROLE_ARTIST not in user.roles:
-                user.roles.append(User.ROLE_ARTIST)
-            if artist_password:
-                user.set_artist_password(artist_password)
-        user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])
+        user.save(update_fields=['is_verified'])
         tokens = issue_tokens_for_user(user, request)
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
