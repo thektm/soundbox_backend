@@ -459,14 +459,8 @@ class ArtistAuthSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         return super().update(instance, validated_data)
-    weekly_plays = serializers.IntegerField(read_only=True)
-    daily_plays = serializers.IntegerField(read_only=True)
-    score = serializers.IntegerField(read_only=True)
-
-    class Meta(ArtistSerializer.Meta):
-        fields = ArtistSerializer.Meta.fields + [
-            'total_plays', 'total_likes', 'total_playlist_adds', 'weekly_plays', 'daily_plays', 'score'
-        ]
+    def update(self, instance, validated_data):
+        return super().update(instance, validated_data)
 
 
 class AlbumSerializer(serializers.ModelSerializer):
