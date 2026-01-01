@@ -3963,42 +3963,55 @@ class RulesListCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+
+
 class RulesDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
-    def get_object(self, pk):
-        try:
-            return Rules.objects.get(pk=pk)
-        except Rules.DoesNotExist:
-            return None
-
     @extend_schema(
         summary="جزئیات قانون (ادمین)",
-        description="دریافت اطلاعات یک قانون خاص.",
-        responses={200: RulesSerializer}
+        description="دریافت جزئیات یک قانون خاص.",
+        responses={200: RulesSerializer, 404: OpenApiTypes.OBJECT}
     )
     def get(self, request, pk):
-        rule = self.get_object(pk)
-        if not rule:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            rule = Rules.objects.get(pk=pk)
+        except Rules.DoesNotExist:
+            return Response({"detail": "Rule not found."}, status=status.HTTP_404_NOT_FOUND)
         serializer = RulesSerializer(rule)
         return Response(serializer.data)
 
     @extend_schema(
         summary="ویرایش قانون (ادمین)",
-        description="ویرایش اطلاعات یک قانون خاص.",
+        description="ویرایش یک قانون موجود.",
         request=RulesSerializer,
-        responses={200: RulesSerializer}
+        responses={200: RulesSerializer, 404: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}
     )
     def put(self, request, pk):
-        rule = self.get_object(pk)
-        if not rule:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            rule = Rules.objects.get(pk=pk)
+        except Rules.DoesNotExist:
+            return Response({"detail": "Rule not found."}, status=status.HTTP_404_NOT_FOUND)
         serializer = RulesSerializer(rule, data=request.data)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        summary="حذف قانون (ادمین)",
+        description="حذف یک قانون موجود.",
+        responses={204: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT}
+    )
+    def delete(self, request, pk):
+        try:
+            rule = Rules.objects.get(pk=pk)
+        except Rules.DoesNotExist:
+            return Response({"detail": "Rule not found."}, status=status.HTTP_404_NOT_FOUND)
+        rule.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 
 
 class RulesLatestView(APIView):
@@ -4019,22 +4032,7 @@ class RulesLatestView(APIView):
         serializer = RulesSerializer(latest)
         return Response(serializer.data)
 
-    @extend_schema(
-        summary="ویرایش جزئی قانون (ادمین)",
-        description="ویرایش برخی از اطلاعات یک قانون خاص.",
-        request=RulesSerializer,
-        responses={200: RulesSerializer}
-    )
-    def patch(self, request, pk):
-        rule = self.get_object(pk)
-        if not rule:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = RulesSerializer(rule, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+   
 
 @extend_schema(tags=['Artist App Endpoints'])
 class ArtistHomeView(APIView):

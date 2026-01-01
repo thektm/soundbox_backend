@@ -23,6 +23,10 @@ from .views import (
     ArtistAlbumsManagementView,
     DepositRequestView,
     ArtistWalletView,
+    ArtistFinanceView,
+    ArtistFinanceSongsView,
+    ArtistSettingsView,
+    ArtistChangePasswordView,
     AlbumListView,
     AlbumDetailView,
     AlbumLikeView,
@@ -70,6 +74,7 @@ from .views import (
     PlaylistLikeView,
     RulesListCreateView,
     RulesDetailView,
+    RulesLatestView,
     ReportCreateView,
     NotificationListView,
     NotificationMarkReadView,
@@ -145,35 +150,59 @@ urlpatterns = [
     path('auth/sessions/<int:pk>/revoke/', SessionRevokeView.as_view(), name='session_revoke'),
     path('auth/sessions/revoke-others/', SessionRevokeOtherView.as_view(), name='session_revoke_others'),
     
-    # --- User & Profile Endpoints ---
-    path('users/profile/', UserProfileView.as_view(), name='user_profile'),
-    path('users/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
-    path('users/settings/stream-quality/', StreamQualityUpdateView.as_view(), name='user_stream_quality_settings'),
-    path('users/follow/', UserFollowView.as_view(), name='user_follow'),
-    path('users/liked-songs/', LikedSongsView.as_view(), name='liked_songs'),
-    path('users/liked-albums/', LikedAlbumsView.as_view(), name='liked_albums'),
-    path('users/liked-playlists/', LikedPlaylistsView.as_view(), name='liked_playlists'),
-    path('users/my-artists/', MyArtistsView.as_view(), name='my_artists'),
-    path('users/my-library/', MyLibraryView.as_view(), name='my_library'),
-    path('users/songs/recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
-    path('users/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
-    path('users/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
-    path('users/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
+    # ---  Profile Page Endpoints ---
+    path('/profile/', UserProfileView.as_view(), name='user_profile'),
+    path('profile/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
+    path('profile/settings/stream-quality/', StreamQualityUpdateView.as_view(), name='user_stream_quality_settings'),
+    path('profile/liked-songs/', LikedSongsView.as_view(), name='liked_songs'),
+    path('profile/liked-albums/', LikedAlbumsView.as_view(), name='liked_albums'),
+    path('profile/liked-playlists/', LikedPlaylistsView.as_view(), name='liked_playlists'),
+    path('profile/my-artists/', MyArtistsView.as_view(), name='my_artists'),
     
-    # --- Global Charts & Top Lists ---
-    path('users/weekly-top-songs-global/', WeeklyTopSongsView.as_view(), name='user_weekly_top_songs_global'),
-    path('users/weekly-top-artists-global/', WeeklyTopArtistsView.as_view(), name='user_weekly_top_artists_global'),
-    path('users/weekly-top-albums-global/', WeeklyTopAlbumsView.as_view(), name='user_weekly_top_albums_global'),
-    path('users/daily-top-songs-global/', DailyTopSongsView.as_view(), name='user_daily_top_songs_global'),
-    path('users/daily-top-artists-global/', DailyTopArtistsView.as_view(), name='user_daily_top_artists_global'),
-    path('users/daily-top-albums-global/', DailyTopAlbumsView.as_view(), name='user_daily_top_albums_global'),
+    path('profile/user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
+    path('profile/user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
+    path('profile/user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
+    path('profile/user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
     
-    # --- Recommendations & Discovery ---
-    path('users/playlist-recommendations/', PlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
-    path('users/playlist-recommendations/<str:unique_id>/', PlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),
-    path('users/playlist-recommendations/<str:unique_id>/like/', PlaylistRecommendationLikeView.as_view(), name='user_playlist_recommendation_like'),
-    path('users/playlist-recommendations/<str:unique_id>/save/', PlaylistRecommendationSaveView.as_view(), name='user_playlist_recommendation_save'),
+    # Library page endpoint
+    path('my-library/', MyLibraryView.as_view(), name='my_library'),
+
+    # Home Page Endpoints
+    path('home/songs-recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
+    path('home/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
+    path('home/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
+    path('home/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
+    path('home/weekly-top-songs-global/', WeeklyTopSongsView.as_view(), name='user_weekly_top_songs_global'),
+    path('home/weekly-top-artists-global/', WeeklyTopArtistsView.as_view(), name='user_weekly_top_artists_global'),
+    path('home/weekly-top-albums-global/', WeeklyTopAlbumsView.as_view(), name='user_weekly_top_albums_global'),
+    path('home/daily-top-songs-global/', DailyTopSongsView.as_view(), name='user_daily_top_songs_global'),
+    path('home/daily-top-artists-global/', DailyTopArtistsView.as_view(), name='user_daily_top_artists_global'),
+    path('home/daily-top-albums-global/', DailyTopAlbumsView.as_view(), name='user_daily_top_albums_global'),
+    path('home/playlist-recommendations/', PlaylistRecommendationsView.as_view(), name='user_playlist_recommendations'),
+    path('home/playlist-recommendations/<str:unique_id>/', PlaylistRecommendationDetailView.as_view(), name='user_playlist_recommendation_detail'),
+    path('home/playlist-recommendations/<str:unique_id>/like/', PlaylistRecommendationLikeView.as_view(), name='user_playlist_recommendation_like'),
+    path('home/playlist-recommendations/<str:unique_id>/save/', PlaylistRecommendationSaveView.as_view(), name='user_playlist_recommendation_save'),
     
+    # Utility , DetailScreens & action Endpoints 
+    path('follow/', UserFollowView.as_view(), name='user_follow'),
+    path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
+    path('albums/<int:pk>/', AlbumDetailView.as_view(), name='album_detail'),
+    path('albums/<int:pk>/like/', AlbumLikeView.as_view(), name='album_like'),
+    path('songs/<int:pk>/', SongDetailView.as_view(), name='song_detail'),
+    path('songs/<int:pk>/like/', SongLikeView.as_view(), name='song_like'),
+    path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
+    path('playlists/<int:pk>/', PlaylistDetailView.as_view(), name='playlist_detail'),
+    path('playlists/<int:pk>/like/', PlaylistLikeView.as_view(), name='playlist_like'),
+    path('playlists/<int:pk>/save/', PlaylistSaveToggleView.as_view(), name='playlist_save_toggle'),
+    path('play/count/', PlayCountView.as_view(), name='play_count'),
+    path('ads/submit/', AdSubmitView.as_view(), name='ad_submit'),
+    path('rules/latest/', RulesLatestView.as_view(), name='rules_latest'),
+    path('notifications/', NotificationListView.as_view(), name='notification_list'),
+    path('notifications/read/', NotificationMarkReadView.as_view(), name='notification_mark_all_read'),
+    path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification_mark_read'),
+    path('reports/', ReportCreateView.as_view(), name='report_create'),
+
+
     # --- Artist App Endpoints ---
     path('artist/home/', ArtistHomeView.as_view(), name='artist_home'),
     path('artist/analytics/', ArtistAnalyticsView.as_view(), name='artist_analytics'),
@@ -186,71 +215,31 @@ urlpatterns = [
     path('artist/albums/<int:pk>/', ArtistAlbumsManagementView.as_view(), name='artist_albums_detail'),
     path('artist/deposit-request/', DepositRequestView.as_view(), name='artist_deposit_request'),
     path('artist/wallet/', ArtistWalletView.as_view(), name='artist_wallet'),
-    path('artist/finance/', __import__('api.views', fromlist=['ArtistFinanceView']).ArtistFinanceView.as_view(), name='artist_finance'),
-    path('artist/finance/songs/', __import__('api.views', fromlist=['ArtistFinanceSongsView']).ArtistFinanceSongsView.as_view(), name='artist_finance_songs'),
+    path('artist/finance/', ArtistFinanceView.as_view(), name='artist_finance'),
+    path('artist/finance/songs/', ArtistFinanceSongsView.as_view(), name='artist_finance_songs'),
     path('artist/auth/', ArtistAuthView.as_view(), name='artist_auth'),
-    path('artist/settings/', __import__('api.views', fromlist=['ArtistSettingsView']).ArtistSettingsView.as_view(), name='artist_settings'),
-    path('artist/settings/password/', __import__('api.views', fromlist=['ArtistChangePasswordView']).ArtistChangePasswordView.as_view(), name='artist_change_password'),
+    path('artist/settings/', ArtistSettingsView.as_view(), name='artist_settings'),
+    path('artist/settings/password/', ArtistChangePasswordView.as_view(), name='artist_change_password'),
     
 
-    # --- Artist Discovery Endpoints ---
-    path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
+    
 
-    # --- Album Endpoints --
-    path('albums/<int:pk>/', AlbumDetailView.as_view(), name='album_detail'),
-    path('albums/<int:pk>/like/', AlbumLikeView.as_view(), name='album_like'),
-
-    # --- Genre & SubGenre Endpoints ---
+    # --- Classification
     path('genres/', GenreListView.as_view(), name='genre_list'),
     path('genres/<int:pk>/', GenreDetailView.as_view(), name='genre_detail'),
     path('subgenres/', SubGenreListView.as_view(), name='subgenre_list'),
     path('subgenres/<int:pk>/', SubGenreDetailView.as_view(), name='subgenre_detail'),
-
-    # --- Mood & Tag Endpoints ---
     path('moods/', MoodListView.as_view(), name='mood_list'),
     path('moods/<int:pk>/', MoodDetailView.as_view(), name='mood_detail'),
     path('tags/', TagListView.as_view(), name='tag_list'),
     path('tags/<int:pk>/', TagDetailView.as_view(), name='tag_detail'),
 
-    # --- Song Endpoints ---
-    path('songs/<int:pk>/', SongDetailView.as_view(), name='song_detail'),
-    path('songs/<int:pk>/like/', SongLikeView.as_view(), name='song_like'),
     
-    # --- Streaming & Playback Endpoints --
-    path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
-    path('ads/submit/', AdSubmitView.as_view(), name='ad_submit'),
-    
-    
-    # --- Analytics & Search ---
-    path('play/count/', PlayCountView.as_view(), name='play_count'),
+    # --- Search Page Endpoints ---
+    path('search/event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
+    path('search/sections/', SearchSectionListView.as_view(), name='search_section_list'),
+    path('search/sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
     path('search/', SearchView.as_view(), name='search'),
-    
-    # --- Curated Content Endpoints ---
-    path('event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
-    path('playlists/<int:pk>/', PlaylistDetailView.as_view(), name='playlist_detail'),
-    path('playlists/<int:pk>/like/', PlaylistLikeView.as_view(), name='playlist_like'),
-    path('playlists/<int:pk>/save/', PlaylistSaveToggleView.as_view(), name='playlist_save_toggle'),
-    path('search-sections/', SearchSectionListView.as_view(), name='search_section_list'),
-    path('search-sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
-    
-    # --- User Playlist Endpoints ---
-    path('user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
-    path('user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
-    path('user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
-    path('user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
-    
-    # --- Rules Endpoints ---
-    path('rules/', RulesListCreateView.as_view(), name='rules_list_create'),
-    path('rules/latest/', __import__('api.views', fromlist=['RulesLatestView']).RulesLatestView.as_view(), name='rules_latest'),
-    path('rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
-    
-    # --- Notification Endpoints ---
-    path('notifications/', NotificationListView.as_view(), name='notification_list'),
-    path('notifications/read/', NotificationMarkReadView.as_view(), name='notification_mark_all_read'),
-    path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification_mark_read'),
-
-    # --- Report Endpoints ---
-    path('reports/', ReportCreateView.as_view(), name='report_create'),
 
     # --- Admin App Endpoints ---
     path('admin/users/', AdminUserListView.as_view(), name='admin_user_list'),
@@ -285,9 +274,6 @@ urlpatterns = [
     path('admin/playlists/<int:pk>/', AdminPlaylistDetailView.as_view(), name='admin_playlist_detail'),
     path('admin/employees/', AdminEmployeeListView.as_view(), name='admin_employee_list'),
     path('admin/employees/<int:pk>/', AdminEmployeeDetailView.as_view(), name='admin_employee_detail'),
-
-    
-
-    # Include router URLs (if any)
-    path('', include(router.urls)),
+    path('admin/rules/', RulesListCreateView.as_view(), name='rules_list_create'),
+    path('admin/rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
 ]
