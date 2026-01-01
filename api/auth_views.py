@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.exceptions import PermissionDenied
 from .models import User, OtpCode, RefreshToken
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from .serializers import (
     RegisterRequestSerializer,
     VerifySerializer,
@@ -31,6 +32,7 @@ from rest_framework_simplejwt.tokens import RefreshToken as SimpleRefreshToken
 from django.utils.crypto import get_random_string
 from datetime import timedelta
 import hashlib
+import re
 
 
 def normalize_phone(phone: str) -> str:
@@ -209,9 +211,16 @@ def issue_tokens_for_user(user: User, request) -> dict:
     return {'accessToken': str(access), 'refreshToken': token_str}
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class AuthRegisterView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="ثبت‌نام کاربر جدید",
+        description="ثبت‌نام با شماره موبایل و رمز عبور. در صورت وجود کاربر تایید نشده، کد تایید مجدداً ارسال می‌شود.",
+        request=RegisterRequestSerializer,
+        responses={200: OpenApiTypes.OBJECT, 201: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = RegisterRequestSerializer(data=request.data)
         if not serializer.is_valid():
@@ -268,9 +277,16 @@ class AuthRegisterView(APIView):
         return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class AuthVerifyView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="تایید شماره موبایل",
+        description="تایید حساب کاربری با استفاده از کد ارسال شده به شماره موبایل.",
+        request=VerifySerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = VerifySerializer(data=request.data)
         if not serializer.is_valid():
@@ -309,9 +325,16 @@ class AuthVerifyView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class LoginPasswordView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="ورود با رمز عبور",
+        description="ورود به حساب کاربری با استفاده از شماره موبایل و رمز عبور (معمولی یا هنرمند).",
+        request=LoginPasswordSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = LoginPasswordSerializer(data=request.data)
         if not serializer.is_valid():
@@ -348,9 +371,16 @@ class LoginPasswordView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class LoginOtpRequestView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="درخواست کد ورود (OTP)",
+        description="ارسال کد تایید یکبار مصرف به شماره موبایل برای ورود بدون رمز عبور.",
+        request=LoginOtpRequestSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = LoginOtpRequestSerializer(data=request.data)
         if not serializer.is_valid():
@@ -375,9 +405,16 @@ class LoginOtpRequestView(APIView):
         return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class LoginOtpVerifyView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="ورود با کد تایید (OTP)",
+        description="تایید کد یکبار مصرف و دریافت توکن‌های دسترسی.",
+        request=LoginOtpVerifySerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = LoginOtpVerifySerializer(data=request.data)
         if not serializer.is_valid():
@@ -410,11 +447,17 @@ class LoginOtpVerifyView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistAuthView(APIView):
     """Create / retrieve / update artist authentication submissions for the authenticated user."""
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="دریافت وضعیت احراز هویت هنرمند",
+        description="دریافت اطلاعات و وضعیت فعلی درخواست احراز هویت هنرمند.",
+        responses={200: ArtistAuthSerializer}
+    )
     def get(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
             return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
@@ -425,6 +468,12 @@ class ArtistAuthView(APIView):
         serializer = ArtistAuthSerializer(auth, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ثبت درخواست احراز هویت هنرمند",
+        description="ارسال مدارک و اطلاعات لازم برای تایید حساب کاربری به عنوان هنرمند.",
+        request=ArtistAuthSerializer,
+        responses={201: ArtistAuthSerializer}
+    )
     def post(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
             return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
@@ -437,6 +486,12 @@ class ArtistAuthView(APIView):
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @extend_schema(
+        summary="ویرایش درخواست احراز هویت هنرمند",
+        description="به‌روزرسانی مدارک یا اطلاعات درخواست احراز هویت قبلی.",
+        request=ArtistAuthSerializer,
+        responses={200: ArtistAuthSerializer}
+    )
     def patch(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
             return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
@@ -451,9 +506,16 @@ class ArtistAuthView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="درخواست بازیابی رمز عبور",
+        description="ارسال کد تایید به شماره موبایل برای شروع فرآیند بازیابی رمز عبور.",
+        request=ForgotPasswordSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
         if not serializer.is_valid():
@@ -470,9 +532,16 @@ class ForgotPasswordView(APIView):
         return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class PasswordResetView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="تغییر رمز عبور (بازیابی)",
+        description="تنظیم رمز عبور جدید با استفاده از کد تایید ارسال شده.",
+        request=PasswordResetSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = PasswordResetSerializer(data=request.data)
         if not serializer.is_valid():
@@ -510,9 +579,16 @@ class PasswordResetView(APIView):
         return Response({'error': {'code': 'BAD_REQUEST', 'message': 'phone is required'}}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class TokenRefreshView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="تجدید توکن دسترسی",
+        description="دریافت توکن دسترسی جدید با استفاده از توکن تجدید (Refresh Token).",
+        request=TokenRefreshRequestSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = TokenRefreshRequestSerializer(data=request.data)
         if not serializer.is_valid():
@@ -562,9 +638,16 @@ class TokenRefreshView(APIView):
         return Response({'accessToken': str(new_access), 'refreshToken': str(new_refresh)})
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class LogoutView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="خروج از حساب کاربری",
+        description="ابطال توکن تجدید و خروج از حساب کاربری.",
+        request=LogoutSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = LogoutSerializer(data=request.data)
         if not serializer.is_valid():
@@ -582,9 +665,18 @@ class LogoutView(APIView):
         return Response({'status': 'ok'})
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class SessionListView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لیست نشست‌های فعال",
+        description="دریافت لیست تمامی دستگاه‌ها و نشست‌های فعال کاربر.",
+        parameters=[
+            OpenApiParameter("refreshToken", OpenApiTypes.STR, description="توکن فعلی برای تشخیص نشست جاری")
+        ],
+        responses={200: SessionSerializer(many=True)}
+    )
     def get(self, request):
         sessions = RefreshToken.objects.filter(
             user=request.user, 
@@ -599,9 +691,15 @@ class SessionListView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class SessionRevokeView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="ابطال نشست خاص",
+        description="خروج از حساب کاربری در یک دستگاه خاص.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk):
         session = get_object_or_404(RefreshToken, pk=pk, user=request.user)
         session.revoked_at = timezone.now()
@@ -609,9 +707,24 @@ class SessionRevokeView(APIView):
         return Response({'status': 'ok'})
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class SessionRevokeOtherView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="ابطال سایر نشست‌ها",
+        description="خروج از حساب کاربری در تمامی دستگاه‌ها به جز دستگاه فعلی.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'refreshToken': {'type': 'string'}
+                },
+                'required': ['refreshToken']
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         current_refresh = request.data.get('refreshToken')
         if not current_refresh:
@@ -629,9 +742,16 @@ class SessionRevokeOtherView(APIView):
         return Response({'status': 'ok', 'revoked_count': revoked_count})
 
 
+@extend_schema(tags=['Auth Endpoints'])
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="تغییر رمز عبور",
+        description="تغییر رمز عبور فعلی به رمز عبور جدید.",
+        request=ChangePasswordSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = ChangePasswordSerializer(data=request.data)
         if not serializer.is_valid():

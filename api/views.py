@@ -70,11 +70,18 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q, Count, Avg, F
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="ثبت‌نام کاربر جدید",
+        description="ایجاد یک حساب کاربری جدید با استفاده از شماره موبایل و رمز عبور.",
+        request=RegisterSerializer,
+        responses={200: UserSerializer}
+    )
     def post(self, request, *args, **kwargs):
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
@@ -87,20 +94,47 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     permission_classes = [AllowAny]
     serializer_class = CustomTokenObtainPairSerializer
 
+    @extend_schema(
+        summary="ورود و دریافت توکن",
+        description="دریافت توکن‌های Access و Refresh با استفاده از شماره موبایل و رمز عبور.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
+
 
 class CustomTokenRefreshView(TokenRefreshView):
     # uses SimpleJWT's TokenRefreshView; with ROTATE_REFRESH_TOKENS=True it will return a new refresh token too
     permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="تمدید توکن",
+        description="دریافت توکن Access جدید با استفاده از توکن Refresh.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
 
 
 class UserProfileView(APIView):
     """Retrieve and Update User Profile"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="مشاهده پروفایل کاربر",
+        description="دریافت اطلاعات پروفایل کاربر فعلی.",
+        responses={200: UserSerializer}
+    )
     def get(self, request):
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش پروفایل کاربر",
+        description="به‌روزرسانی اطلاعات پروفایل کاربر فعلی.",
+        request=UserSerializer,
+        responses={200: UserSerializer}
+    )
     def patch(self, request):
         serializer = UserSerializer(request.user, data=request.data, partial=True)
         if serializer.is_valid():
@@ -113,11 +147,22 @@ class NotificationSettingUpdateView(APIView):
     """Update User Notification Settings"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="دریافت تنظیمات اعلان‌ها",
+        description="مشاهده تنظیمات فعلی اعلان‌های کاربر.",
+        responses={200: NotificationSettingSerializer}
+    )
     def get(self, request):
         setting, created = NotificationSetting.objects.get_or_create(user=request.user)
         serializer = NotificationSettingSerializer(setting)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="به‌روزرسانی تنظیمات اعلان‌ها (کامل)",
+        description="تغییر تمامی تنظیمات اعلان‌های کاربر.",
+        request=NotificationSettingSerializer,
+        responses={200: NotificationSettingSerializer}
+    )
     def put(self, request):
         setting, created = NotificationSetting.objects.get_or_create(user=request.user)
         serializer = NotificationSettingSerializer(setting, data=request.data)
@@ -126,6 +171,12 @@ class NotificationSettingUpdateView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="به‌روزرسانی تنظیمات اعلان‌ها (جزئی)",
+        description="تغییر برخی از تنظیمات اعلان‌های کاربر.",
+        request=NotificationSettingSerializer,
+        responses={200: NotificationSettingSerializer}
+    )
     def patch(self, request):
         setting, created = NotificationSetting.objects.get_or_create(user=request.user)
         serializer = NotificationSettingSerializer(setting, data=request.data, partial=True)
@@ -139,12 +190,30 @@ class StreamQualityUpdateView(APIView):
     """Update User Stream Quality Settings"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="دریافت تنظیمات کیفیت پخش",
+        description="مشاهده کیفیت پخش فعلی و نوع اشتراک کاربر.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         return Response({
             "stream_quality": request.user.stream_quality,
             "plan": request.user.plan
         })
 
+    @extend_schema(
+        summary="تغییر کیفیت پخش",
+        description="تنظیم کیفیت پخش موسیقی (معمولی یا بالا). کیفیت بالا مخصوص کاربران ویژه است.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'stream_quality': {'type': 'string', 'enum': ['medium', 'high']}
+                }
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def put(self, request):
         quality = request.data.get('stream_quality')
         if quality not in ['medium', 'high']:
@@ -157,6 +226,19 @@ class StreamQualityUpdateView(APIView):
         request.user.save(update_fields=['stream_quality'])
         return Response({"stream_quality": request.user.stream_quality})
 
+    @extend_schema(
+        summary="تغییر کیفیت پخش (جزئی)",
+        description="تنظیم کیفیت پخش موسیقی.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'stream_quality': {'type': 'string', 'enum': ['medium', 'high']}
+                }
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def patch(self, request):
         return self.put(request)
 
@@ -165,6 +247,12 @@ class UserFollowView(APIView):
     """Follow or Unfollow a User or Artist"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="دنبال کردن یا لغو دنبال کردن",
+        description="دنبال کردن یک کاربر یا هنرمند. اگر قبلاً دنبال شده باشد، لغو می‌شود.",
+        request=FollowRequestSerializer,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         serializer = FollowRequestSerializer(data=request.data)
         if not serializer.is_valid():
@@ -206,6 +294,11 @@ class LikedSongsView(APIView):
     """List of songs liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لیست آهنگ‌های پسندیده شده",
+        description="دریافت لیست آهنگ‌هایی که کاربر لایک کرده است (به ترتیب زمان).",
+        responses={200: LikedSongSerializer(many=True)}
+    )
     def get(self, request):
         user = request.user
         qs = SongLike.objects.filter(user=user).order_by('-created_at')
@@ -222,6 +315,11 @@ class LikedAlbumsView(APIView):
     """List of albums liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لیست آلبوم‌های پسندیده شده",
+        description="دریافت لیست آلبوم‌هایی که کاربر لایک کرده است (به ترتیب زمان).",
+        responses={200: LikedAlbumSerializer(many=True)}
+    )
     def get(self, request):
         user = request.user
         qs = AlbumLike.objects.filter(user=user).order_by('-created_at')
@@ -238,6 +336,11 @@ class LikedPlaylistsView(APIView):
     """List of playlists liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لیست پلی‌لیست‌های پسندیده شده",
+        description="دریافت لیست پلی‌لیست‌هایی که کاربر لایک کرده است (به ترتیب زمان).",
+        responses={200: LikedPlaylistSerializer(many=True)}
+    )
     def get(self, request):
         user = request.user
         qs = PlaylistLike.objects.filter(user=user).order_by('-created_at')
@@ -254,6 +357,11 @@ class MyArtistsView(APIView):
     """List of artists followed by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لیست هنرمندان دنبال شده",
+        description="دریافت لیست هنرمندانی که کاربر دنبال می‌کند.",
+        responses={200: ArtistSerializer(many=True)}
+    )
     def get(self, request):
         user = request.user
         # Filter follows where this user is the follower and the target is an artist
@@ -281,6 +389,16 @@ class MyLibraryView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="تاریخچه کتابخانه کاربر",
+        description="دریافت تاریخچه بازدیدها و فعالیت‌های کاربر در کتابخانه (آهنگ، آلبوم، پلی‌لیست، هنرمند).",
+        parameters=[
+            OpenApiParameter("type", OpenApiTypes.STR, description="نوع محتوا (song, album, playlist, artist)"),
+            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
+            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         content_type = request.query_params.get('type')
         page = int(request.query_params.get('page', 1))
@@ -331,6 +449,12 @@ class R2UploadView(APIView):
     permission_classes = [AllowAny]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="آپلود فایل به R2",
+        description="آپلود مستقیم فایل به فضای ابری R2 و دریافت لینک CDN.",
+        request=UploadSerializer,
+        responses={201: OpenApiTypes.OBJECT}
+    )
     def post(self, request, *args, **kwargs):
         serializer = UploadSerializer(data=request.data)
         if not serializer.is_valid():
@@ -424,6 +548,12 @@ class SongUploadView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
     
+    @extend_schema(
+        summary="آپلود آهنگ جدید",
+        description="آپلود فایل صوتی آهنگ به همراه متادیتا و تصویر کاور.",
+        request=SongUploadSerializer,
+        responses={201: SongSerializer}
+    )
     def post(self, request, *args, **kwargs):
         serializer = SongUploadSerializer(data=request.data)
         if not serializer.is_valid():
@@ -543,11 +673,22 @@ class ArtistListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست هنرمندان",
+        description="دریافت لیست تمامی هنرمندان ثبت شده در سامانه.",
+        responses={200: ArtistSerializer(many=True)}
+    )
     def get(self, request):
         artists = Artist.objects.all()
         serializer = ArtistSerializer(artists, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد هنرمند جدید",
+        description="ثبت یک هنرمند جدید در سامانه (نیازمند احراز هویت).",
+        request=ArtistSerializer,
+        responses={201: ArtistSerializer}
+    )
     def post(self, request):
         serializer = ArtistSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -569,6 +710,11 @@ class PlaylistDetailView(APIView):
         except Playlist.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات پلی‌لیست",
+        description="دریافت اطلاعات کامل یک پلی‌لیست به همراه لیست آهنگ‌ها.",
+        responses={200: PlaylistSerializer}
+    )
     def get(self, request, pk):
         playlist = self.get_object(pk)
         if not playlist:
@@ -586,6 +732,12 @@ class PlaylistDetailView(APIView):
         serializer = PlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش پلی‌لیست (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک پلی‌لیست.",
+        request=PlaylistSerializer,
+        responses={200: PlaylistSerializer}
+    )
     def put(self, request, pk):
         playlist = self.get_object(pk)
         if not playlist:
@@ -596,6 +748,12 @@ class PlaylistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش پلی‌لیست (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک پلی‌لیست.",
+        request=PlaylistSerializer,
+        responses={200: PlaylistSerializer}
+    )
     def patch(self, request, pk):
         playlist = self.get_object(pk)
         if not playlist:
@@ -606,6 +764,11 @@ class PlaylistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف پلی‌لیست",
+        description="حذف یک پلی‌لیست از سامانه.",
+        responses={204: OpenApiTypes.NONE}
+    )
     def delete(self, request, pk):
         playlist = self.get_object(pk)
         if not playlist:
@@ -618,6 +781,11 @@ class PlaylistLikeView(APIView):
     """Like or unlike a playlist (Admin/System/Audience)"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لایک کردن پلی‌لیست",
+        description="لایک کردن یا لغو لایک یک پلی‌لیست.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk):
         try:
             playlist = Playlist.objects.get(pk=pk)
@@ -652,6 +820,16 @@ class ArtistDetailView(APIView):
         except Artist.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات هنرمند",
+        description="دریافت اطلاعات کامل هنرمند به همراه برترین آهنگ‌ها، آلبوم‌ها و آهنگ‌های جدید.",
+        parameters=[
+            OpenApiParameter("type", OpenApiTypes.STR, description="نوع لیست درخواستی (top_songs, albums, latest_songs)"),
+            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
+            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request, pk):
         artist = self.get_object(pk)
         if not artist:
@@ -779,6 +957,12 @@ class ArtistDetailView(APIView):
             'discovered_on': discovered_on[:10]
         })
 
+    @extend_schema(
+        summary="ویرایش هنرمند (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک هنرمند.",
+        request=ArtistSerializer,
+        responses={200: ArtistSerializer}
+    )
     def put(self, request, pk):
         artist = self.get_object(pk)
         if not artist:
@@ -789,6 +973,12 @@ class ArtistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش هنرمند (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک هنرمند.",
+        request=ArtistSerializer,
+        responses={200: ArtistSerializer}
+    )
     def patch(self, request, pk):
         artist = self.get_object(pk)
         if not artist:
@@ -799,6 +989,11 @@ class ArtistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف هنرمند",
+        description="حذف یک هنرمند از سامانه.",
+        responses={204: OpenApiTypes.NONE}
+    )
     def delete(self, request, pk):
         artist = self.get_object(pk)
         if not artist:
@@ -814,11 +1009,22 @@ class AlbumListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست آلبوم‌ها",
+        description="دریافت لیست تمامی آلبوم‌های ثبت شده در سامانه.",
+        responses={200: AlbumSerializer(many=True)}
+    )
     def get(self, request):
         albums = Album.objects.all()
         serializer = AlbumSerializer(albums, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد آلبوم جدید",
+        description="ثبت یک آلبوم جدید در سامانه (نیازمند احراز هویت).",
+        request=AlbumSerializer,
+        responses={201: AlbumSerializer}
+    )
     def post(self, request):
         serializer = AlbumSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -840,6 +1046,11 @@ class AlbumDetailView(APIView):
         except Album.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات آلبوم",
+        description="دریافت اطلاعات کامل یک آلبوم به همراه لیست آهنگ‌ها.",
+        responses={200: AlbumSerializer}
+    )
     def get(self, request, pk):
         album = self.get_object(pk)
         if not album:
@@ -857,6 +1068,12 @@ class AlbumDetailView(APIView):
         serializer = AlbumSerializer(album, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش آلبوم (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک آلبوم.",
+        request=AlbumSerializer,
+        responses={200: AlbumSerializer}
+    )
     def put(self, request, pk):
         album = self.get_object(pk)
         if not album:
@@ -867,6 +1084,12 @@ class AlbumDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش آلبوم (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک آلبوم.",
+        request=AlbumSerializer,
+        responses={200: AlbumSerializer}
+    )
     def patch(self, request, pk):
         album = self.get_object(pk)
         if not album:
@@ -892,11 +1115,22 @@ class GenreListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست سبک‌ها (ژانرها)",
+        description="دریافت لیست تمامی سبک‌های موسیقی موجود در سامانه.",
+        responses={200: GenreSerializer(many=True)}
+    )
     def get(self, request):
         genres = Genre.objects.all()
         serializer = GenreSerializer(genres, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد سبک جدید",
+        description="ثبت یک سبک موسیقی جدید در سامانه.",
+        request=GenreSerializer,
+        responses={201: GenreSerializer}
+    )
     def post(self, request):
         serializer = GenreSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -918,6 +1152,11 @@ class GenreDetailView(APIView):
         except Genre.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات سبک",
+        description="دریافت اطلاعات کامل یک سبک موسیقی.",
+        responses={200: GenreSerializer}
+    )
     def get(self, request, pk):
         genre = self.get_object(pk)
         if not genre:
@@ -925,6 +1164,12 @@ class GenreDetailView(APIView):
         serializer = GenreSerializer(genre, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش سبک (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک سبک موسیقی.",
+        request=GenreSerializer,
+        responses={200: GenreSerializer}
+    )
     def put(self, request, pk):
         genre = self.get_object(pk)
         if not genre:
@@ -935,6 +1180,12 @@ class GenreDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش سبک (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک سبک موسیقی.",
+        request=GenreSerializer,
+        responses={200: GenreSerializer}
+    )
     def patch(self, request, pk):
         genre = self.get_object(pk)
         if not genre:
@@ -945,6 +1196,11 @@ class GenreDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف سبک",
+        description="حذف یک سبک موسیقی از سامانه.",
+        responses={204: OpenApiTypes.NONE}
+    )
     def delete(self, request, pk):
         genre = self.get_object(pk)
         if not genre:
@@ -960,11 +1216,22 @@ class MoodListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست حال و هواها (Moods)",
+        description="دریافت لیست تمامی حال و هواهای موسیقی موجود در سامانه.",
+        responses={200: MoodSerializer(many=True)}
+    )
     def get(self, request):
         moods = Mood.objects.all()
         serializer = MoodSerializer(moods, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد حال و هوای جدید",
+        description="ثبت یک حال و هوای موسیقی جدید در سامانه.",
+        request=MoodSerializer,
+        responses={201: MoodSerializer}
+    )
     def post(self, request):
         serializer = MoodSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -986,6 +1253,11 @@ class MoodDetailView(APIView):
         except Mood.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات حال و هوا",
+        description="دریافت اطلاعات کامل یک حال و هوای موسیقی.",
+        responses={200: MoodSerializer}
+    )
     def get(self, request, pk):
         mood = self.get_object(pk)
         if not mood:
@@ -993,6 +1265,12 @@ class MoodDetailView(APIView):
         serializer = MoodSerializer(mood, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش حال و هوا (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک حال و هوای موسیقی.",
+        request=MoodSerializer,
+        responses={200: MoodSerializer}
+    )
     def put(self, request, pk):
         mood = self.get_object(pk)
         if not mood:
@@ -1003,6 +1281,12 @@ class MoodDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش حال و هوا (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک حال و هوای موسیقی.",
+        request=MoodSerializer,
+        responses={200: MoodSerializer}
+    )
     def patch(self, request, pk):
         mood = self.get_object(pk)
         if not mood:
@@ -1013,6 +1297,11 @@ class MoodDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف حال و هوا",
+        description="حذف یک حال و هوای موسیقی از سامانه.",
+        responses={204: OpenApiTypes.NONE}
+    )
     def delete(self, request, pk):
         mood = self.get_object(pk)
         if not mood:
@@ -1028,11 +1317,22 @@ class TagListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست تگ‌ها",
+        description="دریافت لیست تمامی تگ‌های موجود در سامانه.",
+        responses={200: TagSerializer(many=True)}
+    )
     def get(self, request):
         tags = Tag.objects.all()
         serializer = TagSerializer(tags, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد تگ جدید",
+        description="ثبت یک تگ جدید در سامانه.",
+        request=TagSerializer,
+        responses={201: TagSerializer}
+    )
     def post(self, request):
         serializer = TagSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -1054,6 +1354,11 @@ class TagDetailView(APIView):
         except Tag.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات تگ",
+        description="دریافت اطلاعات کامل یک تگ.",
+        responses={200: TagSerializer}
+    )
     def get(self, request, pk):
         tag = self.get_object(pk)
         if not tag:
@@ -1061,6 +1366,12 @@ class TagDetailView(APIView):
         serializer = TagSerializer(tag, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش تگ (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک تگ.",
+        request=TagSerializer,
+        responses={200: TagSerializer}
+    )
     def put(self, request, pk):
         tag = self.get_object(pk)
         if not tag:
@@ -1071,6 +1382,12 @@ class TagDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش تگ (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک تگ.",
+        request=TagSerializer,
+        responses={200: TagSerializer}
+    )
     def patch(self, request, pk):
         tag = self.get_object(pk)
         if not tag:
@@ -1081,6 +1398,11 @@ class TagDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف تگ",
+        description="حذف یک تگ از سامانه.",
+        responses={204: OpenApiTypes.NONE}
+    )
     def delete(self, request, pk):
         tag = self.get_object(pk)
         if not tag:
@@ -1096,11 +1418,22 @@ class SubGenreListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست زیرسبک‌ها",
+        description="دریافت لیست تمامی زیرسبک‌های موسیقی موجود در سامانه.",
+        responses={200: SubGenreSerializer(many=True)}
+    )
     def get(self, request):
         subgenres = SubGenre.objects.all()
         serializer = SubGenreSerializer(subgenres, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد زیرسبک جدید",
+        description="ثبت یک زیرسبک موسیقی جدید در سامانه.",
+        request=SubGenreSerializer,
+        responses={201: SubGenreSerializer}
+    )
     def post(self, request):
         serializer = SubGenreSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -1122,6 +1455,11 @@ class SubGenreDetailView(APIView):
         except SubGenre.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات زیرسبک",
+        description="دریافت اطلاعات کامل یک زیرسبک موسیقی.",
+        responses={200: SubGenreSerializer}
+    )
     def get(self, request, pk):
         subgenre = self.get_object(pk)
         if not subgenre:
@@ -1129,6 +1467,12 @@ class SubGenreDetailView(APIView):
         serializer = SubGenreSerializer(subgenre, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش زیرسبک (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک زیرسبک موسیقی.",
+        request=SubGenreSerializer,
+        responses={200: SubGenreSerializer}
+    )
     def put(self, request, pk):
         subgenre = self.get_object(pk)
         if not subgenre:
@@ -1139,6 +1483,12 @@ class SubGenreDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش زیرسبک (جزئی)",
+        description="به‌روزرسانی برخی از اطلاعات یک زیرسبک موسیقی.",
+        request=SubGenreSerializer,
+        responses={200: SubGenreSerializer}
+    )
     def patch(self, request, pk):
         subgenre = self.get_object(pk)
         if not subgenre:
@@ -1149,6 +1499,11 @@ class SubGenreDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف زیرسبک",
+        description="حذف یک زیرسبک موسیقی از سامانه.",
+        responses={204: OpenApiTypes.NONE}
+    )
     def delete(self, request, pk):
         subgenre = self.get_object(pk)
         if not subgenre:
@@ -1167,6 +1522,23 @@ class SongListView(generics.ListCreateAPIView):
             return [AllowAny()]
         return super().get_permissions()
     
+    @extend_schema(
+        summary="لیست آهنگ‌ها",
+        description="دریافت لیست تمامی آهنگ‌های منتشر شده در سامانه.",
+        responses={200: SongSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="ایجاد آهنگ جدید",
+        description="ثبت یک آهنگ جدید در سامانه.",
+        request=SongSerializer,
+        responses={201: SongSerializer}
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
+
     def get_queryset(self):
         """Filter songs by status for non-staff users"""
         queryset = Song.objects.all()
@@ -1196,6 +1568,14 @@ class SongDetailView(APIView):
         except Song.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات آهنگ",
+        description="دریافت اطلاعات کامل یک آهنگ به همراه آمار بازدید (برای هنرمند آهنگ).",
+        parameters=[
+            OpenApiParameter("days", OpenApiTypes.INT, description="تعداد روزها برای آمار (پیش‌فرض ۳۰)")
+        ],
+        responses={200: SongSerializer}
+    )
     def get(self, request, pk):
         song = self.get_object(pk)
         if not song:
@@ -1266,6 +1646,12 @@ class SongDetailView(APIView):
 
         return Response(data)
 
+    @extend_schema(
+        summary="ویرایش آهنگ (کامل)",
+        description="به‌روزرسانی تمامی اطلاعات یک آهنگ.",
+        request=SongSerializer,
+        responses={200: SongSerializer}
+    )
     def put(self, request, pk):
         song = self.get_object(pk)
         if not song:
@@ -1298,6 +1684,11 @@ class SongLikeView(APIView):
     """Toggle like status for a song"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لایک کردن آهنگ",
+        description="لایک کردن یا لغو لایک یک آهنگ.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk=None):
         try:
             song = Song.objects.get(pk=pk)
@@ -1323,6 +1714,11 @@ class AlbumLikeView(APIView):
     """Toggle like status for an album"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لایک کردن آلبوم",
+        description="لایک کردن یا لغو لایک یک آلبوم.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk=None):
         try:
             album = Album.objects.get(pk=pk)
@@ -1348,6 +1744,11 @@ class SongIncrementPlaysView(APIView):
     """Increment play count for a song"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="افزایش تعداد پخش آهنگ",
+        description="افزایش تعداد دفعات پخش یک آهنگ (به صورت دستی).",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk=None):
         try:
             song = Song.objects.get(pk=pk)
@@ -1367,6 +1768,20 @@ class SongStreamListView(generics.ListAPIView):
     serializer_class = SongStreamSerializer
     permission_classes = [IsAuthenticated]
     
+    @extend_schema(
+        summary="لیست آهنگ‌ها برای پخش",
+        description="دریافت لیست آهنگ‌ها به همراه توکن‌های پخش (Stream Tokens).",
+        parameters=[
+            OpenApiParameter("artist", OpenApiTypes.INT, description="فیلتر بر اساس هنرمند"),
+            OpenApiParameter("album", OpenApiTypes.INT, description="فیلتر بر اساس آلبوم"),
+            OpenApiParameter("genre", OpenApiTypes.INT, description="فیلتر بر اساس سبک"),
+            OpenApiParameter("mood", OpenApiTypes.INT, description="فیلتر بر اساس حال و هوا")
+        ],
+        responses={200: SongStreamSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self):
         """Filter songs by status for non-staff users"""
         queryset = Song.objects.all()
@@ -1409,6 +1824,11 @@ class UnwrapStreamView(APIView):
     """
     permission_classes = [IsAuthenticated]
     
+    @extend_schema(
+        summary="باز کردن توکن پخش (Unwrap)",
+        description="تبدیل توکن پخش به لینک مستقیم و امضا شده فایل صوتی. ممکن است منجر به نمایش تبلیغ شود.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request, token):
         try:
             # Get the stream access record
@@ -1540,6 +1960,11 @@ class StreamShortRedirectView(APIView):
     """
     permission_classes = [IsAuthenticated]
     
+    @extend_schema(
+        summary="باز کردن لینک کوتاه پخش",
+        description="تبدیل لینک کوتاه پخش به لینک مستقیم و امضا شده فایل صوتی.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request, token):
         try:
             # Get the stream access record
@@ -1620,6 +2045,20 @@ class AdSubmitView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="ثبت مشاهده تبلیغ",
+        description="تایید مشاهده تبلیغ و دریافت لینک نهایی پخش آهنگ.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'submit_id': {'type': 'string', 'description': 'شناسه تایید تبلیغ'}
+                },
+                'required': ['submit_id']
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         submit_id = request.data.get('submit_id')
         if not submit_id:
@@ -1657,6 +2096,11 @@ class StreamAccessView(APIView):
     """One-time access endpoint: redirects once to a presigned R2 URL and then becomes invalid."""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="دسترسی یک‌باره به استریم",
+        description="تولید لینک موقت و مستقیم برای پخش فایل صوتی. این لینک فقط یک بار قابل استفاده است.",
+        responses={302: None}
+    )
     def get(self, request, token):
         try:
             stream_access = StreamAccess.objects.select_related('song', 'user').get(
@@ -1720,9 +2164,22 @@ class PlayCountView(APIView):
     """Endpoint to record play counts for songs."""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        return Response({'error': 'Method GET not allowed. Please use POST.'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
-
+    @extend_schema(
+        summary="ثبت تعداد پخش",
+        description="ثبت یک پخش جدید برای آهنگ و محاسبه درآمد هنرمند.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'unique_otplay_id': {'type': 'string', 'description': 'شناسه یکتای پخش'},
+                    'city': {'type': 'string', 'description': 'شهر کاربر'},
+                    'country': {'type': 'string', 'description': 'کشور کاربر'}
+                },
+                'required': ['unique_otplay_id', 'city', 'country']
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         unique_otplay_id = request.data.get('unique_otplay_id')
         city = request.data.get('city')
@@ -1778,6 +2235,12 @@ class UserPlaylistListCreateView(APIView):
     """List all user playlists or create a new one"""
     permission_classes = [IsAuthenticated]
     
+    @extend_schema(
+        summary="لیست و ایجاد پلی‌لیست‌های کاربر",
+        description="دریافت لیست پلی‌لیست‌های شخصی کاربر یا ایجاد یک پلی‌لیست جدید.",
+        request=UserPlaylistCreateSerializer,
+        responses={200: UserPlaylistSerializer(many=True), 201: UserPlaylistSerializer}
+    )
     def get(self, request):
         """List user's playlists"""
         playlists = UserPlaylist.objects.filter(user=request.user)
@@ -1804,6 +2267,11 @@ class UserPlaylistDetailView(APIView):
         except UserPlaylist.DoesNotExist:
             return None
     
+    @extend_schema(
+        summary="جزئیات پلی‌لیست کاربر",
+        description="مشاهده، ویرایش یا حذف یک پلی‌لیست شخصی خاص.",
+        responses={200: UserPlaylistSerializer}
+    )
     def get(self, request, pk):
         """Retrieve a playlist"""
         playlist = self.get_object(pk, request.user)
@@ -1812,6 +2280,12 @@ class UserPlaylistDetailView(APIView):
         serializer = UserPlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
     
+    @extend_schema(
+        summary="ویرایش پلی‌لیست کاربر",
+        description="ویرایش اطلاعات پلی‌لیست شخصی (مانند نام یا تصویر).",
+        request=UserPlaylistSerializer,
+        responses={200: UserPlaylistSerializer}
+    )
     def put(self, request, pk):
         """Update a playlist"""
         playlist = self.get_object(pk, request.user)
@@ -1823,6 +2297,11 @@ class UserPlaylistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
+    @extend_schema(
+        summary="حذف پلی‌لیست کاربر",
+        description="حذف کامل یک پلی‌لیست شخصی.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         """Delete a playlist"""
         playlist = self.get_object(pk, request.user)
@@ -1836,6 +2315,20 @@ class UserPlaylistAddSongView(APIView):
     """Add a song to a user playlist"""
     permission_classes = [IsAuthenticated]
     
+    @extend_schema(
+        summary="افزودن آهنگ به پلی‌لیست",
+        description="اضافه کردن یک آهنگ خاص به پلی‌لیست شخصی کاربر.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'song_id': {'type': 'integer', 'description': 'شناسه آهنگ'}
+                },
+                'required': ['song_id']
+            }
+        },
+        responses={200: UserPlaylistSerializer}
+    )
     def post(self, request, pk):
         """Add song to playlist"""
         try:
@@ -1860,6 +2353,11 @@ class UserPlaylistRemoveSongView(APIView):
     """Remove a song from a user playlist"""
     permission_classes = [IsAuthenticated]
     
+    @extend_schema(
+        summary="حذف آهنگ از پلی‌لیست",
+        description="حذف یک آهنگ خاص از پلی‌لیست شخصی کاربر.",
+        responses={200: UserPlaylistSerializer}
+    )
     def delete(self, request, pk, song_id):
         """Remove song from playlist"""
         try:
@@ -1884,6 +2382,11 @@ class UserRecommendationView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="پیشنهادات هوشمند (مشابه اسپاتیفای)",
+        description="دریافت ۱۰ آهنگ پیشنهادی بر اساس تاریخچه شنیداری، لایک‌ها و پلی‌لیست‌های کاربر با استفاده از الگوریتم شباهت.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         
@@ -1999,6 +2502,14 @@ class LatestReleasesView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
 
+    @extend_schema(
+        summary="جدیدترین آهنگ‌ها",
+        description="دریافت لیست جدیدترین آهنگ‌های منتشر شده به ترتیب تاریخ انتشار.",
+        responses={200: SongSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_permissions(self):
         # Allow unauthenticated GET access similar to other song endpoints
         if self.request.method == 'GET':
@@ -2029,6 +2540,14 @@ class PopularArtistsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     serializer_class = PopularArtistSerializer
+
+    @extend_schema(
+        summary="هنرمندان محبوب",
+        description="دریافت لیست هنرمندان بر اساس امتیاز محبوبیت (مجموع پخش، لایک و پلی‌لیست‌ها).",
+        responses={200: PopularArtistSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_permissions(self):
         # Allow public GET access similar to other endpoints
@@ -2076,6 +2595,14 @@ class PopularAlbumsView(generics.ListAPIView):
     from .serializers import PopularAlbumSerializer
     serializer_class = PopularAlbumSerializer
 
+    @extend_schema(
+        summary="آلبوم‌های محبوب",
+        description="دریافت لیست آلبوم‌های محبوب بر اساس مجموع لایک‌ها و پخش آهنگ‌های آن‌ها.",
+        responses={200: PopularAlbumSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_permissions(self):
         # Public GET access
         if self.request.method == 'GET':
@@ -2113,6 +2640,14 @@ class DailyTopSongsView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
 
+    @extend_schema(
+        summary="برترین آهنگ‌های روز",
+        description="لیست آهنگ‌هایی که بیشترین پخش را در ۲۴ ساعت گذشته داشته‌اند.",
+        responses={200: SongSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self):
         last_24h = timezone.now() - timedelta(hours=24)
         queryset = Song.objects.filter(
@@ -2131,6 +2666,14 @@ class DailyTopArtistsView(generics.ListAPIView):
     serializer_class = PopularArtistSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="برترین هنرمندان روز",
+        description="لیست هنرمندانی که آثارشان بیشترین پخش را در ۲۴ ساعت گذشته داشته است.",
+        responses={200: PopularArtistSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         last_24h = timezone.now() - timedelta(hours=24)
@@ -2152,6 +2695,14 @@ class DailyTopAlbumsView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
 
+    @extend_schema(
+        summary="برترین آلبوم‌های روز",
+        description="لیست آلبوم‌هایی که آهنگ‌های آن‌ها بیشترین پخش را در ۲۴ ساعت گذشته داشته‌اند.",
+        responses={200: PopularAlbumSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self):
         last_24h = timezone.now() - timedelta(hours=24)
         queryset = Album.objects.annotate(
@@ -2171,6 +2722,14 @@ class WeeklyTopSongsView(generics.ListAPIView):
     serializer_class = SongSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="برترین آهنگ‌های هفته",
+        description="لیست آهنگ‌هایی که بیشترین پخش را در ۷ روز گذشته داشته‌اند.",
+        responses={200: SongSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         last_week = timezone.now() - timedelta(days=7)
@@ -2193,6 +2752,14 @@ class WeeklyTopArtistsView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
 
+    @extend_schema(
+        summary="برترین هنرمندان هفته",
+        description="لیست هنرمندانی که آثارشان بیشترین پخش را در ۷ روز گذشته داشته است.",
+        responses={200: PopularArtistSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self):
         last_week = timezone.now() - timedelta(days=7)
         # Filter artists whose songs have at least one play in the last week
@@ -2214,6 +2781,14 @@ class WeeklyTopAlbumsView(generics.ListAPIView):
     serializer_class = PopularAlbumSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="برترین آلبوم‌های هفته",
+        description="لیست آلبوم‌هایی که آهنگ‌های آن‌ها بیشترین پخش را در ۷ روز گذشته داشته‌اند.",
+        responses={200: PopularAlbumSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         last_week = timezone.now() - timedelta(days=7)
@@ -2241,6 +2816,14 @@ class PlaylistRecommendationsView(generics.ListAPIView):
     pagination_class = StandardResultsSetPagination
     from .serializers import RecommendedPlaylistListSerializer
     serializer_class = RecommendedPlaylistListSerializer
+
+    @extend_schema(
+        summary="پیشنهادات پلی‌لیست",
+        description="دریافت پلی‌لیست‌های پیشنهادی هوشمند بر اساس سلیقه کاربر. این لیست هر ۳ درخواست یکبار به‌روزرسانی می‌شود.",
+        responses={200: RecommendedPlaylistListSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         user = self.request.user
@@ -2894,6 +3477,14 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
     serializer_class = RecommendedPlaylistDetailSerializer
     lookup_field = 'unique_id'
 
+    @extend_schema(
+        summary="جزئیات پلی‌لیست پیشنهادی",
+        description="مشاهده جزئیات و لیست آهنگ‌های یک پلی‌لیست پیشنهادی خاص.",
+        responses={200: RecommendedPlaylistDetailSerializer}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self):
         from .models import RecommendedPlaylist
         return RecommendedPlaylist.objects.all().prefetch_related(
@@ -2920,6 +3511,11 @@ class PlaylistRecommendationLikeView(APIView):
     """Like or unlike a recommended playlist"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لایک کردن پلی‌لیست پیشنهادی",
+        description="لایک کردن یا لغو لایک یک پلی‌لیست پیشنهادی.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, unique_id):
         from .models import RecommendedPlaylist
         
@@ -2945,6 +3541,11 @@ class PlaylistRecommendationSaveView(APIView):
     """Save or unsave a recommended playlist"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="ذخیره کردن پلی‌لیست پیشنهادی",
+        description="ذخیره کردن یا لغو ذخیره یک پلی‌لیست پیشنهادی در کتابخانه کاربر.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, unique_id):
         from .models import RecommendedPlaylist
         
@@ -2970,6 +3571,11 @@ class PlaylistSaveToggleView(APIView):
     """Toggle save/unsave for canonical Playlist objects"""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="ذخیره کردن پلی‌لیست",
+        description="ذخیره کردن یا لغو ذخیره یک پلی‌لیست عمومی در کتابخانه کاربر.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk, *args, **kwargs):
         try:
             playlist = Playlist.objects.get(id=pk)
@@ -2992,6 +3598,18 @@ class SearchView(APIView):
     """
     permission_classes = [AllowAny]
     
+    @extend_schema(
+        summary="جستجوی جامع",
+        description="جستجو در آهنگ‌ها، هنرمندان، آلبوم‌ها و پلی‌لیست‌ها با قابلیت فیلتر بر اساس سبک و حال و هوا.",
+        parameters=[
+            OpenApiParameter("q", OpenApiTypes.STR, description="متن جستجو"),
+            OpenApiParameter("type", OpenApiTypes.STR, description="نوع جستجو (song, artist, album, playlist)"),
+            OpenApiParameter("moods", OpenApiTypes.STR, description="فیلتر بر اساس حال و هوا (آیدی یا اسلاگ)", many=True),
+            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
+            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         q = request.query_params.get('q', '').strip()
         search_type = request.query_params.get('type')
@@ -3115,6 +3733,14 @@ class EventPlaylistView(APIView):
     """Return event playlist groups with all details."""
     permission_classes = [permissions.AllowAny]
     
+    @extend_schema(
+        summary="پلی‌لیست‌های مناسبتی",
+        description="دریافت گروه‌های پلی‌لیست مناسبتی (مانند پلی‌لیست‌های صبحگاهی، شبانه و غیره).",
+        parameters=[
+            OpenApiParameter("time_of_day", OpenApiTypes.STR, description="فیلتر بر اساس زمان روز")
+        ],
+        responses={200: EventPlaylistSerializer(many=True)}
+    )
     def get(self, request):
         queryset = EventPlaylist.objects.all().prefetch_related(
             'playlists', 
@@ -3139,11 +3765,22 @@ class SearchSectionListView(APIView):
             return [AllowAny()]
         return [IsAuthenticated()]
 
+    @extend_schema(
+        summary="لیست بخش‌های جستجو",
+        description="دریافت لیست بخش‌های مختلف صفحه جستجو (مانند دسته‌بندی‌ها).",
+        responses={200: SearchSectionSerializer(many=True)}
+    )
     def get(self, request):
         sections = SearchSection.objects.all().prefetch_related('songs', 'albums', 'playlists', 'songs__artist', 'albums__artist')
         serializer = SearchSectionSerializer(sections, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد بخش جستجو",
+        description="ایجاد یک بخش جدید برای صفحه جستجو (فقط برای کاربران احراز هویت شده).",
+        request=SearchSectionSerializer,
+        responses={201: SearchSectionSerializer}
+    )
     def post(self, request):
         serializer = SearchSectionSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -3165,6 +3802,11 @@ class SearchSectionDetailView(APIView):
         except SearchSection.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات بخش جستجو",
+        description="دریافت اطلاعات کامل یک بخش خاص از صفحه جستجو.",
+        responses={200: SearchSectionSerializer}
+    )
     def get(self, request, pk):
         section = self.get_object(pk)
         if not section:
@@ -3172,6 +3814,12 @@ class SearchSectionDetailView(APIView):
         serializer = SearchSectionSerializer(section, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش کامل بخش جستجو",
+        description="ویرایش تمامی اطلاعات یک بخش جستجو.",
+        request=SearchSectionSerializer,
+        responses={200: SearchSectionSerializer}
+    )
     def put(self, request, pk):
         section = self.get_object(pk)
         if not section:
@@ -3182,6 +3830,12 @@ class SearchSectionDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش جزئی بخش جستجو",
+        description="ویرایش برخی از اطلاعات یک بخش جستجو.",
+        request=SearchSectionSerializer,
+        responses={200: SearchSectionSerializer}
+    )
     def patch(self, request, pk):
         section = self.get_object(pk)
         if not section:
@@ -3192,6 +3846,11 @@ class SearchSectionDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف بخش جستجو",
+        description="حذف یک بخش از صفحه جستجو.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         section = self.get_object(pk)
         if not section:
@@ -3203,11 +3862,22 @@ class SearchSectionDetailView(APIView):
 class RulesListCreateView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست قوانین (ادمین)",
+        description="دریافت لیست تمامی قوانین ثبت شده در سیستم.",
+        responses={200: RulesSerializer(many=True)}
+    )
     def get(self, request):
         rules = Rules.objects.all()
         serializer = RulesSerializer(rules, many=True)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد قانون جدید (ادمین)",
+        description="ثبت یک قانون جدید در سیستم.",
+        request=RulesSerializer,
+        responses={201: RulesSerializer}
+    )
     def post(self, request):
         serializer = RulesSerializer(data=request.data)
         if serializer.is_valid():
@@ -3225,6 +3895,11 @@ class RulesDetailView(APIView):
         except Rules.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="جزئیات قانون (ادمین)",
+        description="دریافت اطلاعات یک قانون خاص.",
+        responses={200: RulesSerializer}
+    )
     def get(self, request, pk):
         rule = self.get_object(pk)
         if not rule:
@@ -3232,6 +3907,12 @@ class RulesDetailView(APIView):
         serializer = RulesSerializer(rule)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش قانون (ادمین)",
+        description="ویرایش اطلاعات یک قانون خاص.",
+        request=RulesSerializer,
+        responses={200: RulesSerializer}
+    )
     def put(self, request, pk):
         rule = self.get_object(pk)
         if not rule:
@@ -3249,6 +3930,11 @@ class RulesLatestView(APIView):
     """
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        summary="آخرین قوانین",
+        description="دریافت آخرین نسخه قوانین و مقررات پلتفرم.",
+        responses={200: RulesSerializer}
+    )
     def get(self, request):
         latest = Rules.objects.order_by('-created_at').first()
         if not latest:
@@ -3256,6 +3942,12 @@ class RulesLatestView(APIView):
         serializer = RulesSerializer(latest)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش جزئی قانون (ادمین)",
+        description="ویرایش برخی از اطلاعات یک قانون خاص.",
+        request=RulesSerializer,
+        responses={200: RulesSerializer}
+    )
     def patch(self, request, pk):
         rule = self.get_object(pk)
         if not rule:
@@ -3267,6 +3959,7 @@ class RulesLatestView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistHomeView(APIView):
     """
     Artist Dashboard Home Endpoint.
@@ -3274,6 +3967,11 @@ class ArtistHomeView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="داشبورد هنرمند",
+        description="دریافت آمار کلی درآمد، تعداد پخش‌ها و آهنگ‌های برتر برای صفحه اصلی پنل هنرمند.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         # Check if user has artist role
@@ -3376,12 +4074,18 @@ class ArtistHomeView(APIView):
         })
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistLiveListenersView(APIView):
     """
     Retrieve the current live listener count for the authenticated artist.
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="تعداد شنوندگان زنده",
+        description="دریافت تعداد کاربرانی که در حال حاضر در حال گوش دادن به آهنگ‌های این هنرمند هستند.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3399,6 +4103,7 @@ class ArtistLiveListenersView(APIView):
         })
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistLiveListenersPollView(APIView):
     """
     Long-polling endpoint for live listener updates.
@@ -3406,6 +4111,11 @@ class ArtistLiveListenersPollView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="بروزرسانی زنده شنوندگان (Long Polling)",
+        description="این متد تا زمان تغییر تعداد شنوندگان یا اتمام زمان (۳۰ ثانیه) منتظر می‌ماند.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3443,6 +4153,7 @@ class ArtistLiveListenersPollView(APIView):
         })
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistAnalyticsView(APIView):
     """
     Comprehensive Artist Analytics Endpoint.
@@ -3451,6 +4162,15 @@ class ArtistAnalyticsView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="تحلیل و آمار هنرمند",
+        description="دریافت آمار دقیق پخش‌ها، لایک‌ها، درآمد و توزیع جغرافیایی شنوندگان.",
+        parameters=[
+            OpenApiParameter("period", OpenApiTypes.STR, description="بازه زمانی: today, 7d, 30d"),
+            OpenApiParameter("chart", OpenApiTypes.STR, description="نوع نمودار: hourly, daily")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3590,6 +4310,7 @@ class ArtistAnalyticsView(APIView):
         })
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class DepositRequestView(APIView):
     """
     View for artists to manage their deposit requests.
@@ -3597,6 +4318,11 @@ class DepositRequestView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="لیست درخواست‌های تسویه هنرمند",
+        description="دریافت لیست تمامی درخواست‌های تسویه حساب ثبت شده توسط هنرمند فعلی.",
+        responses={200: DepositRequestSerializer(many=True)}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3611,6 +4337,11 @@ class DepositRequestView(APIView):
         serializer = DepositRequestSerializer(requests, many=True)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ثبت درخواست تسویه جدید",
+        description="ثبت درخواست برای دریافت درآمد حاصل از پخش آهنگ‌ها. هنرمند نباید درخواست در حال بررسی داشته باشد.",
+        responses={201: DepositRequestSerializer}
+    )
     def post(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3660,6 +4391,7 @@ class DepositRequestView(APIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistWalletView(APIView):
     """
     View to get artist's financial summary:
@@ -3669,6 +4401,11 @@ class ArtistWalletView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="کیف پول هنرمند",
+        description="دریافت موجودی کل، موجودی در حال تسویه و موجودی قابل برداشت هنرمند.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3717,6 +4454,7 @@ class ArtistWalletView(APIView):
         })
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistFinanceView(APIView):
     """
     Artist financial overview endpoint.
@@ -3729,6 +4467,14 @@ class ArtistFinanceView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="آمار مالی هنرمند",
+        description="دریافت آمار دقیق درآمد و پخش‌ها با قابلیت فیلتر بر اساس بازه زمانی و نوع نمودار.",
+        parameters=[
+            OpenApiParameter("period", OpenApiTypes.STR, description="بازه زمانی: all, daily, weekly, monthly, today, 7d, 30d")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3898,6 +4644,8 @@ class ArtistFinanceView(APIView):
         })
 
 
+@extend_schema(tags=['Artist App Endpoints'])
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistFinanceSongsView(APIView):
     """
     Return paginated list of artist's songs with total income and plays.
@@ -3906,6 +4654,14 @@ class ArtistFinanceSongsView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="آمار مالی آهنگ‌های هنرمند",
+        description="دریافت لیست آهنگ‌های هنرمند به همراه درآمد و تعداد پخش هر کدام با قابلیت مرتب‌سازی.",
+        parameters=[
+            OpenApiParameter("sort", OpenApiTypes.STR, description="مرتب‌سازی: release_date یا income (پیش‌فرض)")
+        ],
+        responses={200: SongSerializer(many=True)}
+    )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -3959,6 +4715,8 @@ class ArtistFinanceSongsView(APIView):
         return Response(results)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistSettingsView(APIView):
     """Allow an artist to update their profile information and photos.
     Supports PUT (full replace) and PATCH (partial update).
@@ -3974,9 +4732,48 @@ class ArtistSettingsView(APIView):
         except Artist.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="به‌روزرسانی کامل پروفایل هنرمند",
+        description="به‌روزرسانی تمامی اطلاعات پروفایل هنرمند شامل نام، بیوگرافی، تصاویر و اطلاعات هویتی.",
+        request={
+            'multipart/form-data': {
+                'type': 'object',
+                'properties': {
+                    'name': {'type': 'string'},
+                    'artistic_name': {'type': 'string'},
+                    'bio': {'type': 'string'},
+                    'profile_image': {'type': 'string', 'format': 'binary'},
+                    'banner_image': {'type': 'string', 'format': 'binary'},
+                    'email': {'type': 'string'},
+                    'city': {'type': 'string'},
+                    'date_of_birth': {'type': 'string', 'format': 'date'},
+                    'address': {'type': 'string'},
+                    'id_number': {'type': 'string'},
+                }
+            }
+        },
+        responses={200: ArtistSerializer}
+    )
     def put(self, request):
         return self._update(request, partial=False)
 
+    @extend_schema(
+        summary="به‌روزرسانی جزئی پروفایل هنرمند",
+        description="به‌روزرسانی برخی از فیلدهای پروفایل هنرمند.",
+        request={
+            'multipart/form-data': {
+                'type': 'object',
+                'properties': {
+                    'name': {'type': 'string'},
+                    'artistic_name': {'type': 'string'},
+                    'bio': {'type': 'string'},
+                    'profile_image': {'type': 'string', 'format': 'binary'},
+                    'banner_image': {'type': 'string', 'format': 'binary'},
+                }
+            }
+        },
+        responses={200: ArtistSerializer}
+    )
     def patch(self, request):
         return self._update(request, partial=True)
 
@@ -4024,10 +4821,26 @@ class ArtistSettingsView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistChangePasswordView(APIView):
     """Change user's account password using current password and new password."""
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        summary="تغییر رمز عبور هنرمند",
+        description="تغییر رمز عبور حساب کاربری هنرمند با استفاده از رمز عبور فعلی و رمز عبور جدید.",
+        request={
+            'application/json': {
+                'type': 'object',
+                'properties': {
+                    'current_password': {'type': 'string'},
+                    'new_password': {'type': 'string'},
+                },
+                'required': ['current_password', 'new_password']
+            }
+        },
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
@@ -4052,6 +4865,7 @@ class ArtistChangePasswordView(APIView):
         return Response({"status": "password_changed"}, status=status.HTTP_200_OK)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistSongsManagementView(APIView):
     """
     View for artists to manage their own songs.
@@ -4068,6 +4882,15 @@ class ArtistSongsManagementView(APIView):
         except Artist.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="لیست یا جزئیات آهنگ‌های هنرمند",
+        description="دریافت لیست تمامی آهنگ‌های هنرمند یا جزئیات و آمار یک آهنگ خاص.",
+        parameters=[
+            OpenApiParameter("days", OpenApiTypes.INT, description="تعداد روزها برای آمار (پیش‌فرض ۳۰)"),
+            OpenApiParameter("status", OpenApiTypes.STR, description="فیلتر بر اساس وضعیت (pending, approved, rejected)")
+        ],
+        responses={200: SongSerializer(many=True)}
+    )
     def get(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
@@ -4145,6 +4968,24 @@ class ArtistSongsManagementView(APIView):
         serializer = SongSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="آپلود آهنگ جدید",
+        description="آپلود فایل صوتی و کاور آهنگ جدید به همراه اطلاعات متادیتا.",
+        request={
+            'multipart/form-data': {
+                'type': 'object',
+                'properties': {
+                    'title': {'type': 'string'},
+                    'audio_file': {'type': 'string', 'format': 'binary'},
+                    'cover_image': {'type': 'string', 'format': 'binary'},
+                    'genre_ids': {'type': 'array', 'items': {'type': 'integer'}},
+                    'mood_ids': {'type': 'array', 'items': {'type': 'integer'}},
+                    'tag_ids': {'type': 'array', 'items': {'type': 'integer'}},
+                }
+            }
+        },
+        responses={201: SongSerializer}
+    )
     def post(self, request):
         artist = self.get_artist(request.user)
         if not artist:
@@ -4225,9 +5066,19 @@ class ArtistSongsManagementView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="به‌روزرسانی کامل آهنگ",
+        description="به‌روزرسانی تمامی اطلاعات یک آهنگ خاص.",
+        responses={200: SongSerializer}
+    )
     def put(self, request, pk=None):
         return self.update(request, pk, partial=False)
 
+    @extend_schema(
+        summary="به‌روزرسانی جزئی آهنگ",
+        description="به‌روزرسانی برخی از فیلدهای یک آهنگ خاص.",
+        responses={200: SongSerializer}
+    )
     def patch(self, request, pk=None):
         return self.update(request, pk, partial=True)
 
@@ -4296,6 +5147,7 @@ class ArtistSongsManagementView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class ArtistAlbumsManagementView(APIView):
     """
     View for artists to manage their own albums.
@@ -4312,6 +5164,11 @@ class ArtistAlbumsManagementView(APIView):
         except Artist.DoesNotExist:
             return None
 
+    @extend_schema(
+        summary="لیست یا جزئیات آلبوم‌های هنرمند",
+        description="دریافت لیست تمامی آلبوم‌های هنرمند یا جزئیات یک آلبوم خاص به همراه آهنگ‌های آن.",
+        responses={200: AlbumSerializer(many=True)}
+    )
     def get(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
@@ -4336,6 +5193,23 @@ class ArtistAlbumsManagementView(APIView):
         serializer = AlbumSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد آلبوم جدید",
+        description="ایجاد آلبوم جدید به همراه آپلود همزمان چندین آهنگ. آهنگ‌ها می‌توانند جدید باشند یا از آهنگ‌های موجود انتخاب شوند.",
+        request={
+            'multipart/form-data': {
+                'type': 'object',
+                'properties': {
+                    'title': {'type': 'string'},
+                    'cover_image': {'type': 'string', 'format': 'binary'},
+                    'release_date': {'type': 'string', 'format': 'date'},
+                    'existing_song_ids': {'type': 'array', 'items': {'type': 'integer'}},
+                    # Dynamic song fields: song1-title, song1-audio_file, etc.
+                }
+            }
+        },
+        responses={201: AlbumSerializer}
+    )
     def post(self, request):
         artist = self.get_artist(request.user)
         if not artist:
@@ -4467,9 +5341,19 @@ class ArtistAlbumsManagementView(APIView):
             "new_songs": created_songs
         }, status=status.HTTP_201_CREATED)
 
+    @extend_schema(
+        summary="به‌روزرسانی کامل آلبوم",
+        description="به‌روزرسانی تمامی اطلاعات یک آلبوم خاص.",
+        responses={200: AlbumSerializer}
+    )
     def put(self, request, pk=None):
         return self.update(request, pk, partial=False)
 
+    @extend_schema(
+        summary="به‌روزرسانی جزئی آلبوم",
+        description="به‌روزرسانی برخی از فیلدهای یک آلبوم خاص.",
+        responses={200: AlbumSerializer}
+    )
     def patch(self, request, pk=None):
         return self.update(request, pk, partial=True)
 
@@ -4504,6 +5388,11 @@ class ArtistAlbumsManagementView(APIView):
             })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف آلبوم",
+        description="حذف یک آلبوم خاص متعلق به هنرمند.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         artist = self.get_artist(request.user)
         if not artist:
@@ -4519,6 +5408,14 @@ class ReportCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ReportSerializer
 
+    @extend_schema(
+        summary="ثبت گزارش تخلف",
+        description="ثبت گزارش تخلف برای یک آهنگ یا هنرمند توسط کاربر.",
+        responses={201: ReportSerializer}
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
@@ -4527,6 +5424,17 @@ class NotificationListView(generics.ListAPIView):
     """List notifications for the authenticated user or their artist profile."""
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = NotificationSerializer
+
+    @extend_schema(
+        summary="لیست اعلان‌ها",
+        description="دریافت لیست اعلان‌های کاربر یا هنرمند با قابلیت گروه‌بندی هوشمند.",
+        parameters=[
+            OpenApiParameter("artist", OpenApiTypes.BOOL, description="دریافت اعلان‌های مربوط به پنل هنرمند")
+        ],
+        responses={200: NotificationSerializer(many=True)}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
         user = self.request.user
@@ -4630,10 +5538,19 @@ class NotificationListView(generics.ListAPIView):
         return Response(serializer.data)
 
 
+@extend_schema(tags=['Artist App Endpoints'])
 class NotificationMarkReadView(APIView):
     """Mark a specific notification or all notifications as read."""
     permission_classes = [permissions.IsAuthenticated]
 
+    @extend_schema(
+        summary="خوانده شده کردن اعلان‌ها",
+        description="علامت‌گذاری یک اعلان خاص یا تمامی اعلان‌ها به عنوان خوانده شده.",
+        parameters=[
+            OpenApiParameter("artist", OpenApiTypes.BOOL, description="اعمال بر روی اعلان‌های پنل هنرمند")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, pk=None):
         user = request.user
         is_artist = request.query_params.get('artist', '').lower() == 'true'

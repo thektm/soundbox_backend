@@ -24,15 +24,22 @@ from .admin_serializers import (
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
 import os
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminUserListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست کاربران",
+        description="دریافت لیست تمامی کاربران (شنوندگان) با قابلیت صفحه‌بندی. به صورت پیش‌فرض بر اساس تاریخ عضویت مرتب شده‌اند.",
+        responses={200: AdminUserSerializer(many=True)}
+    )
     def get(self, request):
         # Default: audience only, sorted by join date latest first
         users = User.objects.filter(roles__contains=User.ROLE_AUDIENCE).order_by('-date_joined')
@@ -47,14 +54,26 @@ class AdminUserListView(APIView):
         serializer = AdminUserSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminUserDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="جزئیات کاربر",
+        description="دریافت اطلاعات کامل یک کاربر خاص بر اساس شناسه.",
+        responses={200: AdminUserSerializer}
+    )
     def get(self, request, pk):
         user = get_object_or_404(User, pk=pk)
         serializer = AdminUserSerializer(user)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش کامل کاربر",
+        description="ویرایش تمامی فیلدهای یک کاربر.",
+        request=AdminUserSerializer,
+        responses={200: AdminUserSerializer}
+    )
     def put(self, request, pk):
         user = get_object_or_404(User, pk=pk)
         serializer = AdminUserSerializer(user, data=request.data)
@@ -63,6 +82,12 @@ class AdminUserDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش جزئی کاربر",
+        description="ویرایش برخی از فیلدهای یک کاربر.",
+        request=AdminUserSerializer,
+        responses={200: AdminUserSerializer}
+    )
     def patch(self, request, pk):
         user = get_object_or_404(User, pk=pk)
         serializer = AdminUserSerializer(user, data=request.data, partial=True)
@@ -71,16 +96,28 @@ class AdminUserDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف کاربر",
+        description="حذف کامل یک کاربر از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         user = get_object_or_404(User, pk=pk)
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminUserBanView(APIView):
     """Ban a user and delete their artist profile and content."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="مسدود کردن کاربر",
+        description="مسدود کردن کاربر و حذف پروفایل هنرمند و تمامی محتواهای مرتبط (آهنگ‌ها و آلبوم‌ها).",
+        request=OpenApiTypes.OBJECT,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request):
         user_id = request.data.get('user_id')
         if not user_id:
@@ -104,9 +141,15 @@ class AdminUserBanView(APIView):
         
         return Response({"message": f"User {user.phone_number} has been banned and their content deleted."})
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست هنرمندان",
+        description="دریافت لیست تمامی هنرمندان تایید شده در سیستم.",
+        responses={200: AdminArtistSerializer(many=True)}
+    )
     def get(self, request):
         artists = Artist.objects.all().order_by('-created_at')
         paginator = AdminPagination()
@@ -114,15 +157,27 @@ class AdminArtistListView(APIView):
         serializer = AdminArtistSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminArtistDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات هنرمند",
+        description="دریافت اطلاعات کامل یک هنرمند خاص.",
+        responses={200: AdminArtistSerializer}
+    )
     def get(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
         serializer = AdminArtistSerializer(artist)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش کامل هنرمند",
+        description="ویرایش تمامی اطلاعات یک هنرمند.",
+        request=AdminArtistSerializer,
+        responses={200: AdminArtistSerializer}
+    )
     def put(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
         serializer = AdminArtistSerializer(artist, data=request.data)
@@ -131,6 +186,12 @@ class AdminArtistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="ویرایش جزئی هنرمند",
+        description="ویرایش برخی از اطلاعات یک هنرمند.",
+        request=AdminArtistSerializer,
+        responses={200: AdminArtistSerializer}
+    )
     def patch(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
         serializer = AdminArtistSerializer(artist, data=request.data, partial=True)
@@ -139,14 +200,25 @@ class AdminArtistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف هنرمند",
+        description="حذف پروفایل هنرمند از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
         artist.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminPendingArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست درخواست‌های هنرمند",
+        description="دریافت لیست درخواست‌های عضویت هنرمندان که هنوز تایید یا رد نشده‌اند.",
+        responses={200: AdminArtistAuthSerializer(many=True)}
+    )
     def get(self, request):
         # records of artistAuth with not accepted or rejected status
         pending_auths = ArtistAuth.objects.exclude(
@@ -158,14 +230,26 @@ class AdminPendingArtistListView(APIView):
         serializer = AdminArtistAuthSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminPendingArtistDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="جزئیات درخواست هنرمند",
+        description="دریافت جزئیات یک درخواست خاص برای بررسی.",
+        responses={200: AdminArtistAuthSerializer}
+    )
     def get(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
         serializer = AdminArtistAuthSerializer(auth)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش کامل درخواست",
+        description="ویرایش تمامی اطلاعات یک درخواست عضویت.",
+        request=AdminArtistAuthSerializer,
+        responses={200: AdminArtistAuthSerializer}
+    )
     def put(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
         serializer = AdminArtistAuthSerializer(auth, data=request.data)
@@ -174,6 +258,12 @@ class AdminPendingArtistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="تایید یا رد درخواست هنرمند",
+        description="تغییر وضعیت درخواست هنرمند (تایید، رد یا در حال بررسی).",
+        request=AdminArtistAuthSerializer,
+        responses={200: AdminArtistAuthSerializer}
+    )
     def patch(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
         serializer = AdminArtistAuthSerializer(auth, data=request.data, partial=True)
@@ -182,27 +272,20 @@ class AdminPendingArtistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف درخواست هنرمند",
+        description="حذف یک درخواست عضویت از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
         auth.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminHomeSummaryView(APIView):
-    """Return overall stream + pay summary for the admin home/dashboard.
-
-    Response includes counts and pay sums for all-time, last 30 days, last 7 days, and last 24 hours.
-    {
-      "total": int,
-      "last_30_days": int,
-      "last_7_days": int,
-      "last_24_hours": int,
-      "total_pay": float,
-      "pay_last_30_days": float,
-      "pay_last_7_days": float,
-      "pay_last_24_hours": float,
-    }
-    """
+    """Return overall stream + pay summary for the admin home/dashboard."""
     permission_classes = [permissions.IsAdminUser]
 
     def _sum_pay(self, qs):
@@ -213,6 +296,11 @@ class AdminHomeSummaryView(APIView):
             return float(val)
         return float(val)
 
+    @extend_schema(
+        summary="خلاصه وضعیت داشبورد ادمین",
+        description="دریافت آمار کلی پخش‌ها، پرداخت‌ها، تعداد کاربران و هنرمندان برای داشبورد مدیریت.",
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         now = timezone.now()
         last_24 = now - timedelta(days=1)
@@ -253,16 +341,19 @@ class AdminHomeSummaryView(APIView):
         })
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminUserSearchView(APIView):
-    """Search/list users, artists or pending artist submissions for admin.
-
-    Query params:
-    - type: one of ['audience', 'artist', 'pend_artist'] (default 'audience')
-
-    Results are paginated using `AdminPagination`.
-    """
+    """Search/list users, artists or pending artist submissions for admin."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="جستجوی کاربران و هنرمندان",
+        description="جستجو و لیست کردن کاربران، هنرمندان یا درخواست‌های در انتظار تایید بر اساس پارامتر type.",
+        parameters=[
+            OpenApiParameter("type", OpenApiTypes.STR, description="نوع جستجو: audience, artist, pend_artist", default="audience")
+        ],
+        responses={200: AdminUserSerializer(many=True)}
+    )
     def get(self, request):
         typ = request.query_params.get('type', 'audience')
         paginator = AdminPagination()
@@ -284,14 +375,19 @@ class AdminUserSearchView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminSongListView(APIView):
-    """List songs for admin with status filtering.
-    
-    Query params:
-    - status: filter by song status (default 'published')
-    """
+    """List songs for admin with status filtering."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست آهنگ‌ها",
+        description="دریافت لیست تمامی آهنگ‌ها با قابلیت فیلتر بر اساس وضعیت (منتشر شده، در انتظار و غیره).",
+        parameters=[
+            OpenApiParameter("status", OpenApiTypes.STR, description="وضعیت آهنگ (مثلا published)", default="published")
+        ],
+        responses={200: AdminSongSerializer(many=True)}
+    )
     def get(self, request):
         status_filter = request.query_params.get('status', Song.STATUS_PUBLISHED)
         songs = Song.objects.filter(status=status_filter).order_by('-created_at')
@@ -302,27 +398,47 @@ class AdminSongListView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminSongDetailView(APIView):
-    """Retrieve, update or delete a song for admin.
-    
-    Supports flat form-data for file uploads.
-    """
+    """Retrieve, update or delete a song for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات آهنگ",
+        description="دریافت اطلاعات کامل یک آهنگ خاص.",
+        responses={200: AdminSongSerializer}
+    )
     def get(self, request, pk):
         song = get_object_or_404(Song, pk=pk)
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش جزئی آهنگ",
+        description="ویرایش برخی از فیلدهای آهنگ و آپلود فایل صوتی یا کاور جدید.",
+        request=AdminSongSerializer,
+        responses={200: AdminSongSerializer}
+    )
     def patch(self, request, pk):
         song = get_object_or_404(Song, pk=pk)
         return self._update_song(request, song, partial=True)
 
+    @extend_schema(
+        summary="ویرایش کامل آهنگ",
+        description="ویرایش تمامی فیلدهای آهنگ.",
+        request=AdminSongSerializer,
+        responses={200: AdminSongSerializer}
+    )
     def put(self, request, pk):
         song = get_object_or_404(Song, pk=pk)
         return self._update_song(request, song, partial=False)
 
+    @extend_schema(
+        summary="حذف آهنگ",
+        description="حذف کامل یک آهنگ از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         song = get_object_or_404(Song, pk=pk)
         song.delete()
@@ -410,15 +526,20 @@ class AdminSongDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminReportListView(APIView):
-    """List reports for admin with filtering.
-    
-    Query params:
-    - has_reviewed: filter by review status (true/false)
-    - type: filter by target type (song/artist)
-    """
+    """List reports for admin with filtering."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست گزارش‌ها",
+        description="دریافت لیست گزارش‌های تخلف ثبت شده توسط کاربران با قابلیت فیلتر بر اساس وضعیت بررسی و نوع هدف (آهنگ یا هنرمند).",
+        parameters=[
+            OpenApiParameter("has_reviewed", OpenApiTypes.BOOL, description="فیلتر بر اساس وضعیت بررسی شده"),
+            OpenApiParameter("type", OpenApiTypes.STR, description="فیلتر بر اساس نوع: song یا artist")
+        ],
+        responses={200: AdminReportSerializer(many=True)}
+    )
     def get(self, request):
         qs = Report.objects.all().order_by('-created_at')
         
@@ -438,15 +559,27 @@ class AdminReportListView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminReportDetailView(APIView):
     """Retrieve or update a report for admin."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="جزئیات گزارش",
+        description="دریافت اطلاعات کامل یک گزارش خاص.",
+        responses={200: AdminReportSerializer}
+    )
     def get(self, request, pk):
         report = get_object_or_404(Report, pk=pk)
         serializer = AdminReportSerializer(report)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="بروزرسانی گزارش",
+        description="تغییر وضعیت بررسی گزارش.",
+        request=AdminReportSerializer,
+        responses={200: AdminReportSerializer}
+    )
     def put(self, request, pk):
         report = get_object_or_404(Report, pk=pk)
         data = request.data.copy()
@@ -462,16 +595,27 @@ class AdminReportDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف گزارش",
+        description="حذف یک گزارش از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         report = get_object_or_404(Report, pk=pk)
         report.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminPlayConfigurationView(APIView):
     """View for admin to manage global play and price settings."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="تنظیمات پخش و قیمت‌گذاری",
+        description="دریافت تنظیمات کلی سیستم شامل قیمت هر پخش و غیره.",
+        responses={200: AdminPlayConfigurationSerializer}
+    )
     def get(self, request):
         config = PlayConfiguration.objects.last()
         if not config:
@@ -479,6 +623,12 @@ class AdminPlayConfigurationView(APIView):
         serializer = AdminPlayConfigurationSerializer(config)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="بروزرسانی تنظیمات",
+        description="تغییر تنظیمات کلی سیستم.",
+        request=AdminPlayConfigurationSerializer,
+        responses={200: AdminPlayConfigurationSerializer}
+    )
     def post(self, request):
         config = PlayConfiguration.objects.last()
         if not config:
@@ -491,11 +641,17 @@ class AdminPlayConfigurationView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminBannerAdListView(APIView):
     """List and create banner ads for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="لیست تبلیغات بنری",
+        description="دریافت لیست تمامی بنرهای تبلیغاتی.",
+        responses={200: AdminBannerAdSerializer(many=True)}
+    )
     def get(self, request):
         ads = BannerAd.objects.all().order_by('-created_at')
         paginator = AdminPagination()
@@ -503,6 +659,12 @@ class AdminBannerAdListView(APIView):
         serializer = AdminBannerAdSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد تبلیغ بنری جدید",
+        description="آپلود تصویر و ایجاد یک بنر تبلیغاتی جدید.",
+        request=AdminBannerAdSerializer,
+        responses={201: AdminBannerAdSerializer}
+    )
     def post(self, request):
         data = request.data.copy()
         image_file = request.FILES.get('image_upload')
@@ -519,16 +681,28 @@ class AdminBannerAdListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminBannerAdDetailView(APIView):
     """Retrieve, update or delete a banner ad for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات تبلیغ بنری",
+        description="دریافت اطلاعات یک بنر تبلیغاتی خاص.",
+        responses={200: AdminBannerAdSerializer}
+    )
     def get(self, request, pk):
         ad = get_object_or_404(BannerAd, pk=pk)
         serializer = AdminBannerAdSerializer(ad)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش تبلیغ بنری",
+        description="ویرایش اطلاعات یا تصویر یک بنر تبلیغاتی.",
+        request=AdminBannerAdSerializer,
+        responses={200: AdminBannerAdSerializer}
+    )
     def patch(self, request, pk):
         ad = get_object_or_404(BannerAd, pk=pk)
         data = request.data.copy()
@@ -545,17 +719,28 @@ class AdminBannerAdDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف تبلیغ بنری",
+        description="حذف یک بنر تبلیغاتی از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         ad = get_object_or_404(BannerAd, pk=pk)
         ad.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminAudioAdListView(APIView):
     """List and create audio ads for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="لیست تبلیغات صوتی",
+        description="دریافت لیست تمامی تبلیغات صوتی.",
+        responses={200: AdminAudioAdSerializer(many=True)}
+    )
     def get(self, request):
         ads = AudioAd.objects.all().order_by('-created_at')
         paginator = AdminPagination()
@@ -563,6 +748,12 @@ class AdminAudioAdListView(APIView):
         serializer = AdminAudioAdSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد تبلیغ صوتی جدید",
+        description="آپلود فایل صوتی و کاور برای ایجاد یک تبلیغ صوتی جدید.",
+        request=AdminAudioAdSerializer,
+        responses={201: AdminAudioAdSerializer}
+    )
     def post(self, request):
         data = request.data.copy()
         audio_file = request.FILES.get('audio_upload')
@@ -592,16 +783,28 @@ class AdminAudioAdListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminAudioAdDetailView(APIView):
     """Retrieve, update or delete an audio ad for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات تبلیغ صوتی",
+        description="دریافت اطلاعات یک تبلیغ صوتی خاص.",
+        responses={200: AdminAudioAdSerializer}
+    )
     def get(self, request, pk):
         ad = get_object_or_404(AudioAd, pk=pk)
         serializer = AdminAudioAdSerializer(ad)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش تبلیغ صوتی",
+        description="ویرایش اطلاعات، فایل صوتی یا کاور یک تبلیغ صوتی.",
+        request=AdminAudioAdSerializer,
+        responses={200: AdminAudioAdSerializer}
+    )
     def patch(self, request, pk):
         ad = get_object_or_404(AudioAd, pk=pk)
         data = request.data.copy()
@@ -631,19 +834,27 @@ class AdminAudioAdDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف تبلیغ صوتی",
+        description="حذف یک تبلیغ صوتی از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         ad = get_object_or_404(AudioAd, pk=pk)
         ad.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminAlbumListView(APIView):
-    """List albums for admin.
-    
-    Filters out "singles" (albums with only 1 song where that song is marked as is_single).
-    """
+    """List albums for admin."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست آلبوم‌ها",
+        description="دریافت لیست تمامی آلبوم‌ها (به جز تک‌آهنگ‌ها) با قابلیت صفحه‌بندی.",
+        responses={200: AdminAlbumSerializer(many=True)}
+    )
     def get(self, request):
         # Filter out albums that are effectively singles
         # We'll filter albums that have more than 1 song OR have 1 song that is NOT a single.
@@ -658,24 +869,47 @@ class AdminAlbumListView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminAlbumDetailView(APIView):
     """Retrieve, update or delete an album for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات آلبوم",
+        description="دریافت اطلاعات کامل یک آلبوم خاص.",
+        responses={200: AdminAlbumSerializer}
+    )
     def get(self, request, pk):
         album = get_object_or_404(Album, pk=pk)
         serializer = AdminAlbumSerializer(album)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش جزئی آلبوم",
+        description="ویرایش برخی از فیلدهای آلبوم و آپلود کاور جدید.",
+        request=AdminAlbumSerializer,
+        responses={200: AdminAlbumSerializer}
+    )
     def patch(self, request, pk):
         album = get_object_or_404(Album, pk=pk)
         return self._update_album(request, album, partial=True)
 
+    @extend_schema(
+        summary="ویرایش کامل آلبوم",
+        description="ویرایش تمامی فیلدهای آلبوم.",
+        request=AdminAlbumSerializer,
+        responses={200: AdminAlbumSerializer}
+    )
     def put(self, request, pk):
         album = get_object_or_404(Album, pk=pk)
         return self._update_album(request, album, partial=False)
 
+    @extend_schema(
+        summary="حذف آلبوم",
+        description="حذف کامل یک آلبوم از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         album = get_object_or_404(Album, pk=pk)
         album.delete()
@@ -707,10 +941,17 @@ class AdminAlbumDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminAlbumSongActionView(APIView):
     """Actions on songs within an album: remove from album or delete song."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="عملیات روی آهنگ‌های آلبوم",
+        description="حذف آهنگ از آلبوم یا حذف کامل آهنگ از سیستم.",
+        request=OpenApiTypes.OBJECT,
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def post(self, request, album_id, song_id):
         action = request.data.get('action') # 'remove' or 'delete'
         album = get_object_or_404(Album, pk=album_id)
@@ -727,10 +968,20 @@ class AdminAlbumSongActionView(APIView):
             return Response({"error": "Invalid action. Use 'remove' or 'delete'"}, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminFinanceSummaryView(APIView):
     """Summary of payments and deposit requests."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="خلاصه وضعیت مالی",
+        description="دریافت آمار پرداخت‌ها و درخواست‌های تسویه حساب در بازه‌های زمانی مختلف.",
+        parameters=[
+            OpenApiParameter("start", OpenApiTypes.STR, description="تاریخ شروع (YYYY-MM-DD)"),
+            OpenApiParameter("end", OpenApiTypes.STR, description="تاریخ پایان (YYYY-MM-DD)")
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
     def get(self, request):
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -787,10 +1038,19 @@ class AdminFinanceSummaryView(APIView):
         return Response(summary)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminPaymentTransactionListView(APIView):
     """List payment transactions with filtering."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست تراکنش‌های پرداخت",
+        description="دریافت لیست تمامی تراکنش‌های پرداخت با قابلیت فیلتر بر اساس وضعیت.",
+        parameters=[
+            OpenApiParameter("status", OpenApiTypes.STR, description="وضعیت تراکنش")
+        ],
+        responses={200: AdminPaymentTransactionSerializer(many=True)}
+    )
     def get(self, request):
         queryset = PaymentTransaction.objects.all().order_by('-created_at')
         
@@ -809,10 +1069,19 @@ class AdminPaymentTransactionListView(APIView):
         return response
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminDepositRequestListView(APIView):
     """List deposit requests with filtering."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست درخواست‌های تسویه",
+        description="دریافت لیست تمامی درخواست‌های تسویه حساب هنرمندان با قابلیت فیلتر بر اساس وضعیت.",
+        parameters=[
+            OpenApiParameter("status", OpenApiTypes.STR, description="وضعیت درخواست")
+        ],
+        responses={200: AdminDepositRequestSerializer(many=True)}
+    )
     def get(self, request):
         queryset = DepositRequest.objects.all().order_by('-submission_date')
         
@@ -831,11 +1100,17 @@ class AdminDepositRequestListView(APIView):
         return response
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminSearchSectionListView(APIView):
     """List and create search sections for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="لیست بخش‌های جستجو",
+        description="دریافت لیست تمامی بخش‌های (کتگوری‌های) صفحه جستجو.",
+        responses={200: AdminSearchSectionSerializer(many=True)}
+    )
     def get(self, request):
         sections = SearchSection.objects.all().order_by('-created_at')
         paginator = AdminPagination()
@@ -843,6 +1118,12 @@ class AdminSearchSectionListView(APIView):
         serializer = AdminSearchSectionSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد بخش جستجوی جدید",
+        description="ایجاد یک بخش جدید برای صفحه جستجو همراه با آیکون.",
+        request=AdminSearchSectionSerializer,
+        responses={201: AdminSearchSectionSerializer}
+    )
     def post(self, request):
         data = request.data.copy()
         icon_file = request.FILES.get('icon_logo_upload')
@@ -859,16 +1140,28 @@ class AdminSearchSectionListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminSearchSectionDetailView(APIView):
     """Retrieve, update or delete a search section for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات بخش جستجو",
+        description="دریافت اطلاعات یک بخش خاص از صفحه جستجو.",
+        responses={200: AdminSearchSectionSerializer}
+    )
     def get(self, request, pk):
         section = get_object_or_404(SearchSection, pk=pk)
         serializer = AdminSearchSectionSerializer(section)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش بخش جستجو",
+        description="ویرایش اطلاعات یا آیکون یک بخش از صفحه جستجو.",
+        request=AdminSearchSectionSerializer,
+        responses={200: AdminSearchSectionSerializer}
+    )
     def patch(self, request, pk):
         section = get_object_or_404(SearchSection, pk=pk)
         data = request.data.copy()
@@ -885,17 +1178,28 @@ class AdminSearchSectionDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف بخش جستجو",
+        description="حذف یک بخش از صفحه جستجو.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         section = get_object_or_404(SearchSection, pk=pk)
         section.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminEventPlaylistListView(APIView):
     """List and create event playlist groups for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="لیست گروه‌های پلی‌لیست رویداد",
+        description="دریافت لیست تمامی گروه‌های پلی‌لیست مربوط به رویدادها.",
+        responses={200: AdminEventPlaylistSerializer(many=True)}
+    )
     def get(self, request):
         events = EventPlaylist.objects.all().order_by('-created_at')
         paginator = AdminPagination()
@@ -903,6 +1207,12 @@ class AdminEventPlaylistListView(APIView):
         serializer = AdminEventPlaylistSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد گروه پلی‌لیست رویداد جدید",
+        description="ایجاد یک گروه جدید برای پلی‌لیست‌های رویداد همراه با کاور.",
+        request=AdminEventPlaylistSerializer,
+        responses={201: AdminEventPlaylistSerializer}
+    )
     def post(self, request):
         data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
@@ -919,16 +1229,28 @@ class AdminEventPlaylistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminEventPlaylistDetailView(APIView):
     """Retrieve, update or delete an event playlist group for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات گروه پلی‌لیست رویداد",
+        description="دریافت اطلاعات یک گروه پلی‌لیست رویداد خاص.",
+        responses={200: AdminEventPlaylistSerializer}
+    )
     def get(self, request, pk):
         event = get_object_or_404(EventPlaylist, pk=pk)
         serializer = AdminEventPlaylistSerializer(event)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش گروه پلی‌لیست رویداد",
+        description="ویرایش اطلاعات یا کاور یک گروه پلی‌لیست رویداد.",
+        request=AdminEventPlaylistSerializer,
+        responses={200: AdminEventPlaylistSerializer}
+    )
     def patch(self, request, pk):
         event = get_object_or_404(EventPlaylist, pk=pk)
         data = request.data.copy()
@@ -945,17 +1267,28 @@ class AdminEventPlaylistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف گروه پلی‌لیست رویداد",
+        description="حذف یک گروه پلی‌لیست رویداد از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         event = get_object_or_404(EventPlaylist, pk=pk)
         event.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminPlaylistListView(APIView):
     """List and create playlists for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="لیست پلی‌لیست‌های ادمین",
+        description="دریافت لیست تمامی پلی‌لیست‌های ایجاد شده توسط ادمین.",
+        responses={200: AdminPlaylistSerializer(many=True)}
+    )
     def get(self, request):
         playlists = Playlist.objects.all().order_by('-created_at')
         paginator = AdminPagination()
@@ -963,6 +1296,12 @@ class AdminPlaylistListView(APIView):
         serializer = AdminPlaylistSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد پلی‌لیست جدید توسط ادمین",
+        description="ایجاد یک پلی‌لیست جدید همراه با کاور توسط ادمین.",
+        request=AdminPlaylistSerializer,
+        responses={201: AdminPlaylistSerializer}
+    )
     def post(self, request):
         data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
@@ -979,16 +1318,28 @@ class AdminPlaylistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminPlaylistDetailView(APIView):
     """Retrieve, update or delete a playlist for admin."""
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(
+        summary="جزئیات پلی‌لیست ادمین",
+        description="دریافت اطلاعات کامل یک پلی‌لیست خاص.",
+        responses={200: AdminPlaylistSerializer}
+    )
     def get(self, request, pk):
         playlist = get_object_or_404(Playlist, pk=pk)
         serializer = AdminPlaylistSerializer(playlist)
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="ویرایش پلی‌لیست ادمین",
+        description="ویرایش اطلاعات یا کاور یک پلی‌لیست.",
+        request=AdminPlaylistSerializer,
+        responses={200: AdminPlaylistSerializer}
+    )
     def patch(self, request, pk):
         playlist = get_object_or_404(Playlist, pk=pk)
         data = request.data.copy()
@@ -1005,16 +1356,27 @@ class AdminPlaylistDetailView(APIView):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="حذف پلی‌لیست ادمین",
+        description="حذف یک پلی‌لیست از سیستم.",
+        responses={204: None}
+    )
     def delete(self, request, pk):
         playlist = get_object_or_404(Playlist, pk=pk)
         playlist.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminEmployeeListView(APIView):
     """List and create employees (managers/supervisors)."""
     permission_classes = [permissions.IsAdminUser]
 
+    @extend_schema(
+        summary="لیست کارمندان",
+        description="دریافت لیست تمامی کارمندان (مدیران و ناظران) سیستم.",
+        responses={200: AdminEmployeeSerializer(many=True)}
+    )
     def get(self, request):
         # Filter users with manager or supervisor roles who are not staff
         queryset = User.objects.filter(
@@ -1027,6 +1389,12 @@ class AdminEmployeeListView(APIView):
         serializer = AdminEmployeeSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        summary="ایجاد کارمند جدید",
+        description="ایجاد یک کاربر جدید با نقش مدیر یا ناظر.",
+        request=AdminEmployeeSerializer,
+        responses={201: AdminEmployeeSerializer}
+    )
     def post(self, request):
         serializer = AdminEmployeeSerializer(data=request.data)
         if serializer.is_valid():
@@ -1040,9 +1408,44 @@ class AdminEmployeeListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Admin App Endpoints'])
 class AdminEmployeeDetailView(APIView):
     """Retrieve, update or delete an employee."""
     permission_classes = [permissions.IsAdminUser]
+
+    @extend_schema(
+        summary="جزئیات کارمند",
+        description="دریافت اطلاعات کامل یک کارمند خاص.",
+        responses={200: AdminEmployeeSerializer}
+    )
+    def get(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+        serializer = AdminEmployeeSerializer(user)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="ویرایش کارمند",
+        description="ویرایش اطلاعات یا نقش‌های یک کارمند.",
+        request=AdminEmployeeSerializer,
+        responses={200: AdminEmployeeSerializer}
+    )
+    def patch(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+        serializer = AdminEmployeeSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        summary="حذف کارمند",
+        description="حذف یک کارمند از سیستم.",
+        responses={204: None}
+    )
+    def delete(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+        user.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def get(self, request, pk):
         user = get_object_or_404(User, pk=pk, is_staff=False)
