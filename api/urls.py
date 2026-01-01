@@ -92,6 +92,9 @@ from .admin_views import (
     AdminBannerAdDetailView,
     AdminAudioAdListView,
     AdminAudioAdDetailView,
+    AdminFinanceSummaryView,
+    AdminPaymentTransactionListView,
+    AdminDepositRequestListView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -259,6 +262,9 @@ urlpatterns = [
     path('admin/ads/banners/<int:pk>/', AdminBannerAdDetailView.as_view(), name='admin_banner_ad_detail'),
     path('admin/ads/audio/', AdminAudioAdListView.as_view(), name='admin_audio_ad_list'),
     path('admin/ads/audio/<int:pk>/', AdminAudioAdDetailView.as_view(), name='admin_audio_ad_detail'),
+    path('admin/finance/', AdminFinanceSummaryView.as_view(), name='admin_finance_summary'),
+    path('admin/finance/transactions/', AdminPaymentTransactionListView.as_view(), name='admin_payment_transaction_list'),
+    path('admin/finance/deposits/', AdminDepositRequestListView.as_view(), name='admin_deposit_request_list'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),

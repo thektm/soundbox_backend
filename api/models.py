@@ -1030,9 +1030,21 @@ class Report(models.Model):
 
 class PaymentTransaction(models.Model):
     """Record of user payments/transactions."""
+    STATUS_PENDING = 'pending'
+    STATUS_SUCCESS = 'success'
+    STATUS_FAILED = 'failed'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_SUCCESS, 'Success'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payment_transactions')
     transaction_id = models.CharField(max_length=255, unique=True)
     amount = models.DecimalField(max_digits=15, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    payment_method = models.CharField(max_length=100, blank=True, null=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

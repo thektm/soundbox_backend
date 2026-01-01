@@ -3,16 +3,17 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
-from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd
+from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Q
 from decimal import Decimal
 from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
     AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer,
-    AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer
+    AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer,
+    AdminPaymentTransactionSerializer, AdminDepositRequestSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
@@ -685,3 +686,107 @@ class AdminAlbumSongActionView(APIView):
             return Response({"message": "Song deleted successfully"})
         else:
             return Response({"error": "Invalid action. Use 'remove' or 'delete'"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminFinanceSummaryView(APIView):
+    """Summary of payments and deposit requests."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        now = timezone.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        last_7_days = now - timedelta(days=7)
+        last_30_days = now - timedelta(days=30)
+
+        # Custom period
+        start_param = request.query_params.get('start')
+        end_param = request.query_params.get('end')
+        
+        def get_stats(start_date, end_date=None):
+            q_pay = Q(created_at__gte=start_date, status=PaymentTransaction.STATUS_SUCCESS)
+            q_dep = Q(submission_date__gte=start_date, status__in=[DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE])
+            
+            if end_date:
+                q_pay &= Q(created_at__lte=end_date)
+                q_dep &= Q(submission_date__lte=end_date)
+            
+            total_payments = PaymentTransaction.objects.filter(q_pay).aggregate(total=Sum('amount'))['total'] or 0
+            total_deposits = DepositRequest.objects.filter(q_dep).aggregate(total=Sum('amount'))['total'] or 0
+            
+            return {
+                'total_payments': total_payments,
+                'total_deposits': total_deposits,
+                'count_payments': PaymentTransaction.objects.filter(q_pay).count(),
+                'count_deposits': DepositRequest.objects.filter(q_dep).count(),
+            }
+
+        summary = {
+            'today': get_stats(today_start),
+            'last_7_days': get_stats(last_7_days),
+            'last_30_days': get_stats(last_30_days),
+            'all_time': get_stats(timezone.make_aware(timezone.datetime(2000, 1, 1))),
+        }
+
+        if start_param and end_param:
+            try:
+                # Handle both YYYY-MM-DD and ISO format
+                if len(start_param) == 10:
+                    start_dt = timezone.make_aware(timezone.datetime.strptime(start_param, '%Y-%m-%d'))
+                else:
+                    start_dt = timezone.make_aware(timezone.datetime.fromisoformat(start_param))
+                
+                if len(end_param) == 10:
+                    end_dt = timezone.make_aware(timezone.datetime.strptime(end_param, '%Y-%m-%d'))
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                else:
+                    end_dt = timezone.make_aware(timezone.datetime.fromisoformat(end_param))
+                    
+                summary['custom_period'] = get_stats(start_dt, end_dt)
+            except (ValueError, TypeError):
+                summary['custom_period_error'] = "Invalid date format. Use YYYY-MM-DD or ISO format."
+
+        return Response(summary)
+
+
+class AdminPaymentTransactionListView(APIView):
+    """List payment transactions with filtering."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        queryset = PaymentTransaction.objects.all().order_by('-created_at')
+        
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+            
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(queryset, request)
+        serializer = AdminPaymentTransactionSerializer(result_page, many=True)
+        
+        response = paginator.get_paginated_response(serializer.data)
+        # Add extra info to the response data
+        response.data['total_amount'] = queryset.aggregate(total=Sum('amount'))['total'] or 0
+        response.data['total_count'] = queryset.count()
+        return response
+
+
+class AdminDepositRequestListView(APIView):
+    """List deposit requests with filtering."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        queryset = DepositRequest.objects.all().order_by('-submission_date')
+        
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+            
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(queryset, request)
+        serializer = AdminDepositRequestSerializer(result_page, many=True)
+        
+        response = paginator.get_paginated_response(serializer.data)
+        # Add extra info to the response data
+        response.data['total_amount'] = queryset.aggregate(total=Sum('amount'))['total'] or 0
+        response.data['total_count'] = queryset.count()
+        return response

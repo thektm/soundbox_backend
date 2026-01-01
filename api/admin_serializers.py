@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd
+from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -136,3 +136,21 @@ class AdminAudioAdSerializer(serializers.ModelSerializer):
             'navigate_link', 'duration', 'skippable_after', 'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'audio_url', 'image_cover', 'created_at', 'updated_at']
+
+
+class AdminPaymentTransactionSerializer(serializers.ModelSerializer):
+    user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+
+    class Meta:
+        model = PaymentTransaction
+        fields = ['id', 'user', 'user_phone', 'transaction_id', 'amount', 'status', 'payment_method', 'description', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class AdminDepositRequestSerializer(serializers.ModelSerializer):
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+
+    class Meta:
+        model = DepositRequest
+        fields = ['id', 'artist', 'artist_name', 'amount', 'status', 'transaction_id', 'submission_date', 'status_change_date', 'summary']
+        read_only_fields = ['id', 'submission_date', 'status_change_date']
