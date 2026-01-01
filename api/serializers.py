@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest
+    DepositRequest, Report
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -1576,3 +1576,17 @@ class PlayConfigurationSerializer(serializers.ModelSerializer):
         model = PlayConfiguration
         fields = ['free_play_worth', 'premium_play_worth', 'updated_at']
         read_only_fields = ['updated_at']
+
+
+class ReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Report
+        fields = ['id', 'song', 'artist', 'text', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+    def validate(self, data):
+        if not data.get('song') and not data.get('artist'):
+            raise serializers.ValidationError("Either song or artist must be provided.")
+        if data.get('song') and data.get('artist'):
+            raise serializers.ValidationError("Only one of song or artist should be provided.")
+        return data

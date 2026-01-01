@@ -7,7 +7,7 @@ from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    ActivePlayback, DepositRequest
+    ActivePlayback, DepositRequest, Report
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -39,6 +39,7 @@ from .serializers import (
     RulesSerializer,
     PlayConfigurationSerializer,
     DepositRequestSerializer,
+    ReportSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -4508,4 +4509,13 @@ class ArtistAlbumsManagementView(APIView):
         album = get_object_or_404(Album, pk=pk, artist=artist)
         album.delete()
         return Response({"message": "Album deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+
+
+class ReportCreateView(generics.CreateAPIView):
+    """Endpoint for users to submit reports for songs or artists."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ReportSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 

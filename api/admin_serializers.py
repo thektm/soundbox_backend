@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag
+from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag, Report
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -68,3 +68,17 @@ class AdminSongSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'audio_file_upload', 'cover_image_upload'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'plays']
+
+
+class AdminReportSerializer(serializers.ModelSerializer):
+    user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    song_title = serializers.CharField(source='song.title', read_only=True, allow_null=True)
+    artist_name = serializers.CharField(source='artist.name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = Report
+        fields = [
+            'id', 'user', 'user_phone', 'song', 'song_title', 'artist', 'artist_name',
+            'text', 'has_reviewed', 'reviewed_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'user', 'song', 'artist', 'created_at', 'updated_at']

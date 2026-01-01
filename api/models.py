@@ -1000,3 +1000,27 @@ class DepositRequest(models.Model):
 
     def __str__(self):
         return f"DepositRequest({self.artist.name}, {self.amount}, {self.status})"
+
+
+class Report(models.Model):
+    """User reports for songs or artists."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reports')
+    song = models.ForeignKey('Song', on_delete=models.SET_NULL, null=True, blank=True, related_name='reports')
+    artist = models.ForeignKey('Artist', on_delete=models.SET_NULL, null=True, blank=True, related_name='reports')
+    text = models.TextField()
+    has_reviewed = models.BooleanField(default=False)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        target = f"Song: {self.song.title}" if self.song else f"Artist: {self.artist.name}" if self.artist else "Unknown"
+        return f"Report by {self.user.phone_number} on {target}"
+
+    @property
+    def related(self):
+        """Return the related object (Song or Artist)."""
+        return self.song or self.artist

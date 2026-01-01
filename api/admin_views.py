@@ -3,13 +3,16 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
-from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag
+from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Sum
 from decimal import Decimal
-from .admin_serializers import AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, AdminSongSerializer
+from .admin_serializers import (
+    AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
+    AdminSongSerializer, AdminReportSerializer
+)
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
 import os
@@ -365,6 +368,59 @@ class AdminSongDetailView(APIView):
             data['cover_image'] = cover_url
 
         serializer = AdminSongSerializer(song, data=data, partial=partial)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminReportListView(APIView):
+    """List reports for admin with filtering.
+    
+    Query params:
+    - has_reviewed: filter by review status (true/false)
+    - type: filter by target type (song/artist)
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        qs = Report.objects.all().order_by('-created_at')
+        
+        has_reviewed = request.query_params.get('has_reviewed')
+        if has_reviewed is not None:
+            qs = qs.filter(has_reviewed=has_reviewed.lower() == 'true')
+            
+        typ = request.query_params.get('type')
+        if typ == 'song':
+            qs = qs.filter(song__isnull=False)
+        elif typ == 'artist':
+            qs = qs.filter(artist__isnull=False)
+            
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = AdminReportSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminReportDetailView(APIView):
+    """Retrieve or update a report for admin."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, pk):
+        report = get_object_or_404(Report, pk=pk)
+        serializer = AdminReportSerializer(report)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        report = get_object_or_404(Report, pk=pk)
+        data = request.data.copy()
+        
+        # If has_reviewed is being set to true, set reviewed_at
+        if data.get('has_reviewed') is True or data.get('has_reviewed') == 'true':
+            if not report.has_reviewed:
+                data['reviewed_at'] = timezone.now()
+        
+        serializer = AdminReportSerializer(report, data=data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)

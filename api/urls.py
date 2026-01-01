@@ -70,6 +70,7 @@ from .views import (
     RulesListCreateView,
     RulesDetailView,
     PlayConfigurationView,
+    ReportCreateView,
 )
 from .admin_views import (
     AdminUserListView,
@@ -82,6 +83,8 @@ from .admin_views import (
     AdminUserSearchView,
     AdminSongListView,
     AdminSongDetailView,
+    AdminReportListView,
+    AdminReportDetailView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -240,6 +243,11 @@ urlpatterns = [
     path('admin/users/search/', AdminUserSearchView.as_view(), name='admin_user_search'),
     path('admin/songs/', AdminSongListView.as_view(), name='admin_song_list'),
     path('admin/songs/<int:pk>/', AdminSongDetailView.as_view(), name='admin_song_detail'),
+    path('admin/reports/', AdminReportListView.as_view(), name='admin_report_list'),
+    path('admin/reports/<int:pk>/', AdminReportDetailView.as_view(), name='admin_report_detail'),
+
+    # --- Report Endpoints ---
+    path('reports/', ReportCreateView.as_view(), name='report_create'),
 
     # Include router URLs (if any)
     path('', include(router.urls)),
