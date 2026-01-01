@@ -783,51 +783,9 @@ class PlaylistDetailView(APIView):
         serializer = PlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
 
-    @extend_schema(
-        summary="ویرایش پلی‌لیست (کامل)",
-        description="به‌روزرسانی تمامی اطلاعات یک پلی‌لیست.",
-        request=PlaylistSerializer,
-        responses={200: PlaylistSerializer}
-    )
-    def put(self, request, pk):
-        playlist = self.get_object(pk)
-        if not playlist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = PlaylistSerializer(playlist, data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+   
 
-    @extend_schema(
-        summary="ویرایش پلی‌لیست (جزئی)",
-        description="به‌روزرسانی برخی از اطلاعات یک پلی‌لیست.",
-        request=PlaylistSerializer,
-        responses={200: PlaylistSerializer}
-    )
-    def patch(self, request, pk):
-        playlist = self.get_object(pk)
-        if not playlist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = PlaylistSerializer(playlist, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @extend_schema(
-        summary="حذف پلی‌لیست",
-        description="حذف یک پلی‌لیست از سامانه.",
-        responses={204: OpenApiTypes.NONE}
-    )
-    def delete(self, request, pk):
-        playlist = self.get_object(pk)
-        if not playlist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        playlist.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
+   
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class PlaylistLikeView(APIView):
     """Like or unlike a playlist (Admin/System/Audience)"""
@@ -1041,50 +999,7 @@ class ArtistDetailView(APIView):
             'similar_artists': similar_artists_data
         })
 
-    @extend_schema(
-        summary="ویرایش هنرمند (کامل)",
-        description="به‌روزرسانی تمامی اطلاعات یک هنرمند.",
-        request=ArtistSerializer,
-        responses={200: ArtistSerializer}
-    )
-    def put(self, request, pk):
-        artist = self.get_object(pk)
-        if not artist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = ArtistSerializer(artist, data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @extend_schema(
-        summary="ویرایش هنرمند (جزئی)",
-        description="به‌روزرسانی برخی از اطلاعات یک هنرمند.",
-        request=ArtistSerializer,
-        responses={200: ArtistSerializer}
-    )
-    def patch(self, request, pk):
-        artist = self.get_object(pk)
-        if not artist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = ArtistSerializer(artist, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @extend_schema(
-        summary="حذف هنرمند",
-        description="حذف یک هنرمند از سامانه.",
-        responses={204: OpenApiTypes.NONE}
-    )
-    def delete(self, request, pk):
-        artist = self.get_object(pk)
-        if not artist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        artist.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
+   
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
 class AlbumListView(APIView):
@@ -1104,18 +1019,7 @@ class AlbumListView(APIView):
         serializer = AlbumSerializer(albums, many=True, context={'request': request})
         return Response(serializer.data)
 
-    @extend_schema(
-        summary="ایجاد آلبوم جدید",
-        description="ثبت یک آلبوم جدید در سامانه (نیازمند احراز هویت).",
-        request=AlbumSerializer,
-        responses={201: AlbumSerializer}
-    )
-    def post(self, request):
-        serializer = AlbumSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
@@ -1154,45 +1058,7 @@ class AlbumDetailView(APIView):
         serializer = AlbumSerializer(album, context={'request': request})
         return Response(serializer.data)
 
-    @extend_schema(
-        summary="ویرایش آلبوم (کامل)",
-        description="به‌روزرسانی تمامی اطلاعات یک آلبوم.",
-        request=AlbumSerializer,
-        responses={200: AlbumSerializer}
-    )
-    def put(self, request, pk):
-        album = self.get_object(pk)
-        if not album:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = AlbumSerializer(album, data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @extend_schema(
-        summary="ویرایش آلبوم (جزئی)",
-        description="به‌روزرسانی برخی از اطلاعات یک آلبوم.",
-        request=AlbumSerializer,
-        responses={200: AlbumSerializer}
-    )
-    def patch(self, request, pk):
-        album = self.get_object(pk)
-        if not album:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = AlbumSerializer(album, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def delete(self, request, pk):
-        album = self.get_object(pk)
-        if not album:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        album.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
+   
 
 @extend_schema(tags=['Classification'])
 class GenreListView(APIView):
@@ -1742,38 +1608,7 @@ class SongDetailView(APIView):
 
         return Response(data)
 
-    @extend_schema(
-        summary="ویرایش آهنگ (کامل)",
-        description="به‌روزرسانی تمامی اطلاعات یک آهنگ.",
-        request=SongSerializer,
-        responses={200: SongSerializer}
-    )
-    def put(self, request, pk):
-        song = self.get_object(pk)
-        if not song:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = SongSerializer(song, data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def patch(self, request, pk):
-        song = self.get_object(pk)
-        if not song:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = SongSerializer(song, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def delete(self, request, pk):
-        song = self.get_object(pk)
-        if not song:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        song.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+   
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints'])
