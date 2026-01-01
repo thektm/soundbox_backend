@@ -88,6 +88,10 @@ from .admin_views import (
     AdminAlbumDetailView,
     AdminAlbumSongActionView,
     AdminPlayConfigurationView,
+    AdminBannerAdListView,
+    AdminBannerAdDetailView,
+    AdminAudioAdListView,
+    AdminAudioAdDetailView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -251,6 +255,10 @@ urlpatterns = [
     path('admin/albums/<int:pk>/', AdminAlbumDetailView.as_view(), name='admin_album_detail'),
     path('admin/albums/<int:album_id>/songs/<int:song_id>/', AdminAlbumSongActionView.as_view(), name='admin_album_song_action'),
     path('admin/pap-settings/', AdminPlayConfigurationView.as_view(), name='admin_pap_settings'),
+    path('admin/ads/banners/', AdminBannerAdListView.as_view(), name='admin_banner_ad_list'),
+    path('admin/ads/banners/<int:pk>/', AdminBannerAdDetailView.as_view(), name='admin_banner_ad_detail'),
+    path('admin/ads/audio/', AdminAudioAdListView.as_view(), name='admin_audio_ad_list'),
+    path('admin/ads/audio/<int:pk>/', AdminAudioAdDetailView.as_view(), name='admin_audio_ad_detail'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),

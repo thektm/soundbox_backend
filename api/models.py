@@ -1026,3 +1026,54 @@ class Report(models.Model):
     def related(self):
         """Return the related object (Song or Artist)."""
         return self.song or self.artist
+
+
+class PaymentTransaction(models.Model):
+    """Record of user payments/transactions."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payment_transactions')
+    transaction_id = models.CharField(max_length=255, unique=True)
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Transaction {self.transaction_id} - {self.user.phone_number} ({self.amount})"
+
+
+class BannerAd(models.Model):
+    """Banner advertisements for the app."""
+    title = models.CharField(max_length=255)
+    image = models.URLField(max_length=500, help_text="R2 CDN URL for banner image")
+    navigate_link = models.URLField(max_length=500, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.title
+
+
+class AudioAd(models.Model):
+    """Audio advertisements played during streams."""
+    title = models.CharField(max_length=255)
+    audio_url = models.URLField(max_length=500, help_text="R2 CDN URL for audio file")
+    image_cover = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for ad cover image")
+    navigate_link = models.URLField(max_length=500, blank=True, null=True)
+    duration = models.PositiveIntegerField(help_text="Duration in seconds")
+    skippable_after = models.PositiveIntegerField(default=5, help_text="Seconds after which the ad can be skipped")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.title
+        return self.song or self.artist

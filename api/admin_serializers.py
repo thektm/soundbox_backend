@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration
+from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -114,3 +114,25 @@ class AdminPlayConfigurationSerializer(serializers.ModelSerializer):
             'premium_plan_price', 'per_normal_play_pay', 'per_premium_play_pay', 'ad_frequency', 'updated_at'
         ]
         read_only_fields = ['updated_at']
+
+
+class AdminBannerAdSerializer(serializers.ModelSerializer):
+    image_upload = serializers.ImageField(write_only=True, required=False)
+
+    class Meta:
+        model = BannerAd
+        fields = ['id', 'title', 'image', 'image_upload', 'navigate_link', 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'image', 'created_at', 'updated_at']
+
+
+class AdminAudioAdSerializer(serializers.ModelSerializer):
+    audio_upload = serializers.FileField(write_only=True, required=False)
+    image_cover_upload = serializers.ImageField(write_only=True, required=False)
+
+    class Meta:
+        model = AudioAd
+        fields = [
+            'id', 'title', 'audio_url', 'audio_upload', 'image_cover', 'image_cover_upload',
+            'navigate_link', 'duration', 'skippable_after', 'is_active', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'audio_url', 'image_cover', 'created_at', 'updated_at']

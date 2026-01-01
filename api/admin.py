@@ -5,7 +5,8 @@ from django.http import HttpResponseRedirect
 from .models import (
     Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
-    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration
+    ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
+    PaymentTransaction, BannerAd, AudioAd
 )
 from .models import ActivePlayback
 
@@ -464,3 +465,27 @@ class ActivePlaybackAdmin(admin.ModelAdmin):
     list_filter = ('start_time', 'expiration_time')
     search_fields = ('user__phone_number', 'song__title')
     readonly_fields = ('start_time',)
+
+
+@admin.register(PaymentTransaction)
+class PaymentTransactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'transaction_id', 'amount', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = ('user__phone_number', 'transaction_id', 'description')
+    readonly_fields = ('created_at',)
+
+
+@admin.register(BannerAd)
+class BannerAdAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'is_active', 'created_at')
+    list_filter = ('is_active', 'created_at')
+    search_fields = ('title', 'navigate_link')
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(AudioAd)
+class AudioAdAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'duration', 'skippable_after', 'is_active', 'created_at')
+    list_filter = ('is_active', 'created_at')
+    search_fields = ('title', 'navigate_link')
+    readonly_fields = ('created_at', 'updated_at')

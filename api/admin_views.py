@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
-from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration
+from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
@@ -12,7 +12,7 @@ from decimal import Decimal
 from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
     AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer,
-    AdminPlayConfigurationSerializer
+    AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
@@ -449,6 +449,152 @@ class AdminPlayConfigurationView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminBannerAdListView(APIView):
+    """List and create banner ads for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        ads = BannerAd.objects.all().order_by('-created_at')
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(ads, request)
+        serializer = AdminBannerAdSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        data = request.data.copy()
+        image_file = request.FILES.get('image_upload')
+        if image_file:
+            safe_title = "".join([c for c in data.get('title', 'banner') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"banner_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            image_url, _ = upload_file_to_r2(image_file, folder='ads/banners', custom_filename=filename)
+            data['image'] = image_url
+
+        serializer = AdminBannerAdSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminBannerAdDetailView(APIView):
+    """Retrieve, update or delete a banner ad for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        ad = get_object_or_404(BannerAd, pk=pk)
+        serializer = AdminBannerAdSerializer(ad)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        ad = get_object_or_404(BannerAd, pk=pk)
+        data = request.data.copy()
+        image_file = request.FILES.get('image_upload')
+        if image_file:
+            safe_title = "".join([c for c in data.get('title', ad.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"banner_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            image_url, _ = upload_file_to_r2(image_file, folder='ads/banners', custom_filename=filename)
+            data['image'] = image_url
+
+        serializer = AdminBannerAdSerializer(ad, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        ad = get_object_or_404(BannerAd, pk=pk)
+        ad.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminAudioAdListView(APIView):
+    """List and create audio ads for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        ads = AudioAd.objects.all().order_by('-created_at')
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(ads, request)
+        serializer = AdminAudioAdSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        data = request.data.copy()
+        audio_file = request.FILES.get('audio_upload')
+        if audio_file:
+            safe_title = "".join([c for c in data.get('title', 'audio_ad') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            audio_url, _ = upload_file_to_r2(audio_file, folder='ads/audio', custom_filename=filename)
+            data['audio_url'] = audio_url
+            
+            # Try to get duration if not provided
+            if not data.get('duration'):
+                duration, _, _ = get_audio_info(audio_file)
+                if duration:
+                    data['duration'] = duration
+
+        image_file = request.FILES.get('image_cover_upload')
+        if image_file:
+            safe_title = "".join([c for c in data.get('title', 'audio_ad') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"audio_ad_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            image_url, _ = upload_file_to_r2(image_file, folder='ads/audio/covers', custom_filename=filename)
+            data['image_cover'] = image_url
+
+        serializer = AdminAudioAdSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminAudioAdDetailView(APIView):
+    """Retrieve, update or delete an audio ad for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        ad = get_object_or_404(AudioAd, pk=pk)
+        serializer = AdminAudioAdSerializer(ad)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        ad = get_object_or_404(AudioAd, pk=pk)
+        data = request.data.copy()
+        
+        audio_file = request.FILES.get('audio_upload')
+        if audio_file:
+            safe_title = "".join([c for c in data.get('title', ad.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            audio_url, _ = upload_file_to_r2(audio_file, folder='ads/audio', custom_filename=filename)
+            data['audio_url'] = audio_url
+            
+            if not data.get('duration'):
+                duration, _, _ = get_audio_info(audio_file)
+                if duration:
+                    data['duration'] = duration
+
+        image_file = request.FILES.get('image_cover_upload')
+        if image_file:
+            safe_title = "".join([c for c in data.get('title', ad.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"audio_ad_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            image_url, _ = upload_file_to_r2(image_file, folder='ads/audio/covers', custom_filename=filename)
+            data['image_cover'] = image_url
+
+        serializer = AdminAudioAdSerializer(ad, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        ad = get_object_or_404(AudioAd, pk=pk)
+        ad.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AdminAlbumListView(APIView):
