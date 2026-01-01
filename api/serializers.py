@@ -580,6 +580,30 @@ class SubGenreSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+class SlimGenreSerializer(serializers.ModelSerializer):
+    title = serializers.CharField(source='name', read_only=True)
+
+    class Meta:
+        model = Genre
+        fields = ['id', 'title']
+
+
+class SlimMoodSerializer(serializers.ModelSerializer):
+    title = serializers.CharField(source='name', read_only=True)
+
+    class Meta:
+        model = Mood
+        fields = ['id', 'title']
+
+
+class SlimTagSerializer(serializers.ModelSerializer):
+    title = serializers.CharField(source='name', read_only=True)
+
+    class Meta:
+        model = Tag
+        fields = ['id', 'title']
+
+
 class SongSerializer(serializers.ModelSerializer):
     """Serializer for Song model with full details"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
@@ -630,16 +654,16 @@ class SongSerializer(serializers.ModelSerializer):
     tag_ids = serializers.SerializerMethodField()
 
     def get_genre_ids(self, obj):
-        return [genre.name for genre in obj.genres.all()]
+        return [{'id': genre.id, 'title': genre.name} for genre in obj.genres.all()]
 
     def get_sub_genre_ids(self, obj):
-        return [sub_genre.name for sub_genre in obj.sub_genres.all()]
+        return [{'id': sub_genre.id, 'title': sub_genre.name} for sub_genre in obj.sub_genres.all()]
 
     def get_mood_ids(self, obj):
-        return [mood.name for mood in obj.moods.all()]
+        return [{'id': mood.id, 'title': mood.name} for mood in obj.moods.all()]
 
     def get_tag_ids(self, obj):
-        return [tag.name for tag in obj.tags.all()]
+        return [{'id': tag.id, 'title': tag.name} for tag in obj.tags.all()]
     
     # Read-only paginated similar songs block
     similar_songs = serializers.SerializerMethodField()
@@ -1029,6 +1053,19 @@ class PlaylistSerializer(serializers.ModelSerializer):
             'genres', 'moods', 'tags', 'songs',
             'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
         ]
+        read_only_fields = ['id', 'created_at']
+
+
+class PlaylistForEventSerializer(serializers.ModelSerializer):
+    """Lightweight playlist serializer for EventPlaylist endpoint: use slim genre/mood/tag representation without slug."""
+    genres = SlimGenreSerializer(many=True, read_only=True)
+    moods = SlimMoodSerializer(many=True, read_only=True)
+    tags = SlimTagSerializer(many=True, read_only=True)
+    songs = SongSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Playlist
+        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = ['id', 'created_at']
 
 
@@ -1427,8 +1464,9 @@ class SearchResultSerializer(serializers.Serializer):
 
 class EventPlaylistSerializer(serializers.ModelSerializer):
     """Serializer for EventPlaylist model"""
-    playlists = PlaylistSerializer(many=True, read_only=True)
-    
+    # use compact playlist serializer that omits slug fields on nested genres/moods/tags
+    playlists = PlaylistForEventSerializer(many=True, read_only=True)
+
     class Meta:
         model = EventPlaylist
         fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
