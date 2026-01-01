@@ -57,6 +57,19 @@ def generate_otp(length=4):
     return get_random_string(length=length, allowed_chars='0123456789')
 
 
+def parse_artist_flag(request) -> bool:
+    """Read `artist` flag from query params only (no body fallback)."""
+    try:
+        val = request.query_params.get('artist')
+    except Exception:
+        val = None
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return False
+    return str(val).lower() in ('1', 'true', 'yes', 'on')
+
+
 def hash_code(code: str) -> str:
     # use Django's make_password for salted hash
     return make_password(code)
@@ -227,7 +240,9 @@ class AuthRegisterView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
-        # No artist or artistPassword accepted here; verification only requires phone+otp
+        artist_flag = parse_artist_flag(request)
+        # when `artist` param is true treat provided `password` as artist password
+        artist_password = password if artist_flag else None
         # If user exists
         existing = User.objects.filter(phone_number=phone).first()
         if existing:
@@ -292,8 +307,10 @@ class AuthVerifyView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         otp = serializer.validated_data['otp']
-        artist_flag = serializer.validated_data.get('artist', False)
-        artist_password = serializer.validated_data.get('artistPassword')
+        artist_flag = parse_artist_flag(request)
+        # No artist password is accepted in verify body. If artist flag is set,
+        # only add the artist role (password should have been provided during registration).
+        artist_password = None
         purpose = OtpCode.PURPOSE_VERIFY
         user = get_object_or_404(User, phone_number=phone)
         # find latest unconsumed otp
@@ -313,7 +330,13 @@ class AuthVerifyView(APIView):
         otp_obj.consumed = True
         otp_obj.save(update_fields=['consumed'])
         user.is_verified = True
-        user.save(update_fields=['is_verified'])
+        # If client requested artist role during verify, add artist role and set separate artist password
+        if artist_flag:
+            if User.ROLE_ARTIST not in user.roles:
+                user.roles.append(User.ROLE_ARTIST)
+            if artist_password:
+                user.set_artist_password(artist_password)
+        user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])
         tokens = issue_tokens_for_user(user, request)
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
@@ -334,7 +357,7 @@ class LoginPasswordView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
-        artist_flag = serializer.validated_data.get('artist', False)
+        artist_flag = parse_artist_flag(request)
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
@@ -542,7 +565,7 @@ class PasswordResetView(APIView):
         phone = serializer.validated_data.get('phone')
         otp = serializer.validated_data.get('otp')
         new_password = serializer.validated_data.get('newPassword')
-        artist_flag = serializer.validated_data.get('artist', False)
+        artist_flag = parse_artist_flag(request)
         if phone:
             phone = normalize_phone(phone)
             try:
@@ -752,7 +775,7 @@ class ChangePasswordView(APIView):
         
         current_password = serializer.validated_data['currentPassword']
         new_password = serializer.validated_data['newPassword']
-        artist_flag = serializer.validated_data.get('artist', False)
+        artist_flag = parse_artist_flag(request)
         user = request.user
 
         # Validate with the correct password type

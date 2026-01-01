@@ -266,8 +266,7 @@ class PhoneSerializer(serializers.Serializer):
 class RegisterRequestSerializer(serializers.Serializer):
     phone = serializers.CharField()
     password = serializers.CharField(write_only=True)
-    artist = serializers.BooleanField(required=False)
-    artistPassword = serializers.CharField(write_only=True, required=False)
+    # `artist` flag is taken from query params now; password used as artist password when artist=true
 
 
 class VerifySerializer(serializers.Serializer):
@@ -278,7 +277,6 @@ class VerifySerializer(serializers.Serializer):
 class LoginPasswordSerializer(serializers.Serializer):
     phone = serializers.CharField()
     password = serializers.CharField(write_only=True)
-    artist = serializers.BooleanField(required=False)
 
 
 class LoginOtpRequestSerializer(serializers.Serializer):
@@ -292,7 +290,6 @@ class LoginOtpVerifySerializer(serializers.Serializer):
 
 class ForgotPasswordSerializer(serializers.Serializer):
     phone = serializers.CharField()
-    artist = serializers.BooleanField(required=False)
 
 
 class PasswordResetSerializer(serializers.Serializer):
@@ -300,7 +297,6 @@ class PasswordResetSerializer(serializers.Serializer):
     otp = serializers.CharField(required=False)
     newPassword = serializers.CharField(write_only=True)
     resetToken = serializers.CharField(required=False)
-    artist = serializers.BooleanField(required=False)
 
 
 class TokenRefreshRequestSerializer(serializers.Serializer):
@@ -314,7 +310,6 @@ class LogoutSerializer(serializers.Serializer):
 class ChangePasswordSerializer(serializers.Serializer):
     currentPassword = serializers.CharField(write_only=True)
     newPassword = serializers.CharField(write_only=True)
-    artist = serializers.BooleanField(required=False)
 
 
 class ArtistSerializer(serializers.ModelSerializer):
