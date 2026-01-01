@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Artist, ArtistAuth, NotificationSetting
+from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -39,3 +39,32 @@ class AdminArtistAuthSerializer(serializers.ModelSerializer):
             'biography', 'national_id_image', 'status', 'is_verified', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+class AdminSongSerializer(serializers.ModelSerializer):
+    # We use FileField for uploads, but the model stores URLField
+    audio_file_upload = serializers.FileField(write_only=True, required=False)
+    cover_image_upload = serializers.ImageField(write_only=True, required=False)
+    
+    # Display fields
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+    album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+
+    # JSON fields as ListFields for better form-data handling
+    featured_artists = serializers.ListField(child=serializers.CharField(), required=False)
+    producers = serializers.ListField(child=serializers.CharField(), required=False)
+    composers = serializers.ListField(child=serializers.CharField(), required=False)
+    lyricists = serializers.ListField(child=serializers.CharField(), required=False)
+
+    class Meta:
+        model = Song
+        fields = [
+            'id', 'title', 'artist', 'artist_name', 'featured_artists', 'album', 'album_title',
+            'is_single', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
+            'duration_seconds', 'plays', 'status', 'release_date', 'language',
+            'genres', 'sub_genres', 'moods', 'tags', 'description', 'lyrics',
+            'tempo', 'energy', 'danceability', 'valence', 'acousticness',
+            'instrumentalness', 'live_performed', 'speechiness', 'label',
+            'producers', 'composers', 'lyricists', 'credits', 'uploader',
+            'created_at', 'updated_at', 'audio_file_upload', 'cover_image_upload'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'plays']

@@ -170,7 +170,7 @@ class SongAdmin(admin.ModelAdmin):
             )
         }),
         ('Files & Media', {
-            'fields': ('audio_file', 'cover_image', 'original_format')
+            'fields': ('audio_file','converted_audio_url', 'cover_image', 'original_format')
         }),
         ('Playback Information', {
             'fields': ('duration_seconds', 'duration_display', 'plays')

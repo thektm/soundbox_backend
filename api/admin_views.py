@@ -3,12 +3,16 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
-from .models import User, Artist, ArtistAuth
+from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
-from .admin_serializers import AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer
+from django.db.models import Sum
+from decimal import Decimal
+from .admin_serializers import AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, AdminSongSerializer
 from rest_framework.parsers import MultiPartParser, FormParser
+from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
+import os
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -145,33 +149,223 @@ class AdminPendingArtistDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class AdminStreamSummaryView(APIView):
-        """Return overall play counts summary for admin dashboards.
+class AdminHomeSummaryView(APIView):
+    """Return overall stream + pay summary for the admin home/dashboard.
 
-        Response:
-        {
-            "total": int,
-            "last_30_days": int,
-            "last_7_days": int,
-            "last_24_hours": int
-        }
-        """
-        permission_classes = [permissions.IsAdminUser]
+    Response includes counts and pay sums for all-time, last 30 days, last 7 days, and last 24 hours.
+    {
+      "total": int,
+      "last_30_days": int,
+      "last_7_days": int,
+      "last_24_hours": int,
+      "total_pay": float,
+      "pay_last_30_days": float,
+      "pay_last_7_days": float,
+      "pay_last_24_hours": float,
+    }
+    """
+    permission_classes = [permissions.IsAdminUser]
 
-        def get(self, request):
-                now = timezone.now()
-                last_24 = now - timedelta(days=1)
-                last_7 = now - timedelta(days=7)
-                last_30 = now - timedelta(days=30)
+    def _sum_pay(self, qs):
+        val = qs.aggregate(total=Sum('pay'))['total']
+        if val is None:
+            return 0.0
+        if isinstance(val, Decimal):
+            return float(val)
+        return float(val)
 
-                total = PlayCount.objects.count()
-                last_30_count = PlayCount.objects.filter(created_at__gte=last_30).count()
-                last_7_count = PlayCount.objects.filter(created_at__gte=last_7).count()
-                last_24_count = PlayCount.objects.filter(created_at__gte=last_24).count()
+    def get(self, request):
+        now = timezone.now()
+        last_24 = now - timedelta(days=1)
+        last_7 = now - timedelta(days=7)
+        last_30 = now - timedelta(days=30)
 
-                return Response({
-                        'total': total,
-                        'last_30_days': last_30_count,
-                        'last_7_days': last_7_count,
-                        'last_24_hours': last_24_count,
-                })
+        total = PlayCount.objects.count()
+        last_30_count = PlayCount.objects.filter(created_at__gte=last_30).count()
+        last_7_count = PlayCount.objects.filter(created_at__gte=last_7).count()
+        last_24_count = PlayCount.objects.filter(created_at__gte=last_24).count()
+
+        total_pay = self._sum_pay(PlayCount.objects.all())
+        pay_last_30 = self._sum_pay(PlayCount.objects.filter(created_at__gte=last_30))
+        pay_last_7 = self._sum_pay(PlayCount.objects.filter(created_at__gte=last_7))
+        pay_last_24 = self._sum_pay(PlayCount.objects.filter(created_at__gte=last_24))
+
+        # Audience users: users who have the audience role
+        try:
+            audience_count = User.objects.filter(roles__contains=User.ROLE_AUDIENCE).count()
+        except Exception:
+            # Fallback for databases/ORM that don't support JSON contains lookups
+            audience_count = User.objects.filter(roles__icontains=User.ROLE_AUDIENCE).count()
+
+        # Artist profiles count
+        artist_profiles_count = Artist.objects.count()
+
+        return Response({
+            'total': total,
+            'last_30_days': last_30_count,
+            'last_7_days': last_7_count,
+            'last_24_hours': last_24_count,
+            'total_pay': total_pay,
+            'pay_last_30_days': pay_last_30,
+            'pay_last_7_days': pay_last_7,
+            'pay_last_24_hours': pay_last_24,
+            'audience_count': audience_count,
+            'artist_profiles_count': artist_profiles_count,
+        })
+
+
+class AdminUserSearchView(APIView):
+    """Search/list users, artists or pending artist submissions for admin.
+
+    Query params:
+    - type: one of ['audience', 'artist', 'pend_artist'] (default 'audience')
+
+    Results are paginated using `AdminPagination`.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        typ = request.query_params.get('type', 'audience')
+        paginator = AdminPagination()
+
+        if typ == 'audience':
+            qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE).order_by('-date_joined')
+            serializer_cls = AdminUserSerializer
+        elif typ == 'artist':
+            qs = Artist.objects.all().order_by('-created_at')
+            serializer_cls = AdminArtistSerializer
+        elif typ == 'pend_artist':
+            qs = ArtistAuth.objects.exclude(status__in=[ArtistAuth.STATUS_ACCEPTED, ArtistAuth.STATUS_REJECTED]).order_by('-created_at')
+            serializer_cls = AdminArtistAuthSerializer
+        else:
+            return Response({'error': 'Invalid type parameter. Use audience|artist|pend_artist'}, status=status.HTTP_400_BAD_REQUEST)
+
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = serializer_cls(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminSongListView(APIView):
+    """List songs for admin with status filtering.
+    
+    Query params:
+    - status: filter by song status (default 'published')
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        status_filter = request.query_params.get('status', Song.STATUS_PUBLISHED)
+        songs = Song.objects.filter(status=status_filter).order_by('-created_at')
+        
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(songs, request)
+        serializer = AdminSongSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminSongDetailView(APIView):
+    """Retrieve, update or delete a song for admin.
+    
+    Supports flat form-data for file uploads.
+    """
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        song = get_object_or_404(Song, pk=pk)
+        serializer = AdminSongSerializer(song)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        song = get_object_or_404(Song, pk=pk)
+        return self._update_song(request, song, partial=True)
+
+    def put(self, request, pk):
+        song = get_object_or_404(Song, pk=pk)
+        return self._update_song(request, song, partial=False)
+
+    def delete(self, request, pk):
+        song = get_object_or_404(Song, pk=pk)
+        song.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _update_song(self, request, song, partial=False):
+        data = request.data.copy()
+        
+        # Ensure list fields are correctly extracted from QueryDict
+        for field in ['featured_artists', 'producers', 'composers', 'lyricists', 'genres', 'sub_genres', 'moods', 'tags']:
+            if field in data and hasattr(data, 'getlist'):
+                # Only use getlist if it's actually a list of values
+                # Sometimes frontend might send a single value or a comma-separated string
+                val = data.getlist(field)
+                if len(val) == 1 and ',' in val[0]:
+                    data[field] = [v.strip() for v in val[0].split(',')]
+                else:
+                    data[field] = val
+
+        # Handle audio file upload
+        audio_file = request.FILES.get('audio_file_upload')
+        if audio_file:
+            title = data.get('title', song.title)
+            artist = song.artist
+            # If artist is being changed in the same request
+            if 'artist' in data:
+                try:
+                    artist = Artist.objects.get(pk=data['artist'])
+                except Artist.DoesNotExist:
+                    pass
+            
+            artist_name = artist.artistic_name or artist.name
+            
+            duration, bitrate, format_ext = get_audio_info(audio_file)
+            if not format_ext:
+                _, ext = os.path.splitext(audio_file.name)
+                format_ext = ext.lstrip('.').lower()
+            
+            bitrate_str = str(bitrate) if bitrate else "wav"
+            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            
+            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
+            
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+            data['audio_file'] = audio_url
+            data['duration_seconds'] = duration
+            data['original_format'] = format_ext
+            
+            # Handle 128kbps conversion
+            if format_ext == 'mp3' and bitrate and bitrate > 128:
+                try:
+                    converted_file = convert_to_128kbps(audio_file)
+                    conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                    data['converted_audio_url'] = converted_url
+                except Exception as e:
+                    print(f"Admin conversion failed: {e}")
+
+        # Handle cover image upload
+        cover_image = request.FILES.get('cover_image_upload')
+        if cover_image:
+            title = data.get('title', song.title)
+            artist = song.artist
+            if 'artist' in data:
+                try:
+                    artist = Artist.objects.get(pk=data['artist'])
+                except Artist.DoesNotExist:
+                    pass
+            artist_name = artist.artistic_name or artist.name
+            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            
+            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            
+            cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            data['cover_image'] = cover_url
+
+        serializer = AdminSongSerializer(song, data=data, partial=partial)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
