@@ -1146,6 +1146,7 @@ class AlbumDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Classification'])
 class GenreListView(APIView):
     """List and Create Genres"""
     def get_permissions(self):
@@ -1177,6 +1178,7 @@ class GenreListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Classification'])
 class GenreDetailView(APIView):
     """Retrieve, Update, and Delete Genre"""
     def get_permissions(self):
@@ -1247,6 +1249,7 @@ class GenreDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Classification'])
 class MoodListView(APIView):
     """List and Create Moods"""
     def get_permissions(self):
@@ -1278,6 +1281,7 @@ class MoodListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Classification'])
 class MoodDetailView(APIView):
     """Retrieve, Update, and Delete Mood"""
     def get_permissions(self):
@@ -1348,6 +1352,7 @@ class MoodDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Classification'])
 class TagListView(APIView):
     """List and Create Tags"""
     def get_permissions(self):
@@ -1379,6 +1384,7 @@ class TagListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Classification'])
 class TagDetailView(APIView):
     """Retrieve, Update, and Delete Tag"""
     def get_permissions(self):
@@ -1449,6 +1455,7 @@ class TagDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Classification'])
 class SubGenreListView(APIView):
     """List and Create SubGenres"""
     def get_permissions(self):
@@ -1480,6 +1487,7 @@ class SubGenreListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@extend_schema(tags=['Classification'])
 class SubGenreDetailView(APIView):
     """Retrieve, Update, and Delete SubGenre"""
     def get_permissions(self):
