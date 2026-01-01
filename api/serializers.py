@@ -429,7 +429,7 @@ class ArtistAuthSerializer(serializers.ModelSerializer):
     )
     national_id_image = serializers.ImageField(required=True)
     artist_claimed = serializers.PrimaryKeyRelatedField(
-        queryset=Artist.objects.all(), source='artist_claimed', required=False, allow_null=True
+        queryset=Artist.objects.all(), required=False, allow_null=True
     )
 
     class Meta:
