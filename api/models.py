@@ -744,6 +744,13 @@ class StreamAccess(models.Model):
     unique_otplay_id = models.CharField(max_length=64, unique=True, db_index=True, null=True, blank=True, help_text="Unique one-time play ID for play count tracking")
     unwrapped = models.BooleanField(default=False, help_text="Whether this token has been unwrapped")
     unwrapped_at = models.DateTimeField(null=True, blank=True)
+    
+    # Ad tracking fields
+    ad_required = models.BooleanField(default=False)
+    ad_seen = models.BooleanField(default=False)
+    ad_submit_id = models.CharField(max_length=64, unique=True, db_index=True, null=True, blank=True)
+    ad_object = models.ForeignKey('AudioAd', on_delete=models.SET_NULL, null=True, blank=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:

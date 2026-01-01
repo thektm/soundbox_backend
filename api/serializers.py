@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest, Report, Notification
+    DepositRequest, Report, Notification, AudioAd
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -1610,3 +1610,9 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = ['id', 'text', 'has_read', 'created_at']
         read_only_fields = ['id', 'created_at']
+
+
+class AudioAdSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AudioAd
+        fields = ['id', 'title', 'audio_url', 'image_cover', 'navigate_link', 'duration', 'skippable_after']

@@ -8,7 +8,7 @@ from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    ActivePlayback, DepositRequest, Report, Notification
+    ActivePlayback, DepositRequest, Report, Notification, AudioAd
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -41,6 +41,7 @@ from .serializers import (
     DepositRequestSerializer,
     ReportSerializer,
     NotificationSerializer,
+    AudioAdSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -62,6 +63,7 @@ import os
 import mimetypes
 import random
 import time
+import secrets
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
@@ -1403,7 +1405,7 @@ class SongStreamListView(generics.ListAPIView):
 class UnwrapStreamView(APIView):
     """
     Unwrap a stream URL token to get the actual signed URL.
-    Tracks unwraps and injects ad URLs every 15 unwraps.
+    Tracks unwraps and injects ad URLs based on PlayConfiguration.
     """
     permission_classes = [IsAuthenticated]
     
@@ -1421,27 +1423,23 @@ class UnwrapStreamView(APIView):
                     {'error': 'This stream token has already been used'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            # Check if user has any pending ads (required but not seen) from previous requests
+            pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
+            if pending_ad:
+                return Response({
+                    'type': 'ad',
+                    'ad': AudioAdSerializer(pending_ad.ad_object).data,
+                    'submit_id': pending_ad.ad_submit_id,
+                    'message': 'You must finish watching the previous advertisement',
+                    'pending': True
+                })
             
             # Mark as unwrapped
             stream_access.unwrapped = True
             stream_access.unwrapped_at = timezone.now()
             stream_access.save(update_fields=['unwrapped', 'unwrapped_at'])
             
-            # Record active playback for live listener count
-            from .models import ActivePlayback
-            # Delete previous records for this user (only one active song at a time)
-            ActivePlayback.objects.filter(user=request.user).delete()
-            
-            # Calculate expiration time based on song duration
-            duration = stream_access.song.duration_seconds or 0
-            expiration_time = timezone.now() + timedelta(seconds=duration)
-            
-            ActivePlayback.objects.create(
-                user=request.user,
-                song=stream_access.song,
-                expiration_time=expiration_time
-            )
-
             # Count unwrapped streams for this user (last 24 hours for fairness)
             cutoff_time = timezone.now() - timedelta(hours=24)
             unwrapped_count = StreamAccess.objects.filter(
@@ -1455,54 +1453,84 @@ class UnwrapStreamView(APIView):
             ad_freq = config.ad_frequency if config else 15
             
             if ad_freq > 0 and unwrapped_count % ad_freq == 0:
-                ad_url = getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
-                return Response({
-                    'type': 'ad',
-                    'url': ad_url,
-                    'message': 'Please listen to this brief advertisement',
-                    'duration': 30,  # ad duration in seconds
-                    'unwrap_count': unwrapped_count
-                })
+                # Pick a random active ad
+                active_ads = AudioAd.objects.filter(is_active=True)
+                if active_ads.exists():
+                    ad = random.choice(active_ads)
+                    submit_id = secrets.token_urlsafe(32)
+                    
+                    stream_access.ad_required = True
+                    stream_access.ad_seen = False
+                    stream_access.ad_submit_id = submit_id
+                    stream_access.ad_object = ad
+                    stream_access.save(update_fields=['ad_required', 'ad_seen', 'ad_submit_id', 'ad_object'])
+                    
+                    return Response({
+                        'type': 'ad',
+                        'ad': AudioAdSerializer(ad).data,
+                        'submit_id': submit_id,
+                        'message': 'Please listen to this brief advertisement',
+                        'unwrap_count': unwrapped_count
+                    })
             
-            # Extract object key from audio_file URL
-            audio_url = stream_access.song.audio_file
-            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-            
-            # Extract key from CDN URL and decode it properly
-            if audio_url.startswith(cdn_base):
-                object_key = audio_url.replace(cdn_base + '/', '')
-                # URL decode the key to handle encoded characters
-                from urllib.parse import unquote
-                object_key = unquote(object_key)
-            else:
-                # Fallback: try to extract path and decode
-                from urllib.parse import urlparse, unquote
-                parsed = urlparse(audio_url)
-                object_key = unquote(parsed.path.lstrip('/'))
-            
-            # If the stored audio URL points into our CDN (R2), generate a presigned R2 URL.
-            # Otherwise return the original audio_url as-is (external/public URL).
-            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-            if audio_url and audio_url.startswith(cdn_base):
-                signed_url = generate_signed_r2_url(object_key, expiration=3600)
-            else:
-                # return original URL (no signing) for external hosts
-                signed_url = audio_url
-
-            return Response({
-                'type': 'stream',
-                'url': signed_url,
-                'song_id': stream_access.song.id,
-                'song_title': stream_access.song.display_title,
-                'expires_in': 3600 if signed_url and signed_url.startswith(cdn_base) else None,
-                'unwrap_count': unwrapped_count
-            })
+            # No ad required, return stream response
+            return self._get_stream_response(request, stream_access, unwrapped_count)
             
         except StreamAccess.DoesNotExist:
             return Response(
                 {'error': 'Invalid or unauthorized stream token'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+    def _get_stream_response(self, request, stream_access, unwrapped_count):
+        """Helper to generate the final stream response with quality selection"""
+        song = stream_access.song
+        
+        # Quality selection: Default to low (128kbps) unless user is premium and chose high
+        quality = request.user.settings.get('stream_quality', 'low')
+        if quality == 'high' and song.audio_file:
+            audio_url = song.audio_file
+        elif song.converted_audio_url:
+            audio_url = song.converted_audio_url
+        else:
+            audio_url = song.audio_file
+
+        # Extract key for R2
+        cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+        from urllib.parse import unquote, urlparse
+        if audio_url.startswith(cdn_base):
+            object_key = unquote(audio_url.replace(cdn_base + '/', ''))
+        else:
+            parsed = urlparse(audio_url)
+            object_key = unquote(parsed.path.lstrip('/'))
+
+        # Generate signed URL
+        if audio_url and audio_url.startswith(cdn_base):
+            signed_url = generate_signed_r2_url(object_key, expiration=3600)
+            expires = 3600
+        else:
+            signed_url = audio_url
+            expires = None
+
+        # Record active playback for live listener count
+        ActivePlayback.objects.filter(user=request.user).delete()
+        duration = song.duration_seconds or 0
+        expiration_time = timezone.now() + timedelta(seconds=duration)
+        ActivePlayback.objects.create(
+            user=request.user,
+            song=song,
+            expiration_time=expiration_time
+        )
+
+        return Response({
+            'type': 'stream',
+            'url': signed_url,
+            'song_id': song.id,
+            'song_title': song.display_title,
+            'expires_in': expires,
+            'unwrap_count': unwrapped_count,
+            'unique_otplay_id': stream_access.unique_otplay_id
+        })
 
 
 class StreamShortRedirectView(APIView):
@@ -1526,6 +1554,17 @@ class StreamShortRedirectView(APIView):
                     {'error': 'This stream URL has already been used'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            # Check if user has any pending ads (required but not seen) from previous requests
+            pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
+            if pending_ad:
+                return Response({
+                    'type': 'ad',
+                    'ad': AudioAdSerializer(pending_ad.ad_object).data,
+                    'submit_id': pending_ad.ad_submit_id,
+                    'message': 'You must finish watching the previous advertisement',
+                    'pending': True
+                })
             
             # Mark as unwrapped
             stream_access.unwrapped = True
@@ -1540,97 +1579,78 @@ class StreamShortRedirectView(APIView):
                 unwrapped_at__gte=cutoff_time
             ).count()
             
-            # Every 15th unwrap gets an ad
-            if unwrapped_count % 15 == 0:
-                ad_url = getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
-                # Return JSON response for ad (can't redirect to ad)
-                return Response({
-                    'type': 'ad',
-                    'url': ad_url,
-                    'message': 'Please listen to this brief advertisement',
-                    'duration': 30,
-                    'unwrap_count': unwrapped_count
-                })
+            # Use ad frequency from configuration
+            config = PlayConfiguration.objects.last()
+            ad_freq = config.ad_frequency if config else 15
             
-            # Generate object key for R2
-            audio_url = stream_access.song.audio_file
-            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            if ad_freq > 0 and unwrapped_count % ad_freq == 0:
+                # Pick a random active ad
+                active_ads = AudioAd.objects.filter(is_active=True)
+                if active_ads.exists():
+                    ad = random.choice(active_ads)
+                    submit_id = secrets.token_urlsafe(32)
+                    
+                    stream_access.ad_required = True
+                    stream_access.ad_seen = False
+                    stream_access.ad_submit_id = submit_id
+                    stream_access.ad_object = ad
+                    stream_access.save(update_fields=['ad_required', 'ad_seen', 'ad_submit_id', 'ad_object'])
+                    
+                    return Response({
+                        'type': 'ad',
+                        'ad': AudioAdSerializer(ad).data,
+                        'submit_id': submit_id,
+                        'message': 'Please listen to this brief advertisement',
+                        'unwrap_count': unwrapped_count
+                    })
             
-            # Extract key from CDN URL and decode it properly
-            if audio_url.startswith(cdn_base):
-                object_key = audio_url.replace(cdn_base + '/', '')
-                # URL decode the key to handle encoded characters
-                from urllib.parse import unquote
-                object_key = unquote(object_key)
-            else:
-                # Fallback: try to extract path and decode
-                from urllib.parse import urlparse, unquote
-                parsed = urlparse(audio_url)
-                object_key = unquote(parsed.path.lstrip('/'))
-            
-            # Generate signed URL and return it
-            # Instead of returning the presigned R2 URL directly (which would be reusable),
-            # create a one-time server-controlled access token and return a link to it.
-            import secrets
-            from django.urls import reverse
-            # create unique one-time token (avoid collisions)
-            for _ in range(5):
-                one_time_token = secrets.token_urlsafe(32)
-                if not StreamAccess.objects.filter(one_time_token=one_time_token).exists():
-                    break
-            else:
-                # fallback to uuid
-                one_time_token = uuid.uuid4().hex
-
-            stream_access.one_time_token = one_time_token
-            stream_access.one_time_used = False
-            stream_access.one_time_expires_at = timezone.now() + timedelta(seconds=3600)
-            stream_access.save(update_fields=['one_time_token', 'one_time_used', 'one_time_expires_at'])
-
-            # Record active playback for live listener count
-            from .models import ActivePlayback
-            # Delete previous records for this user (only one active song at a time)
-            ActivePlayback.objects.filter(user=request.user).delete()
-            
-            # Calculate expiration time based on song duration
-            duration = stream_access.song.duration_seconds or 0
-            expiration_time = timezone.now() + timedelta(seconds=duration)
-            
-            ActivePlayback.objects.create(
-                user=request.user,
-                song=stream_access.song,
-                expiration_time=expiration_time
-            )
-
-            access_path = reverse('stream-access', kwargs={'token': one_time_token})
-            access_url = request.build_absolute_uri(access_path)
-            if access_url.startswith('http://'):
-                access_url = access_url.replace('http://', 'https://', 1)
-
-            # Also generate a signed URL for immediate use and return it (still store one-time token)
-            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-            if audio_url and audio_url.startswith(cdn_base):
-                signed_url = generate_signed_r2_url(object_key, expiration=3600)
-                expires = 3600
-            else:
-                signed_url = audio_url
-                expires = None
-
-            return Response({
-                'type': 'stream',
-                'url': signed_url,
-                'song_id': stream_access.song.id,
-                'song_title': stream_access.song.display_title,
-                'expires_in': expires,
-                'unwrap_count': unwrapped_count,
-                'unique_otplay_id': stream_access.unique_otplay_id
-            })
+            # No ad required, return stream response
+            return UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
             
         except StreamAccess.DoesNotExist:
             return Response(
                 {'error': 'Invalid or unauthorized stream URL'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+class AdSubmitView(APIView):
+    """
+    Endpoint to submit an ad as seen and get the final stream URL.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        submit_id = request.data.get('submit_id')
+        if not submit_id:
+            return Response({'error': 'submit_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            stream_access = StreamAccess.objects.select_related('song', 'user').get(
+                ad_submit_id=submit_id, 
+                user=request.user
+            )
+            
+            if stream_access.ad_seen:
+                return Response({'error': 'Ad already submitted'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Mark ad as seen
+            stream_access.ad_seen = True
+            stream_access.save(update_fields=['ad_seen'])
+            
+            # Count unwrapped streams for this user (last 24 hours)
+            cutoff_time = timezone.now() - timedelta(hours=24)
+            unwrapped_count = StreamAccess.objects.filter(
+                user=request.user,
+                unwrapped=True,
+                unwrapped_at__gte=cutoff_time
+            ).count()
+            
+            # Return the final stream response
+            return UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
+
+        except StreamAccess.DoesNotExist:
+            return Response({'error': 'Invalid submit_id'}, status=status.HTTP_404_NOT_FOUND)
 
 
 class StreamAccessView(APIView):
@@ -1651,12 +1671,24 @@ class StreamAccessView(APIView):
             if stream_access.one_time_expires_at and timezone.now() > stream_access.one_time_expires_at:
                 return Response({'error': 'This one-time access URL has expired'}, status=status.HTTP_410_GONE)
 
+            # Check if ad was required and seen
+            if stream_access.ad_required and not stream_access.ad_seen:
+                return Response({'error': 'Advertisement must be watched before accessing this stream'}, status=status.HTTP_403_FORBIDDEN)
+
             # Mark used before redirecting (best-effort; race-conditions remain small)
             stream_access.one_time_used = True
             stream_access.save(update_fields=['one_time_used'])
 
             # Build presigned R2 URL and redirect
-            audio_url = stream_access.song.audio_file
+            song = stream_access.song
+            quality = request.user.settings.get('stream_quality', 'low')
+            if quality == 'high' and song.audio_file:
+                audio_url = song.audio_file
+            elif song.converted_audio_url:
+                audio_url = song.converted_audio_url
+            else:
+                audio_url = song.audio_file
+
             cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
             if audio_url.startswith(cdn_base):
                 from urllib.parse import unquote

@@ -41,6 +41,7 @@ from .views import (
     SongStreamListView,
     UnwrapStreamView,
     StreamShortRedirectView,
+    AdSubmitView,
     PlayCountView,
     UserPlaylistListCreateView,
     UserPlaylistDetailView,
@@ -225,6 +226,7 @@ urlpatterns = [
     path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),
     path('stream/unwrap/<str:token>/', UnwrapStreamView.as_view(), name='unwrap-stream'),
     path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
+    path('ads/submit/', AdSubmitView.as_view(), name='ad_submit'),
     path('stream/access/<str:token>/',
         __import__('api.views', fromlist=['StreamAccessView']).StreamAccessView.as_view(),
         name='stream-access'),
@@ -252,6 +254,14 @@ urlpatterns = [
     path('rules/latest/', __import__('api.views', fromlist=['RulesLatestView']).RulesLatestView.as_view(), name='rules_latest'),
     path('rules/<int:pk>/', RulesDetailView.as_view(), name='rules_detail'),
     
+    # --- Notification Endpoints ---
+    path('notifications/', NotificationListView.as_view(), name='notification_list'),
+    path('notifications/read/', NotificationMarkReadView.as_view(), name='notification_mark_all_read'),
+    path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification_mark_read'),
+
+    # --- Report Endpoints ---
+    path('reports/', ReportCreateView.as_view(), name='report_create'),
+
     # --- Admin App Endpoints ---
     path('admin/users/', AdminUserListView.as_view(), name='admin_user_list'),
     path('admin/users/<int:pk>/', AdminUserDetailView.as_view(), name='admin_user_detail'),
@@ -286,13 +296,7 @@ urlpatterns = [
     path('admin/employees/', AdminEmployeeListView.as_view(), name='admin_employee_list'),
     path('admin/employees/<int:pk>/', AdminEmployeeDetailView.as_view(), name='admin_employee_detail'),
 
-    # --- Notification Endpoints ---
-    path('notifications/', NotificationListView.as_view(), name='notification_list'),
-    path('notifications/read/', NotificationMarkReadView.as_view(), name='notification_mark_all_read'),
-    path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification_mark_read'),
-
-    # --- Report Endpoints ---
-    path('reports/', ReportCreateView.as_view(), name='report_create'),
+    
 
     # Include router URLs (if any)
     path('', include(router.urls)),
