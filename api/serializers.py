@@ -418,6 +418,9 @@ class PopularArtistSerializer(ArtistSerializer):
     total_likes = serializers.IntegerField(read_only=True)
     total_playlist_adds = serializers.IntegerField(read_only=True)
 
+    class Meta(ArtistSerializer.Meta):
+        fields = ArtistSerializer.Meta.fields + ['total_plays', 'total_likes', 'total_playlist_adds']
+
 
 class ArtistAuthSerializer(serializers.ModelSerializer):
     """Serializer for ArtistAuth verification submissions."""
