@@ -974,7 +974,36 @@ class ArtistDetailView(APIView):
             discovered_on.append({'type': 'song', 'id': s.id, 'title': s.title, 'image': s.cover_image, 'artist': s.artist.name if s.artist else None})
 
         base_url = request.build_absolute_uri(request.path)
-        
+        # 5. Similar artists: score candidates by genre/mood overlap, shared monthly listeners and shared followers
+        # Gather artist's genre/mood ids from their songs
+        genre_ids = list(Song.objects.filter(artist=artist).values_list('genres__id', flat=True))
+        mood_ids = list(Song.objects.filter(artist=artist).values_list('moods__id', flat=True))
+        genre_ids = [g for g in set(genre_ids) if g]
+        mood_ids = [m for m in set(mood_ids) if m]
+
+        # Followers (user ids) who follow this artist
+        follower_user_ids = list(Follow.objects.filter(followed_artist=artist, follower_user__isnull=False).values_list('follower_user_id', flat=True))
+
+        # Monthly listeners (user ids) for this artist
+        monthly_user_ids = list(ArtistMonthlyListener.objects.filter(artist=artist).values_list('user_id', flat=True))
+
+        # Build candidate artists and annotate overlaps
+        candidates = Artist.objects.exclude(id=artist.id).annotate(
+            genre_overlap=Count('songs__genres', filter=Q(songs__genres__in=genre_ids), distinct=True),
+            mood_overlap=Count('songs__moods', filter=Q(songs__moods__in=mood_ids), distinct=True),
+            shared_listeners=Count('monthly_listener_records', filter=Q(monthly_listener_records__user__in=monthly_user_ids), distinct=True),
+            shared_followers=Count('follower_artist_relations', filter=Q(follower_artist_relations__follower_user__in=follower_user_ids), distinct=True),
+        )
+
+        from django.db.models import ExpressionWrapper, FloatField
+        score_expr = ExpressionWrapper(
+            F('genre_overlap') * 3 + F('mood_overlap') * 2 + F('shared_listeners') * 2 + F('shared_followers') * 1,
+            output_field=FloatField()
+        )
+
+        candidates = candidates.annotate(similarity_score=score_expr).filter(similarity_score__gt=0).order_by('-similarity_score')[:6]
+        similar_artists_data = PopularArtistSerializer(candidates, many=True, context={'request': request}).data
+
         return Response({
             'artist': artist_data,
             'top_songs': {
@@ -993,6 +1022,8 @@ class ArtistDetailView(APIView):
                 'next_page_link': f"{base_url}?type=latest_songs&page=2" if latest_songs_qs.count() > 5 else None
             },
             'discovered_on': discovered_on[:10]
+            ,
+            'similar_artists': similar_artists_data
         })
 
     @extend_schema(

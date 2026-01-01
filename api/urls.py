@@ -191,14 +191,12 @@ urlpatterns = [
     path('artist/auth/', ArtistAuthView.as_view(), name='artist_auth'),
     path('artist/settings/', __import__('api.views', fromlist=['ArtistSettingsView']).ArtistSettingsView.as_view(), name='artist_settings'),
     path('artist/settings/password/', __import__('api.views', fromlist=['ArtistChangePasswordView']).ArtistChangePasswordView.as_view(), name='artist_change_password'),
-    path('songs/upload/', SongUploadView.as_view(), name='song_upload'),
+    
 
     # --- Artist Discovery Endpoints ---
-    path('artists/', ArtistListView.as_view(), name='artist_list'),
     path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
 
-    # --- Album Endpoints ---
-    path('albums/', AlbumListView.as_view(), name='album_list'),
+    # --- Album Endpoints --
     path('albums/<int:pk>/', AlbumDetailView.as_view(), name='album_detail'),
     path('albums/<int:pk>/like/', AlbumLikeView.as_view(), name='album_like'),
 
@@ -215,21 +213,13 @@ urlpatterns = [
     path('tags/<int:pk>/', TagDetailView.as_view(), name='tag_detail'),
 
     # --- Song Endpoints ---
-    path('songs/', SongListView.as_view(), name='song_list'),
     path('songs/<int:pk>/', SongDetailView.as_view(), name='song_detail'),
     path('songs/<int:pk>/like/', SongLikeView.as_view(), name='song_like'),
     
-    # --- Media Upload Endpoints ---
-    path('upload/', R2UploadView.as_view(), name='r2_upload'),
-    
-    # --- Streaming & Playback Endpoints ---
-    path('songs/stream/', SongStreamListView.as_view(), name='song_stream_list'),
-    path('stream/unwrap/<str:token>/', UnwrapStreamView.as_view(), name='unwrap-stream'),
+    # --- Streaming & Playback Endpoints --
     path('stream/s/<str:token>/', StreamShortRedirectView.as_view(), name='stream-short'),
     path('ads/submit/', AdSubmitView.as_view(), name='ad_submit'),
-    path('stream/access/<str:token>/',
-        __import__('api.views', fromlist=['StreamAccessView']).StreamAccessView.as_view(),
-        name='stream-access'),
+    
     
     # --- Analytics & Search ---
     path('play/count/', PlayCountView.as_view(), name='play_count'),
