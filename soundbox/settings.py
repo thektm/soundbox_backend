@@ -122,6 +122,7 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API documentation for SoundBox project',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    'POSTPROCESSING_HOOKS': ['api.spectacular_hooks.tag_operations'],
 }
 
 # CORS - allow all origins for now (change in production)
