@@ -85,6 +85,9 @@ from .admin_views import (
     AdminSongDetailView,
     AdminReportListView,
     AdminReportDetailView,
+    AdminAlbumListView,
+    AdminAlbumDetailView,
+    AdminAlbumSongActionView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -245,6 +248,9 @@ urlpatterns = [
     path('admin/songs/<int:pk>/', AdminSongDetailView.as_view(), name='admin_song_detail'),
     path('admin/reports/', AdminReportListView.as_view(), name='admin_report_list'),
     path('admin/reports/<int:pk>/', AdminReportDetailView.as_view(), name='admin_report_detail'),
+    path('admin/albums/', AdminAlbumListView.as_view(), name='admin_album_list'),
+    path('admin/albums/<int:pk>/', AdminAlbumDetailView.as_view(), name='admin_album_detail'),
+    path('admin/albums/<int:album_id>/songs/<int:song_id>/', AdminAlbumSongActionView.as_view(), name='admin_album_song_action'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),

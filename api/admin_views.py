@@ -7,11 +7,11 @@ from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Sum
+from django.db.models import Sum, Count
 from decimal import Decimal
 from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
-    AdminSongSerializer, AdminReportSerializer
+    AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
@@ -425,3 +425,93 @@ class AdminReportDetailView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminAlbumListView(APIView):
+    """List albums for admin.
+    
+    Filters out "singles" (albums with only 1 song where that song is marked as is_single).
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        # Filter out albums that are effectively singles
+        # We'll filter albums that have more than 1 song OR have 1 song that is NOT a single.
+        qs = Album.objects.annotate(song_count=Count('songs')).filter(song_count__gt=0)
+        
+        # Exclude albums where song_count == 1 AND the song is_single=True
+        qs = qs.exclude(song_count=1, songs__is_single=True)
+        
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = AdminAlbumSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminAlbumDetailView(APIView):
+    """Retrieve, update or delete an album for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        album = get_object_or_404(Album, pk=pk)
+        serializer = AdminAlbumSerializer(album)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        album = get_object_or_404(Album, pk=pk)
+        return self._update_album(request, album, partial=True)
+
+    def put(self, request, pk):
+        album = get_object_or_404(Album, pk=pk)
+        return self._update_album(request, album, partial=False)
+
+    def delete(self, request, pk):
+        album = get_object_or_404(Album, pk=pk)
+        album.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _update_album(self, request, album, partial=False):
+        data = request.data.copy()
+        
+        # Handle cover image upload
+        cover_image = request.FILES.get('cover_image_upload')
+        if cover_image:
+            artist = album.artist
+            if 'artist' in data:
+                try:
+                    artist = Artist.objects.get(pk=data['artist'])
+                except Artist.DoesNotExist:
+                    pass
+            artist_name = artist.artistic_name or artist.name
+            safe_title = "".join([c for c in data.get('title', album.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            cover_filename = f"{safe_artist} - {safe_title}_album_cover"
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            data['cover_image'] = cover_url
+
+        serializer = AdminAlbumSerializer(album, data=data, partial=partial)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminAlbumSongActionView(APIView):
+    """Actions on songs within an album: remove from album or delete song."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, album_id, song_id):
+        action = request.data.get('action') # 'remove' or 'delete'
+        album = get_object_or_404(Album, pk=album_id)
+        song = get_object_or_404(Song, pk=song_id, album=album)
+        
+        if action == 'remove':
+            song.album = None
+            song.save()
+            return Response({"message": "Song removed from album"})
+        elif action == 'delete':
+            song.delete()
+            return Response({"message": "Song deleted successfully"})
+        else:
+            return Response({"error": "Invalid action. Use 'remove' or 'delete'"}, status=status.HTTP_400_BAD_REQUEST)

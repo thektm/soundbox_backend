@@ -82,3 +82,23 @@ class AdminReportSerializer(serializers.ModelSerializer):
             'text', 'has_reviewed', 'reviewed_at', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'song', 'artist', 'created_at', 'updated_at']
+
+
+class AdminAlbumSerializer(serializers.ModelSerializer):
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+    songs = AdminSongSerializer(many=True, read_only=True)
+    cover_image_upload = serializers.ImageField(write_only=True, required=False)
+    
+    # For write operations
+    genres = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, required=False)
+    sub_genres = serializers.PrimaryKeyRelatedField(queryset=SubGenre.objects.all(), many=True, required=False)
+    moods = serializers.PrimaryKeyRelatedField(queryset=Mood.objects.all(), many=True, required=False)
+
+    class Meta:
+        model = Album
+        fields = [
+            'id', 'title', 'artist', 'artist_name', 'cover_image', 'cover_image_upload',
+            'release_date', 'description', 'genres', 'sub_genres', 'moods',
+            'created_at', 'songs'
+        ]
+        read_only_fields = ['id', 'cover_image', 'created_at']
