@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import PermissionDenied
 from .models import User, OtpCode, RefreshToken
 from .serializers import (
     RegisterRequestSerializer,
@@ -156,6 +157,8 @@ def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5)
 
 
 def issue_tokens_for_user(user: User, request) -> dict:
+    if user.is_banned:
+        raise PermissionDenied("Your account has been banned.")
     refresh = SimpleRefreshToken.for_user(user)
     access = refresh.access_token
     # persist hashed refresh token for revocation / rotation tracking
@@ -220,6 +223,8 @@ class AuthRegisterView(APIView):
         # If user exists
         existing = User.objects.filter(phone_number=phone).first()
         if existing:
+            if existing.is_banned:
+                return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
             # If already verified, block registration
             if existing.is_verified:
                 # If client requested artist role, add it to the existing user
@@ -353,6 +358,8 @@ class LoginOtpRequestView(APIView):
         phone = normalize_phone(serializer.validated_data['phone'])
         try:
             user = User.objects.get(phone_number=phone)
+            if user.is_banned:
+                return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
         except User.DoesNotExist:
             return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
         # rate limit: require at least 60 seconds since last login OTP
@@ -516,6 +523,8 @@ class TokenRefreshView(APIView):
             rt = SimpleRefreshToken(refresh_token)
             user_id = rt['user_id']
             user = User.objects.get(id=user_id)
+            if user.is_banned:
+                return Response({'error': {'code': 'USER_BANNED', 'message': 'Your account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
         except Exception:
             return Response({'error': {'code': 'TOKEN_INVALID', 'message': 'Invalid refresh token'}}, status=status.HTTP_401_UNAUTHORIZED)
         

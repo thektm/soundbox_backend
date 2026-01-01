@@ -3,7 +3,11 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
-from .models import User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest
+from .models import (
+    User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, 
+    PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest,
+    SearchSection, EventPlaylist, Playlist
+)
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
@@ -13,7 +17,8 @@ from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
     AdminSongSerializer, AdminReportSerializer, AdminAlbumSerializer,
     AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer,
-    AdminPaymentTransactionSerializer, AdminDepositRequestSerializer
+    AdminPaymentTransactionSerializer, AdminDepositRequestSerializer,
+    AdminSearchSectionSerializer, AdminEventPlaylistSerializer, AdminPlaylistSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
@@ -69,6 +74,34 @@ class AdminUserDetailView(APIView):
         user = get_object_or_404(User, pk=pk)
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminUserBanView(APIView):
+    """Ban a user and delete their artist profile and content."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        user = get_object_or_404(User, pk=user_id)
+        
+        # 1. Mark as banned and inactive
+        user.is_banned = True
+        user.is_active = False
+        user.save()
+        
+        # 2. Delete artist profile if exists
+        if hasattr(user, 'artist_profile'):
+            artist = user.artist_profile
+            # This will cascade delete songs and albums
+            artist.delete()
+            
+        # 3. Delete user's playlists
+        user.user_playlists.all().delete()
+        
+        return Response({"message": f"User {user.phone_number} has been banned and their content deleted."})
 
 class AdminArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
@@ -790,3 +823,183 @@ class AdminDepositRequestListView(APIView):
         response.data['total_amount'] = queryset.aggregate(total=Sum('amount'))['total'] or 0
         response.data['total_count'] = queryset.count()
         return response
+
+
+class AdminSearchSectionListView(APIView):
+    """List and create search sections for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        sections = SearchSection.objects.all().order_by('-created_at')
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(sections, request)
+        serializer = AdminSearchSectionSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        data = request.data.copy()
+        icon_file = request.FILES.get('icon_logo_upload')
+        if icon_file:
+            safe_title = "".join([c for c in data.get('title', 'section') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"section_icon_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            icon_url, _ = upload_file_to_r2(icon_file, folder='sections/icons', custom_filename=filename)
+            data['icon_logo'] = icon_url
+
+        serializer = AdminSearchSectionSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save(created_by=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminSearchSectionDetailView(APIView):
+    """Retrieve, update or delete a search section for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        section = get_object_or_404(SearchSection, pk=pk)
+        serializer = AdminSearchSectionSerializer(section)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        section = get_object_or_404(SearchSection, pk=pk)
+        data = request.data.copy()
+        icon_file = request.FILES.get('icon_logo_upload')
+        if icon_file:
+            safe_title = "".join([c for c in data.get('title', section.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"section_icon_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            icon_url, _ = upload_file_to_r2(icon_file, folder='sections/icons', custom_filename=filename)
+            data['icon_logo'] = icon_url
+
+        serializer = AdminSearchSectionSerializer(section, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save(updated_by=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        section = get_object_or_404(SearchSection, pk=pk)
+        section.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminEventPlaylistListView(APIView):
+    """List and create event playlist groups for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        events = EventPlaylist.objects.all().order_by('-created_at')
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(events, request)
+        serializer = AdminEventPlaylistSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        data = request.data.copy()
+        cover_file = request.FILES.get('cover_image_upload')
+        if cover_file:
+            safe_title = "".join([c for c in data.get('title', 'event') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"event_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            cover_url, _ = upload_file_to_r2(cover_file, folder='events/covers', custom_filename=filename)
+            data['cover_image'] = cover_url
+
+        serializer = AdminEventPlaylistSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminEventPlaylistDetailView(APIView):
+    """Retrieve, update or delete an event playlist group for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        event = get_object_or_404(EventPlaylist, pk=pk)
+        serializer = AdminEventPlaylistSerializer(event)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        event = get_object_or_404(EventPlaylist, pk=pk)
+        data = request.data.copy()
+        cover_file = request.FILES.get('cover_image_upload')
+        if cover_file:
+            safe_title = "".join([c for c in data.get('title', event.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"event_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            cover_url, _ = upload_file_to_r2(cover_file, folder='events/covers', custom_filename=filename)
+            data['cover_image'] = cover_url
+
+        serializer = AdminEventPlaylistSerializer(event, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        event = get_object_or_404(EventPlaylist, pk=pk)
+        event.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminPlaylistListView(APIView):
+    """List and create playlists for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        playlists = Playlist.objects.all().order_by('-created_at')
+        paginator = AdminPagination()
+        result_page = paginator.paginate_queryset(playlists, request)
+        serializer = AdminPlaylistSerializer(result_page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        data = request.data.copy()
+        cover_file = request.FILES.get('cover_image_upload')
+        if cover_file:
+            safe_title = "".join([c for c in data.get('title', 'playlist') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"playlist_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            cover_url, _ = upload_file_to_r2(cover_file, folder='playlists/covers', custom_filename=filename)
+            data['cover_image'] = cover_url
+
+        serializer = AdminPlaylistSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save(created_by=Playlist.CREATED_BY_ADMIN)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminPlaylistDetailView(APIView):
+    """Retrieve, update or delete a playlist for admin."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request, pk):
+        playlist = get_object_or_404(Playlist, pk=pk)
+        serializer = AdminPlaylistSerializer(playlist)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        playlist = get_object_or_404(Playlist, pk=pk)
+        data = request.data.copy()
+        cover_file = request.FILES.get('cover_image_upload')
+        if cover_file:
+            safe_title = "".join([c for c in data.get('title', playlist.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            filename = f"playlist_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            cover_url, _ = upload_file_to_r2(cover_file, folder='playlists/covers', custom_filename=filename)
+            data['cover_image'] = cover_url
+
+        serializer = AdminPlaylistSerializer(playlist, data=data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        playlist = get_object_or_404(Playlist, pk=pk)
+        playlist.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

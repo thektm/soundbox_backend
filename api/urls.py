@@ -74,6 +74,7 @@ from .views import (
 from .admin_views import (
     AdminUserListView,
     AdminUserDetailView,
+    AdminUserBanView,
     AdminArtistListView,
     AdminArtistDetailView,
     AdminPendingArtistListView,
@@ -95,6 +96,12 @@ from .admin_views import (
     AdminFinanceSummaryView,
     AdminPaymentTransactionListView,
     AdminDepositRequestListView,
+    AdminSearchSectionListView,
+    AdminSearchSectionDetailView,
+    AdminEventPlaylistListView,
+    AdminEventPlaylistDetailView,
+    AdminPlaylistListView,
+    AdminPlaylistDetailView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -244,6 +251,7 @@ urlpatterns = [
     # --- Admin App Endpoints ---
     path('admin/users/', AdminUserListView.as_view(), name='admin_user_list'),
     path('admin/users/<int:pk>/', AdminUserDetailView.as_view(), name='admin_user_detail'),
+    path('admin/users/ban/', AdminUserBanView.as_view(), name='admin_user_ban'),
     path('admin/artists/', AdminArtistListView.as_view(), name='admin_artist_list'),
     path('admin/artists/<int:pk>/', AdminArtistDetailView.as_view(), name='admin_artist_detail'),
     path('admin/pend_artists/', AdminPendingArtistListView.as_view(), name='admin_pending_artist_list'),
@@ -265,6 +273,12 @@ urlpatterns = [
     path('admin/finance/', AdminFinanceSummaryView.as_view(), name='admin_finance_summary'),
     path('admin/finance/transactions/', AdminPaymentTransactionListView.as_view(), name='admin_payment_transaction_list'),
     path('admin/finance/deposits/', AdminDepositRequestListView.as_view(), name='admin_deposit_request_list'),
+    path('admin/sections/', AdminSearchSectionListView.as_view(), name='admin_search_section_list'),
+    path('admin/sections/<int:pk>/', AdminSearchSectionDetailView.as_view(), name='admin_search_section_detail'),
+    path('admin/event-playlist/', AdminEventPlaylistListView.as_view(), name='admin_event_playlist_list'),
+    path('admin/event-playlist/<int:pk>/', AdminEventPlaylistDetailView.as_view(), name='admin_event_playlist_detail'),
+    path('admin/playlists/', AdminPlaylistListView.as_view(), name='admin_playlist_list'),
+    path('admin/playlists/<int:pk>/', AdminPlaylistDetailView.as_view(), name='admin_playlist_detail'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),

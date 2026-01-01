@@ -58,6 +58,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(blank=True, null=True)
     roles = models.JSONField(default=list)
     is_active = models.BooleanField(default=True)
+    is_banned = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(auto_now_add=True)
     # Additional auth/audit fields
@@ -837,6 +838,7 @@ class EventPlaylist(models.Model):
     
     title = models.CharField(max_length=255)
     time_of_day = models.CharField(max_length=20, choices=TIME_CHOICES)
+    cover_image = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for event playlist cover")
     playlists = models.ManyToManyField(Playlist, related_name='event_playlists', blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

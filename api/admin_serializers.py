@@ -1,5 +1,9 @@
 from rest_framework import serializers
-from .models import User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest
+from .models import (
+    User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, 
+    Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, 
+    DepositRequest, SearchSection, EventPlaylist, Playlist
+)
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -154,3 +158,33 @@ class AdminDepositRequestSerializer(serializers.ModelSerializer):
         model = DepositRequest
         fields = ['id', 'artist', 'artist_name', 'amount', 'status', 'transaction_id', 'submission_date', 'status_change_date', 'summary']
         read_only_fields = ['id', 'submission_date', 'status_change_date']
+
+
+class AdminPlaylistSerializer(serializers.ModelSerializer):
+    cover_image_upload = serializers.ImageField(write_only=True, required=False)
+    
+    class Meta:
+        model = Playlist
+        fields = ['id', 'title', 'description', 'cover_image', 'cover_image_upload', 'created_by', 'created_at']
+        read_only_fields = ['id', 'cover_image', 'created_at']
+
+
+class AdminSearchSectionSerializer(serializers.ModelSerializer):
+    icon_logo_upload = serializers.ImageField(write_only=True, required=False)
+    
+    class Meta:
+        model = SearchSection
+        fields = [
+            'id', 'type', 'title', 'icon_logo', 'icon_logo_upload', 'item_size',
+            'songs', 'albums', 'playlists', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'icon_logo', 'created_at', 'updated_at']
+
+
+class AdminEventPlaylistSerializer(serializers.ModelSerializer):
+    cover_image_upload = serializers.ImageField(write_only=True, required=False)
+    
+    class Meta:
+        model = EventPlaylist
+        fields = ['id', 'title', 'time_of_day', 'cover_image', 'cover_image_upload', 'playlists', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'cover_image', 'created_at', 'updated_at']
