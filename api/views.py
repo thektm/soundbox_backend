@@ -55,6 +55,7 @@ from .utils import (
     upload_file_to_r2, generate_signed_r2_url, 
     get_audio_info, convert_to_128kbps
 )
+from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -83,6 +84,43 @@ class RegisterView(APIView):
         responses={200: UserSerializer}
     )
     def post(self, request, *args, **kwargs):
+        # If client requests artist-only flow: accept only phone and artistPassword,
+        # add or create user with artist role and send verification OTP even if already registered.
+        if request.data.get('artist'):
+            phone_raw = request.data.get('phone')
+            artist_password = request.data.get('artistPassword')
+            phone = normalize_phone(phone_raw or '')
+            if not phone:
+                return Response({'error': 'phone is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+            existing = User.objects.filter(phone_number=phone).first()
+            if existing:
+                if existing.is_banned:
+                    return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
+                # ensure artist role present
+                if User.ROLE_ARTIST not in (existing.roles or []):
+                    existing.roles = (existing.roles or []) + [User.ROLE_ARTIST]
+                if artist_password:
+                    existing.set_artist_password(artist_password)
+                existing.save()
+                otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
+                if sent:
+                    return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+                return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # create a new user with artist role (no main password required here)
+            create_kwargs = {'roles': [User.ROLE_AUDIENCE, User.ROLE_ARTIST]}
+            if artist_password:
+                create_kwargs['artist_password'] = artist_password
+            user = User.objects.create_user(phone_number=phone, password=None, **create_kwargs)
+            user.is_verified = False
+            user.save(update_fields=['is_verified'])
+            otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
+            if sent:
+                return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+            return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # default full registration flow
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
