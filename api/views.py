@@ -3,11 +3,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
+import re
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    ActivePlayback, DepositRequest, Report
+    ActivePlayback, DepositRequest, Report, Notification
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -39,6 +40,7 @@ from .serializers import (
     RulesSerializer,
     DepositRequestSerializer,
     ReportSerializer,
+    NotificationSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -4487,4 +4489,141 @@ class ReportCreateView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+
+class NotificationListView(generics.ListAPIView):
+    """List notifications for the authenticated user or their artist profile."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = NotificationSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        is_artist = self.request.query_params.get('artist', '').lower() == 'true'
+        
+        if is_artist:
+            if hasattr(user, 'artist_profile'):
+                return Notification.objects.filter(artist=user.artist_profile).order_by('-created_at')
+            return Notification.objects.none()
+        
+        return Notification.objects.filter(user=user).order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        notifications = list(queryset)
+        
+        if not notifications:
+            return self.get_paginated_response([])
+
+        # Grouping logic
+        grouped = {} # (template, has_read) -> {sum, obj, uses_farsi, template}
+        
+        FARSI_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
+        ENG_DIGITS = "0123456789"
+        farsi_to_eng = str.maketrans(FARSI_DIGITS, ENG_DIGITS)
+        eng_to_farsi = str.maketrans(ENG_DIGITS, FARSI_DIGITS)
+
+        for n in notifications:
+            text = n.text
+            has_read = n.has_read
+            
+            # Detect Farsi digits
+            uses_farsi = any(c in FARSI_DIGITS for c in text)
+            
+            # Normalize to English digits for extraction
+            norm_text = text.translate(farsi_to_eng)
+            
+            # Find all numbers
+            numbers = re.findall(r'\d+', norm_text)
+            
+            # We only group if there is exactly one number (the "value" the user mentioned)
+            if len(numbers) != 1:
+                # No numbers or multiple numbers: group by exact text
+                key = (text, has_read)
+                if key not in grouped:
+                    grouped[key] = {'sum': None, 'obj': n, 'is_numeric': False}
+                continue
+            
+            # Template: replace the single number with a placeholder
+            template = re.sub(r'\d+', '{}', norm_text)
+            key = (template, has_read)
+            val = int(numbers[0])
+            
+            if key not in grouped:
+                grouped[key] = {
+                    'sum': val,
+                    'obj': n,
+                    'is_numeric': True,
+                    'uses_farsi': uses_farsi,
+                    'template': template
+                }
+            else:
+                grouped[key]['sum'] += val
+                # Keep the latest object for metadata (id, created_at)
+                if n.created_at > grouped[key]['obj'].created_at:
+                    grouped[key]['obj'] = n
+
+        # Reconstruct grouped notifications
+        result = []
+        for data in grouped.values():
+            obj = data['obj']
+            if data['is_numeric']:
+                final_val = str(data['sum'])
+                if data['uses_farsi']:
+                    final_val = final_val.translate(eng_to_farsi)
+                
+                # Reconstruct text using the template
+                # We use the original language (Farsi/English) based on detection
+                text_template = data['template']
+                if data['uses_farsi']:
+                    # If it was Farsi, the template (from norm_text) is in English, 
+                    # but we want to return Farsi text.
+                    # Actually, norm_text only changed digits. 
+                    # So we translate the template back to Farsi digits if needed.
+                    text_template = text_template.translate(eng_to_farsi)
+                
+                obj.text = text_template.format(final_val)
+            
+            result.append(obj)
+            
+        # Sort by created_at desc
+        result.sort(key=lambda x: x.created_at, reverse=True)
+        
+        # Apply pagination to the grouped list
+        page = self.paginate_queryset(result)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(result, many=True)
+        return Response(serializer.data)
+
+
+class NotificationMarkReadView(APIView):
+    """Mark a specific notification or all notifications as read."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk=None):
+        user = request.user
+        is_artist = request.query_params.get('artist', '').lower() == 'true'
+        
+        if pk:
+            # Mark specific notification as read
+            notification = get_object_or_404(Notification, pk=pk)
+            # Security check: ensure notification belongs to the user or their artist profile
+            if notification.user == user or (is_artist and hasattr(user, 'artist_profile') and notification.artist == user.artist_profile):
+                notification.has_read = True
+                notification.save()
+                return Response({"message": "Notification marked as read"})
+            return Response({"error": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Mark all as read
+        if is_artist:
+            if hasattr(user, 'artist_profile'):
+                Notification.objects.filter(artist=user.artist_profile, has_read=False).update(has_read=True)
+            else:
+                return Response({"error": "No artist profile found"}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            Notification.objects.filter(user=user, has_read=False).update(has_read=True)
+            
+        return Response({"message": "All notifications marked as read"})
 

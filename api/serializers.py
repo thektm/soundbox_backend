@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest, Report
+    DepositRequest, Report, Notification
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -1603,3 +1603,10 @@ class ReportSerializer(serializers.ModelSerializer):
         if data.get('song') and data.get('artist'):
             raise serializers.ValidationError("Only one of song or artist should be provided.")
         return data
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ['id', 'text', 'has_read', 'created_at']
+        read_only_fields = ['id', 'created_at']

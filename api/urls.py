@@ -70,6 +70,8 @@ from .views import (
     RulesListCreateView,
     RulesDetailView,
     ReportCreateView,
+    NotificationListView,
+    NotificationMarkReadView,
 )
 from .admin_views import (
     AdminUserListView,
@@ -283,6 +285,11 @@ urlpatterns = [
     path('admin/playlists/<int:pk>/', AdminPlaylistDetailView.as_view(), name='admin_playlist_detail'),
     path('admin/employees/', AdminEmployeeListView.as_view(), name='admin_employee_list'),
     path('admin/employees/<int:pk>/', AdminEmployeeDetailView.as_view(), name='admin_employee_detail'),
+
+    # --- Notification Endpoints ---
+    path('notifications/', NotificationListView.as_view(), name='notification_list'),
+    path('notifications/read/', NotificationMarkReadView.as_view(), name='notification_mark_all_read'),
+    path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification_mark_read'),
 
     # --- Report Endpoints ---
     path('reports/', ReportCreateView.as_view(), name='report_create'),
