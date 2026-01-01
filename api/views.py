@@ -71,7 +71,8 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q, Count, Avg, F
 from django.shortcuts import get_object_or_404
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+from rest_framework import serializers
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 
 
 class RegisterView(APIView):
@@ -135,7 +136,16 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     @extend_schema(
         summary="ورود و دریافت توکن",
         description="دریافت توکن‌های Access و Refresh با استفاده از شماره موبایل و رمز عبور.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='TokenObtainResponse',
+                fields={
+                    'access': serializers.CharField(),
+                    'refresh': serializers.CharField(),
+                    'user': UserSerializer(),
+                }
+            )
+        }
     )
     def post(self, request, *args, **kwargs):
         return super().post(request, *args, **kwargs)
@@ -148,7 +158,15 @@ class CustomTokenRefreshView(TokenRefreshView):
     @extend_schema(
         summary="تمدید توکن",
         description="دریافت توکن Access جدید با استفاده از توکن Refresh.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='TokenRefreshResponse',
+                fields={
+                    'access': serializers.CharField(),
+                    'refresh': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request, *args, **kwargs):
         return super().post(request, *args, **kwargs)
@@ -234,7 +252,15 @@ class StreamQualityUpdateView(APIView):
     @extend_schema(
         summary="دریافت تنظیمات کیفیت پخش",
         description="مشاهده کیفیت پخش فعلی و نوع اشتراک کاربر.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='StreamQualityResponse',
+                fields={
+                    'stream_quality': serializers.CharField(),
+                    'plan': serializers.CharField(),
+                }
+            )
+        }
     )
     def get(self, request):
         return Response({
@@ -245,15 +271,20 @@ class StreamQualityUpdateView(APIView):
     @extend_schema(
         summary="تغییر کیفیت پخش",
         description="تنظیم کیفیت پخش موسیقی (معمولی یا بالا). کیفیت بالا مخصوص کاربران ویژه است.",
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'stream_quality': {'type': 'string', 'enum': ['medium', 'high']}
-                }
+        request=inline_serializer(
+            name='StreamQualityUpdate',
+            fields={
+                'stream_quality': serializers.ChoiceField(choices=['medium', 'high'])
             }
-        },
-        responses={200: OpenApiTypes.OBJECT}
+        ),
+        responses={
+            200: inline_serializer(
+                name='StreamQualityUpdateResponse',
+                fields={
+                    'stream_quality': serializers.CharField(),
+                }
+            )
+        }
     )
     def put(self, request):
         quality = request.data.get('stream_quality')
@@ -270,15 +301,20 @@ class StreamQualityUpdateView(APIView):
     @extend_schema(
         summary="تغییر کیفیت پخش (جزئی)",
         description="تنظیم کیفیت پخش موسیقی.",
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'stream_quality': {'type': 'string', 'enum': ['medium', 'high']}
-                }
+        request=inline_serializer(
+            name='StreamQualityPatch',
+            fields={
+                'stream_quality': serializers.ChoiceField(choices=['medium', 'high'])
             }
-        },
-        responses={200: OpenApiTypes.OBJECT}
+        ),
+        responses={
+            200: inline_serializer(
+                name='StreamQualityPatchResponse',
+                fields={
+                    'stream_quality': serializers.CharField(),
+                }
+            )
+        }
     )
     def patch(self, request):
         return self.put(request)
@@ -293,7 +329,15 @@ class UserFollowView(APIView):
         summary="دنبال کردن یا لغو دنبال کردن",
         description="دنبال کردن یک کاربر یا هنرمند. اگر قبلاً دنبال شده باشد، لغو می‌شود.",
         request=FollowRequestSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='FollowResponse',
+                fields={
+                    'status': serializers.CharField(),
+                    'message': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request):
         serializer = FollowRequestSerializer(data=request.data)
@@ -444,7 +488,26 @@ class MyLibraryView(APIView):
             OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
             OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='MyLibraryResponse',
+                fields={
+                    'items': inline_serializer(
+                        name='LibraryItem',
+                        fields={
+                            'id': serializers.IntegerField(),
+                            'type': serializers.CharField(),
+                            'viewed_at': serializers.DateTimeField(),
+                            'item': serializers.DictField(),
+                        },
+                        many=True
+                    ),
+                    'total': serializers.IntegerField(),
+                    'page': serializers.IntegerField(),
+                    'has_next': serializers.BooleanField(),
+                }
+            )
+        }
     )
     def get(self, request):
         content_type = request.query_params.get('type')
@@ -501,7 +564,15 @@ class R2UploadView(APIView):
         summary="آپلود فایل به R2",
         description="آپلود مستقیم فایل به فضای ابری R2 و دریافت لینک CDN.",
         request=UploadSerializer,
-        responses={201: OpenApiTypes.OBJECT}
+        responses={
+            201: inline_serializer(
+                name='R2UploadResponse',
+                fields={
+                    'key': serializers.CharField(),
+                    'url': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request, *args, **kwargs):
         serializer = UploadSerializer(data=request.data)
@@ -794,7 +865,15 @@ class PlaylistLikeView(APIView):
     @extend_schema(
         summary="لایک کردن پلی‌لیست",
         description="لایک کردن یا لغو لایک یک پلی‌لیست.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='PlaylistLikeResponse',
+                fields={
+                    'liked': serializers.BooleanField(),
+                    'likes_count': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def post(self, request, pk):
         try:
@@ -839,7 +918,40 @@ class ArtistDetailView(APIView):
             OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
             OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistDetailResponse',
+                fields={
+                    'artist': ArtistSerializer(),
+                    'top_songs': inline_serializer(
+                        name='ArtistTopSongs',
+                        fields={
+                            'items': SongStreamSerializer(many=True),
+                            'total': serializers.IntegerField(),
+                            'next_page_link': serializers.CharField(allow_null=True),
+                        }
+                    ),
+                    'albums': inline_serializer(
+                        name='ArtistAlbums',
+                        fields={
+                            'items': AlbumSerializer(many=True),
+                            'total': serializers.IntegerField(),
+                            'next_page_link': serializers.CharField(allow_null=True),
+                        }
+                    ),
+                    'latest_songs': inline_serializer(
+                        name='ArtistLatestSongs',
+                        fields={
+                            'items': SongStreamSerializer(many=True),
+                            'total': serializers.IntegerField(),
+                            'next_page_link': serializers.CharField(allow_null=True),
+                        }
+                    ),
+                    'discovered_on': serializers.ListField(child=serializers.DictField()),
+                    'similar_artists': PopularArtistSerializer(many=True),
+                }
+            )
+        }
     )
     def get(self, request, pk):
         artist = self.get_object(pk)
@@ -1066,7 +1178,7 @@ class GenreListView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     @extend_schema(
         summary="لیست سبک‌ها (ژانرها)",
@@ -1079,7 +1191,7 @@ class GenreListView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ایجاد سبک جدید",
+        summary="ایجاد سبک جدید (Admin Only)",
         description="ثبت یک سبک موسیقی جدید در سامانه.",
         request=GenreSerializer,
         responses={201: GenreSerializer}
@@ -1098,7 +1210,7 @@ class GenreDetailView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     def get_object(self, pk):
         try:
@@ -1119,7 +1231,7 @@ class GenreDetailView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ویرایش سبک (کامل)",
+        summary="ویرایش سبک (کامل) (Admin Only)",
         description="به‌روزرسانی تمامی اطلاعات یک سبک موسیقی.",
         request=GenreSerializer,
         responses={200: GenreSerializer}
@@ -1135,7 +1247,7 @@ class GenreDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="ویرایش سبک (جزئی)",
+        summary="ویرایش سبک (جزئی) (Admin Only)",
         description="به‌روزرسانی برخی از اطلاعات یک سبک موسیقی.",
         request=GenreSerializer,
         responses={200: GenreSerializer}
@@ -1151,7 +1263,7 @@ class GenreDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="حذف سبک",
+        summary="حذف سبک (Admin Only)",
         description="حذف یک سبک موسیقی از سامانه.",
         responses={204: OpenApiTypes.NONE}
     )
@@ -1169,7 +1281,7 @@ class MoodListView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     @extend_schema(
         summary="لیست حال و هواها (Moods)",
@@ -1182,7 +1294,7 @@ class MoodListView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ایجاد حال و هوای جدید",
+        summary="ایجاد حال و هوای جدید (Admin Only)",
         description="ثبت یک حال و هوای موسیقی جدید در سامانه.",
         request=MoodSerializer,
         responses={201: MoodSerializer}
@@ -1201,7 +1313,7 @@ class MoodDetailView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     def get_object(self, pk):
         try:
@@ -1222,7 +1334,7 @@ class MoodDetailView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ویرایش حال و هوا (کامل)",
+        summary="ویرایش حال و هوا (کامل) (Admin Only)",
         description="به‌روزرسانی تمامی اطلاعات یک حال و هوای موسیقی.",
         request=MoodSerializer,
         responses={200: MoodSerializer}
@@ -1238,7 +1350,7 @@ class MoodDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="ویرایش حال و هوا (جزئی)",
+        summary="ویرایش حال و هوا (جزئی) (Admin Only)",
         description="به‌روزرسانی برخی از اطلاعات یک حال و هوای موسیقی.",
         request=MoodSerializer,
         responses={200: MoodSerializer}
@@ -1254,7 +1366,7 @@ class MoodDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="حذف حال و هوا",
+        summary="حذف حال و هوا (Admin Only)",
         description="حذف یک حال و هوای موسیقی از سامانه.",
         responses={204: OpenApiTypes.NONE}
     )
@@ -1272,7 +1384,7 @@ class TagListView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     @extend_schema(
         summary="لیست تگ‌ها",
@@ -1285,7 +1397,7 @@ class TagListView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ایجاد تگ جدید",
+        summary="ایجاد تگ جدید (Admin Only)",
         description="ثبت یک تگ جدید در سامانه.",
         request=TagSerializer,
         responses={201: TagSerializer}
@@ -1304,7 +1416,7 @@ class TagDetailView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     def get_object(self, pk):
         try:
@@ -1325,7 +1437,7 @@ class TagDetailView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ویرایش تگ (کامل)",
+        summary="ویرایش تگ (کامل) (Admin Only)",
         description="به‌روزرسانی تمامی اطلاعات یک تگ.",
         request=TagSerializer,
         responses={200: TagSerializer}
@@ -1341,7 +1453,7 @@ class TagDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="ویرایش تگ (جزئی)",
+        summary="ویرایش تگ (جزئی) (Admin Only)",
         description="به‌روزرسانی برخی از اطلاعات یک تگ.",
         request=TagSerializer,
         responses={200: TagSerializer}
@@ -1357,7 +1469,7 @@ class TagDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="حذف تگ",
+        summary="حذف تگ (Admin Only)",
         description="حذف یک تگ از سامانه.",
         responses={204: OpenApiTypes.NONE}
     )
@@ -1375,7 +1487,7 @@ class SubGenreListView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     @extend_schema(
         summary="لیست زیرسبک‌ها",
@@ -1388,7 +1500,7 @@ class SubGenreListView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ایجاد زیرسبک جدید",
+        summary="ایجاد زیرسبک جدید (Admin Only)",
         description="ثبت یک زیرسبک موسیقی جدید در سامانه.",
         request=SubGenreSerializer,
         responses={201: SubGenreSerializer}
@@ -1407,7 +1519,7 @@ class SubGenreDetailView(APIView):
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     def get_object(self, pk):
         try:
@@ -1428,7 +1540,7 @@ class SubGenreDetailView(APIView):
         return Response(serializer.data)
 
     @extend_schema(
-        summary="ویرایش زیرسبک (کامل)",
+        summary="ویرایش زیرسبک (کامل) (Admin Only)",
         description="به‌روزرسانی تمامی اطلاعات یک زیرسبک موسیقی.",
         request=SubGenreSerializer,
         responses={200: SubGenreSerializer}
@@ -1444,7 +1556,7 @@ class SubGenreDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="ویرایش زیرسبک (جزئی)",
+        summary="ویرایش زیرسبک (جزئی) (Admin Only)",
         description="به‌روزرسانی برخی از اطلاعات یک زیرسبک موسیقی.",
         request=SubGenreSerializer,
         responses={200: SubGenreSerializer}
@@ -1460,7 +1572,7 @@ class SubGenreDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
-        summary="حذف زیرسبک",
+        summary="حذف زیرسبک (Admin Only)",
         description="حذف یک زیرسبک موسیقی از سامانه.",
         responses={204: OpenApiTypes.NONE}
     )
@@ -1619,7 +1731,15 @@ class SongLikeView(APIView):
     @extend_schema(
         summary="لایک کردن آهنگ",
         description="لایک کردن یا لغو لایک یک آهنگ.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='SongLikeResponse',
+                fields={
+                    'liked': serializers.BooleanField(),
+                    'likes_count': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def post(self, request, pk=None):
         try:
@@ -1650,7 +1770,15 @@ class AlbumLikeView(APIView):
     @extend_schema(
         summary="لایک کردن آلبوم",
         description="لایک کردن یا لغو لایک یک آلبوم.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='AlbumLikeResponse',
+                fields={
+                    'liked': serializers.BooleanField(),
+                    'likes_count': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def post(self, request, pk=None):
         try:
@@ -1681,7 +1809,14 @@ class SongIncrementPlaysView(APIView):
     @extend_schema(
         summary="افزایش تعداد پخش آهنگ",
         description="افزایش تعداد دفعات پخش یک آهنگ (به صورت دستی).",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='SongIncrementPlaysResponse',
+                fields={
+                    'plays': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def post(self, request, pk=None):
         try:
@@ -1763,7 +1898,24 @@ class UnwrapStreamView(APIView):
     @extend_schema(
         summary="باز کردن توکن پخش (Unwrap)",
         description="تبدیل توکن پخش به لینک مستقیم و امضا شده فایل صوتی. ممکن است منجر به نمایش تبلیغ شود.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='UnwrapResponse',
+                fields={
+                    'type': serializers.ChoiceField(choices=['stream', 'ad']),
+                    'url': serializers.CharField(required=False),
+                    'song_id': serializers.IntegerField(required=False),
+                    'song_title': serializers.CharField(required=False),
+                    'expires_in': serializers.IntegerField(required=False, allow_null=True),
+                    'unwrap_count': serializers.IntegerField(),
+                    'unique_otplay_id': serializers.CharField(required=False),
+                    'ad': AudioAdSerializer(required=False),
+                    'submit_id': serializers.CharField(required=False),
+                    'message': serializers.CharField(required=False),
+                    'pending': serializers.BooleanField(required=False),
+                }
+            )
+        }
     )
     def get(self, request, token):
         try:
@@ -1900,7 +2052,24 @@ class StreamShortRedirectView(APIView):
     @extend_schema(
         summary="باز کردن لینک کوتاه پخش",
         description="تبدیل لینک کوتاه پخش به لینک مستقیم و امضا شده فایل صوتی.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='StreamShortResponse',
+                fields={
+                    'type': serializers.ChoiceField(choices=['stream', 'ad']),
+                    'url': serializers.CharField(required=False),
+                    'song_id': serializers.IntegerField(required=False),
+                    'song_title': serializers.CharField(required=False),
+                    'expires_in': serializers.IntegerField(required=False, allow_null=True),
+                    'unwrap_count': serializers.IntegerField(),
+                    'unique_otplay_id': serializers.CharField(required=False),
+                    'ad': AudioAdSerializer(required=False),
+                    'submit_id': serializers.CharField(required=False),
+                    'message': serializers.CharField(required=False),
+                    'pending': serializers.BooleanField(required=False),
+                }
+            )
+        }
     )
     def get(self, request, token):
         try:
@@ -1986,16 +2155,26 @@ class AdSubmitView(APIView):
     @extend_schema(
         summary="ثبت مشاهده تبلیغ",
         description="تایید مشاهده تبلیغ و دریافت لینک نهایی پخش آهنگ.",
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'submit_id': {'type': 'string', 'description': 'شناسه تایید تبلیغ'}
-                },
-                'required': ['submit_id']
+        request=inline_serializer(
+            name='AdSubmitRequest',
+            fields={
+                'submit_id': serializers.CharField()
             }
-        },
-        responses={200: OpenApiTypes.OBJECT}
+        ),
+        responses={
+            200: inline_serializer(
+                name='AdSubmitResponse',
+                fields={
+                    'type': serializers.CharField(),
+                    'url': serializers.CharField(),
+                    'song_id': serializers.IntegerField(),
+                    'song_title': serializers.CharField(),
+                    'expires_in': serializers.IntegerField(allow_null=True),
+                    'unwrap_count': serializers.IntegerField(),
+                    'unique_otplay_id': serializers.CharField()
+                }
+            )
+        }
     )
     def post(self, request):
         submit_id = request.data.get('submit_id')
@@ -2106,18 +2285,22 @@ class PlayCountView(APIView):
     @extend_schema(
         summary="ثبت تعداد پخش",
         description="ثبت یک پخش جدید برای آهنگ و محاسبه درآمد هنرمند.",
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'unique_otplay_id': {'type': 'string', 'description': 'شناسه یکتای پخش'},
-                    'city': {'type': 'string', 'description': 'شهر کاربر'},
-                    'country': {'type': 'string', 'description': 'کشور کاربر'}
-                },
-                'required': ['unique_otplay_id', 'city', 'country']
+        request=inline_serializer(
+            name='SongStreamRecordRequest',
+            fields={
+                'unique_otplay_id': serializers.CharField(),
+                'city': serializers.CharField(),
+                'country': serializers.CharField(),
             }
-        },
-        responses={200: OpenApiTypes.OBJECT}
+        ),
+        responses={
+            200: inline_serializer(
+                name='SongStreamRecordResponse',
+                fields={
+                    'message': serializers.CharField()
+                }
+            )
+        }
     )
     def post(self, request):
         unique_otplay_id = request.data.get('unique_otplay_id')
@@ -2329,7 +2512,16 @@ class UserRecommendationView(APIView):
     @extend_schema(
         summary="پیشنهادات هوشمند (مشابه اسپاتیفای)",
         description="دریافت ۱۰ آهنگ پیشنهادی بر اساس تاریخچه شنیداری، لایک‌ها و پلی‌لیست‌های کاربر با استفاده از الگوریتم شباهت.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='UserRecommendationResponse',
+                fields={
+                    'type': serializers.CharField(),
+                    'songs': SongSerializer(many=True),
+                    'message': serializers.CharField(required=False),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -3470,7 +3662,15 @@ class PlaylistRecommendationLikeView(APIView):
     @extend_schema(
         summary="لایک کردن پلی‌لیست پیشنهادی",
         description="لایک کردن یا لغو لایک یک پلی‌لیست پیشنهادی.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='PlaylistRecommendationLikeResponse',
+                fields={
+                    'status': serializers.CharField(),
+                    'likes_count': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def post(self, request, unique_id):
         from .models import RecommendedPlaylist
@@ -3501,7 +3701,14 @@ class PlaylistRecommendationSaveView(APIView):
     @extend_schema(
         summary="ذخیره کردن پلی‌لیست پیشنهادی",
         description="ذخیره کردن یا لغو ذخیره یک پلی‌لیست پیشنهادی در کتابخانه کاربر.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='PlaylistRecommendationSaveResponse',
+                fields={
+                    'status': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request, unique_id):
         from .models import RecommendedPlaylist
@@ -3532,7 +3739,14 @@ class PlaylistSaveToggleView(APIView):
     @extend_schema(
         summary="ذخیره کردن پلی‌لیست",
         description="ذخیره کردن یا لغو ذخیره یک پلی‌لیست عمومی در کتابخانه کاربر.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='PlaylistSaveToggleResponse',
+                fields={
+                    'status': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request, pk, *args, **kwargs):
         try:
@@ -3567,7 +3781,20 @@ class SearchView(APIView):
             OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
             OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='SearchResponse',
+                fields={
+                    'results': SearchResultSerializer(many=True),
+                    'page': serializers.IntegerField(),
+                    'page_size': serializers.IntegerField(),
+                    'has_next': serializers.BooleanField(),
+                    'query': serializers.CharField(),
+                    'moods': serializers.ListField(child=serializers.CharField()),
+                    'type': serializers.CharField(),
+                }
+            )
+        }
     )
     def get(self, request):
         q = request.query_params.get('q', '').strip()
@@ -3858,7 +4085,10 @@ class RulesDetailView(APIView):
     @extend_schema(
         summary="جزئیات قانون (ادمین)",
         description="دریافت جزئیات یک قانون خاص.",
-        responses={200: RulesSerializer, 404: OpenApiTypes.OBJECT}
+        responses={
+            200: RulesSerializer,
+            404: inline_serializer(name='RuleNotFound', fields={'detail': serializers.CharField()})
+        }
     )
     def get(self, request, pk):
         try:
@@ -3872,7 +4102,11 @@ class RulesDetailView(APIView):
         summary="ویرایش قانون (ادمین)",
         description="ویرایش یک قانون موجود.",
         request=RulesSerializer,
-        responses={200: RulesSerializer, 404: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}
+        responses={
+            200: RulesSerializer,
+            404: inline_serializer(name='RuleNotFoundEdit', fields={'detail': serializers.CharField()}),
+            400: inline_serializer(name='RuleBadRequest', fields={'detail': serializers.CharField()})
+        }
     )
     def put(self, request, pk):
         try:
@@ -3888,7 +4122,10 @@ class RulesDetailView(APIView):
     @extend_schema(
         summary="حذف قانون (ادمین)",
         description="حذف یک قانون موجود.",
-        responses={204: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT}
+        responses={
+            204: None,
+            404: inline_serializer(name='RuleNotFoundDelete', fields={'detail': serializers.CharField()})
+        }
     )
     def delete(self, request, pk):
         try:
@@ -3933,7 +4170,33 @@ class ArtistHomeView(APIView):
     @extend_schema(
         summary="داشبورد هنرمند",
         description="دریافت آمار کلی درآمد، تعداد پخش‌ها و آهنگ‌های برتر برای صفحه اصلی پنل هنرمند.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistHomeResponse',
+                fields={
+                    'income_summary': inline_serializer(
+                        name='IncomeSummary',
+                        fields={
+                            'today': serializers.DecimalField(max_digits=10, decimal_places=6),
+                            'last_7_days': serializers.DecimalField(max_digits=10, decimal_places=6),
+                            'last_30_days': serializers.DecimalField(max_digits=10, decimal_places=6),
+                            'growth': serializers.DictField(),
+                        }
+                    ),
+                    'plays_summary': inline_serializer(
+                        name='PlaysSummary',
+                        fields={
+                            'today': serializers.IntegerField(),
+                            'last_7_days': serializers.IntegerField(),
+                            'last_30_days': serializers.IntegerField(),
+                            'growth': serializers.DictField(),
+                        }
+                    ),
+                    'daily_plays': serializers.ListField(child=serializers.DictField()),
+                    'top_songs': SongSerializer(many=True),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -4047,7 +4310,16 @@ class ArtistLiveListenersView(APIView):
     @extend_schema(
         summary="تعداد شنوندگان زنده",
         description="دریافت تعداد کاربرانی که در حال حاضر در حال گوش دادن به آهنگ‌های این هنرمند هستند.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistLiveListenersResponse',
+                fields={
+                    'artist_id': serializers.IntegerField(),
+                    'artist_name': serializers.CharField(),
+                    'live_listeners': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -4077,7 +4349,15 @@ class ArtistLiveListenersPollView(APIView):
     @extend_schema(
         summary="بروزرسانی زنده شنوندگان (Long Polling)",
         description="این متد تا زمان تغییر تعداد شنوندگان یا اتمام زمان (۳۰ ثانیه) منتظر می‌ماند.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistLiveListenersPollResponse',
+                fields={
+                    'live_listeners': serializers.IntegerField(),
+                    'changed': serializers.BooleanField(),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -4132,7 +4412,17 @@ class ArtistAnalyticsView(APIView):
             OpenApiParameter("period", OpenApiTypes.STR, description="بازه زمانی: today, 7d, 30d"),
             OpenApiParameter("chart", OpenApiTypes.STR, description="نوع نمودار: hourly, daily")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistAnalyticsResponse',
+                fields={
+                    'summary': serializers.DictField(),
+                    'chart': serializers.DictField(),
+                    'city_distribution': serializers.ListField(child=serializers.DictField()),
+                    'top_songs': serializers.ListField(child=serializers.DictField()),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -4367,7 +4657,17 @@ class ArtistWalletView(APIView):
     @extend_schema(
         summary="کیف پول هنرمند",
         description="دریافت موجودی کل، موجودی در حال تسویه و موجودی قابل برداشت هنرمند.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistWalletResponse',
+                fields={
+                    'total_credit': serializers.DecimalField(max_digits=15, decimal_places=6),
+                    'requested_credit': serializers.DecimalField(max_digits=15, decimal_places=2),
+                    'available_credit': serializers.DecimalField(max_digits=15, decimal_places=6),
+                    'deposit_requests': serializers.DictField(),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -4436,7 +4736,15 @@ class ArtistFinanceView(APIView):
         parameters=[
             OpenApiParameter("period", OpenApiTypes.STR, description="بازه زمانی: all, daily, weekly, monthly, today, 7d, 30d")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ArtistFinanceResponse',
+                fields={
+                    'summary': serializers.DictField(),
+                    'chart': serializers.ListField(child=serializers.DictField()),
+                }
+            )
+        }
     )
     def get(self, request):
         user = request.user
@@ -4790,17 +5098,21 @@ class ArtistChangePasswordView(APIView):
     @extend_schema(
         summary="تغییر رمز عبور هنرمند",
         description="تغییر رمز عبور حساب کاربری هنرمند با استفاده از رمز عبور فعلی و رمز عبور جدید.",
-        request={
-            'application/json': {
-                'type': 'object',
-                'properties': {
-                    'current_password': {'type': 'string'},
-                    'new_password': {'type': 'string'},
-                },
-                'required': ['current_password', 'new_password']
+        request=inline_serializer(
+            name='ArtistChangePasswordRequest',
+            fields={
+                'current_password': serializers.CharField(),
+                'new_password': serializers.CharField(),
             }
-        },
-        responses={200: OpenApiTypes.OBJECT}
+        ),
+        responses={
+            200: inline_serializer(
+                name='ArtistChangePasswordResponse',
+                fields={
+                    'message': serializers.CharField()
+                }
+            )
+        }
     )
     def post(self, request):
         user = request.user
@@ -5512,7 +5824,14 @@ class NotificationMarkReadView(APIView):
         parameters=[
             OpenApiParameter("artist", OpenApiTypes.BOOL, description="اعمال بر روی اعلان‌های پنل هنرمند")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='NotificationMarkReadResponse',
+                fields={
+                    'message': serializers.CharField()
+                }
+            )
+        }
     )
     def post(self, request, pk=None):
         user = request.user

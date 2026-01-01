@@ -8,12 +8,12 @@ from django.db import transaction
 import user_agents
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, serializers
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.exceptions import PermissionDenied
 from .models import User, OtpCode, RefreshToken
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 from .serializers import (
     RegisterRequestSerializer,
     VerifySerializer,
@@ -232,7 +232,16 @@ class AuthRegisterView(APIView):
         summary="ثبت‌نام کاربر جدید",
         description="ثبت‌نام با شماره موبایل و رمز عبور. در صورت وجود کاربر تایید نشده، کد تایید مجدداً ارسال می‌شود.",
         request=RegisterRequestSerializer,
-        responses={200: OpenApiTypes.OBJECT, 201: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='AuthRegisterOtpResponse',
+                fields={'status': serializers.CharField()}
+            ),
+            201: inline_serializer(
+                name='AuthRegisterArtistResponse',
+                fields={'status': serializers.CharField()}
+            )
+        }
     )
     def post(self, request):
         serializer = RegisterRequestSerializer(data=request.data)
@@ -299,7 +308,23 @@ class AuthVerifyView(APIView):
         summary="تایید شماره موبایل",
         description="تایید حساب کاربری با استفاده از کد ارسال شده به شماره موبایل.",
         request=VerifySerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='AuthVerifyResponse',
+                fields={
+                    'accessToken': serializers.CharField(),
+                    'refreshToken': serializers.CharField(),
+                    'user': inline_serializer(
+                        name='AuthUserResponse',
+                        fields={
+                            'id': serializers.IntegerField(),
+                            'phone': serializers.CharField(),
+                            'is_verified': serializers.BooleanField(),
+                        }
+                    )
+                }
+            )
+        }
     )
     def post(self, request):
         serializer = VerifySerializer(data=request.data)
@@ -349,7 +374,23 @@ class LoginPasswordView(APIView):
         summary="ورود با رمز عبور",
         description="ورود به حساب کاربری با استفاده از شماره موبایل و رمز عبور (معمولی یا هنرمند).",
         request=LoginPasswordSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='LoginPasswordResponse',
+                fields={
+                    'accessToken': serializers.CharField(),
+                    'refreshToken': serializers.CharField(),
+                    'user': inline_serializer(
+                        name='LoginUserResponse',
+                        fields={
+                            'id': serializers.IntegerField(),
+                            'phone': serializers.CharField(),
+                            'is_verified': serializers.BooleanField(),
+                        }
+                    )
+                }
+            )
+        }
     )
     def post(self, request):
         serializer = LoginPasswordSerializer(data=request.data)
@@ -395,7 +436,12 @@ class LoginOtpRequestView(APIView):
         summary="درخواست کد ورود (OTP)",
         description="ارسال کد تایید یکبار مصرف به شماره موبایل برای ورود بدون رمز عبور.",
         request=LoginOtpRequestSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='LoginOtpRequestResponse',
+                fields={'status': serializers.CharField()}
+            )
+        }
     )
     def post(self, request):
         serializer = LoginOtpRequestSerializer(data=request.data)
@@ -429,7 +475,23 @@ class LoginOtpVerifyView(APIView):
         summary="ورود با کد تایید (OTP)",
         description="تایید کد یکبار مصرف و دریافت توکن‌های دسترسی.",
         request=LoginOtpVerifySerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='LoginOtpVerifyResponse',
+                fields={
+                    'accessToken': serializers.CharField(),
+                    'refreshToken': serializers.CharField(),
+                    'user': inline_serializer(
+                        name='LoginOtpUserResponse',
+                        fields={
+                            'id': serializers.IntegerField(),
+                            'phone': serializers.CharField(),
+                            'is_verified': serializers.BooleanField(),
+                        }
+                    )
+                }
+            )
+        }
     )
     def post(self, request):
         serializer = LoginOtpVerifySerializer(data=request.data)
@@ -530,7 +592,12 @@ class ForgotPasswordView(APIView):
         summary="درخواست بازیابی رمز عبور",
         description="ارسال کد تایید به شماره موبایل برای شروع فرآیند بازیابی رمز عبور.",
         request=ForgotPasswordSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ForgotPasswordResponse',
+                fields={'status': serializers.CharField()}
+            )
+        }
     )
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
@@ -556,7 +623,12 @@ class PasswordResetView(APIView):
         summary="تغییر رمز عبور (بازیابی)",
         description="تنظیم رمز عبور جدید با استفاده از کد تایید ارسال شده.",
         request=PasswordResetSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='PasswordResetResponse',
+                fields={'status': serializers.CharField()}
+            )
+        }
     )
     def post(self, request):
         serializer = PasswordResetSerializer(data=request.data)
@@ -603,7 +675,15 @@ class TokenRefreshView(APIView):
         summary="تجدید توکن دسترسی",
         description="دریافت توکن دسترسی جدید با استفاده از توکن تجدید (Refresh Token).",
         request=TokenRefreshRequestSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='TokenRefreshResponse',
+                fields={
+                    'accessToken': serializers.CharField(),
+                    'refreshToken': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request):
         serializer = TokenRefreshRequestSerializer(data=request.data)
@@ -662,7 +742,12 @@ class LogoutView(APIView):
         summary="خروج از حساب کاربری",
         description="ابطال توکن تجدید و خروج از حساب کاربری.",
         request=LogoutSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='LogoutResponse',
+                fields={'status': serializers.CharField()}
+            )
+        }
     )
     def post(self, request):
         serializer = LogoutSerializer(data=request.data)
@@ -714,7 +799,12 @@ class SessionRevokeView(APIView):
     @extend_schema(
         summary="ابطال نشست خاص",
         description="خروج از حساب کاربری در یک دستگاه خاص.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='SessionRevokeResponse',
+                fields={'status': serializers.CharField()}
+            )
+        }
     )
     def post(self, request, pk):
         session = get_object_or_404(RefreshToken, pk=pk, user=request.user)
@@ -739,7 +829,15 @@ class SessionRevokeOtherView(APIView):
                 'required': ['refreshToken']
             }
         },
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='SessionRevokeOtherResponse',
+                fields={
+                    'status': serializers.CharField(),
+                    'revoked_count': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def post(self, request):
         current_refresh = request.data.get('refreshToken')
@@ -766,7 +864,15 @@ class ChangePasswordView(APIView):
         summary="تغییر رمز عبور",
         description="تغییر رمز عبور فعلی به رمز عبور جدید.",
         request=ChangePasswordSerializer,
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='ChangePasswordResponse',
+                fields={
+                    'status': serializers.CharField(),
+                    'message': serializers.CharField(),
+                }
+            )
+        }
     )
     def post(self, request):
         serializer = ChangePasswordSerializer(data=request.data)

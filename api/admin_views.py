@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, permissions
+from rest_framework import status, permissions, serializers
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
 from .models import (
@@ -24,7 +25,6 @@ from .admin_serializers import (
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
 import os
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -115,8 +115,16 @@ class AdminUserBanView(APIView):
     @extend_schema(
         summary="مسدود کردن کاربر",
         description="مسدود کردن کاربر و حذف پروفایل هنرمند و تمامی محتواهای مرتبط (آهنگ‌ها و آلبوم‌ها).",
-        request=OpenApiTypes.OBJECT,
-        responses={200: OpenApiTypes.OBJECT}
+        request=inline_serializer(
+            name='AdminUserBanRequest',
+            fields={'user_id': serializers.IntegerField()}
+        ),
+        responses={
+            200: inline_serializer(
+                name='AdminUserBanResponse',
+                fields={'message': serializers.CharField()}
+            )
+        }
     )
     def post(self, request):
         user_id = request.data.get('user_id')
@@ -299,7 +307,23 @@ class AdminHomeSummaryView(APIView):
     @extend_schema(
         summary="خلاصه وضعیت داشبورد ادمین",
         description="دریافت آمار کلی پخش‌ها، پرداخت‌ها، تعداد کاربران و هنرمندان برای داشبورد مدیریت.",
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='AdminDashboardResponse',
+                fields={
+                    'total': serializers.IntegerField(),
+                    'last_30_days': serializers.IntegerField(),
+                    'last_7_days': serializers.IntegerField(),
+                    'last_24_hours': serializers.IntegerField(),
+                    'total_pay': serializers.FloatField(),
+                    'pay_last_30_days': serializers.FloatField(),
+                    'pay_last_7_days': serializers.FloatField(),
+                    'pay_last_24_hours': serializers.FloatField(),
+                    'audience_count': serializers.IntegerField(),
+                    'artist_profiles_count': serializers.IntegerField(),
+                }
+            )
+        }
     )
     def get(self, request):
         now = timezone.now()
@@ -949,8 +973,16 @@ class AdminAlbumSongActionView(APIView):
     @extend_schema(
         summary="عملیات روی آهنگ‌های آلبوم",
         description="حذف آهنگ از آلبوم یا حذف کامل آهنگ از سیستم.",
-        request=OpenApiTypes.OBJECT,
-        responses={200: OpenApiTypes.OBJECT}
+        request=inline_serializer(
+            name='AdminAlbumSongActionRequest',
+            fields={'action': serializers.ChoiceField(choices=['remove', 'delete'])}
+        ),
+        responses={
+            200: inline_serializer(
+                name='AdminAlbumSongActionResponse',
+                fields={'message': serializers.CharField()}
+            )
+        }
     )
     def post(self, request, album_id, song_id):
         action = request.data.get('action') # 'remove' or 'delete'
@@ -980,7 +1012,27 @@ class AdminFinanceSummaryView(APIView):
             OpenApiParameter("start", OpenApiTypes.STR, description="تاریخ شروع (YYYY-MM-DD)"),
             OpenApiParameter("end", OpenApiTypes.STR, description="تاریخ پایان (YYYY-MM-DD)")
         ],
-        responses={200: OpenApiTypes.OBJECT}
+        responses={
+            200: inline_serializer(
+                name='AdminFinanceSummaryResponse',
+                fields={
+                    'today': inline_serializer(
+                        name='FinanceStats',
+                        fields={
+                            'total_payments': serializers.FloatField(),
+                            'total_deposits': serializers.FloatField(),
+                            'count_payments': serializers.IntegerField(),
+                            'count_deposits': serializers.IntegerField(),
+                        }
+                    ),
+                    'last_7_days': serializers.DictField(),
+                    'last_30_days': serializers.DictField(),
+                    'all_time': serializers.DictField(),
+                    'custom_period': serializers.DictField(required=False),
+                    'custom_period_error': serializers.CharField(required=False),
+                }
+            )
+        }
     )
     def get(self, request):
         now = timezone.now()
