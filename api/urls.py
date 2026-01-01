@@ -151,7 +151,7 @@ urlpatterns = [
     path('auth/sessions/revoke-others/', SessionRevokeOtherView.as_view(), name='session_revoke_others'),
     
     # ---  Profile Page Endpoints ---
-    path('/profile/', UserProfileView.as_view(), name='user_profile'),
+    path('profile/', UserProfileView.as_view(), name='user_profile'),
     path('profile/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
     path('profile/settings/stream-quality/', StreamQualityUpdateView.as_view(), name='user_stream_quality_settings'),
     path('profile/liked-songs/', LikedSongsView.as_view(), name='liked_songs'),
