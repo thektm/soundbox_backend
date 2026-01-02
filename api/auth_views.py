@@ -525,7 +525,7 @@ class LoginOtpVerifyView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistAuthView(APIView):
     """Create / retrieve / update artist authentication submissions for the authenticated user."""
     permission_classes = [IsAuthenticated]
