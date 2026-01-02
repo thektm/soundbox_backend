@@ -345,7 +345,7 @@ class StreamQualityUpdateView(APIView):
         return self.put(request)
 
 
-@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و عملیات صفحات جزئیات و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class UserFollowView(APIView):
     """Follow or Unfollow a User or Artist"""
     permission_classes = [IsAuthenticated]
@@ -3787,7 +3787,7 @@ class PlaylistRecommendationSaveView(APIView):
             return Response({'status': 'saved'})
 
 
-@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و عملیات صفحات جزئیات و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class PlaylistSaveToggleView(APIView):
     """Toggle save/unsave for canonical Playlist objects"""
     permission_classes = [IsAuthenticated]
@@ -4194,7 +4194,7 @@ class RulesDetailView(APIView):
 
 
 
-@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و عملیات صفحات جزئیات و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class RulesLatestView(APIView):
     """Return the latest Rules entry (single item) for public consumption.
     Accessible by both audience and artists.
@@ -5781,7 +5781,7 @@ class ArtistAlbumsManagementView(APIView):
         return Response({"message": "Album deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و عملیات صفحات جزئیات و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class ReportCreateView(generics.CreateAPIView):
     """Endpoint for users to submit reports for songs or artists."""
     permission_classes = [permissions.IsAuthenticated]
@@ -5799,7 +5799,7 @@ class ReportCreateView(generics.CreateAPIView):
         serializer.save(user=self.request.user)
 
 
-@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و عملیات صفحات جزئیات و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class NotificationListView(generics.ListAPIView):
     """List notifications for the authenticated user or their artist profile."""
     permission_classes = [permissions.IsAuthenticated]
@@ -5918,7 +5918,7 @@ class NotificationListView(generics.ListAPIView):
         return Response(serializer.data)
 
 
-@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و عملیات صفحات جزئیات و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class NotificationMarkReadView(APIView):
     """Mark a specific notification or all notifications as read."""
     permission_classes = [permissions.IsAuthenticated]
