@@ -23,7 +23,7 @@ from .admin_serializers import (
     AdminEmployeeSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
-from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
+from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename
 import os
 
 class AdminPagination(PageNumberPagination):
@@ -403,6 +403,7 @@ class AdminUserSearchView(APIView):
 class AdminSongListView(APIView):
     """List songs for admin with status filtering."""
     permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
         summary="لیست آهنگ‌ها",
@@ -420,6 +421,123 @@ class AdminSongListView(APIView):
         result_page = paginator.paginate_queryset(songs, request)
         serializer = AdminSongSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
+
+    @extend_schema(
+        summary="آپلود آهنگ جدید توسط ادمین",
+        description="آپلود فایل صوتی آهنگ به همراه متادیتا و تصویر کاور توسط ادمین برای هنرمند مشخص.",
+        request=AdminSongSerializer,
+        responses={201: AdminSongSerializer}
+    )
+    def post(self, request):
+        serializer = AdminSongSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        
+        try:
+            # Get artist
+            artist = data['artist']
+            
+            # Build filename: "Artist - Title (feat. X)" or "Artist - Title"
+            title = data['title']
+            featured = data.get('featured_artists', [])
+            artist_name = artist.artistic_name or artist.name
+            if featured:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            else:
+                filename_base = f"{artist_name} - {title}"
+            
+            safe_filename_base = make_safe_filename(filename_base)
+            
+            # Handle audio file upload
+            audio_url = ""
+            converted_audio_url = None
+            duration = None
+            original_format = None
+            if 'audio_file_upload' in request.FILES:
+                audio_file = request.FILES['audio_file_upload']
+                audio_filename = f"{safe_filename_base}.{audio_file.name.split('.')[-1]}"
+                audio_url, original_format = upload_file_to_r2(
+                    audio_file,
+                    folder='songs',
+                    custom_filename=audio_filename
+                )
+                
+                # Get audio info
+                duration, bitrate, original_format = get_audio_info(audio_file)
+                if not original_format:
+                    original_format = audio_file.name.split('.')[-1].lower()
+                
+                # Convert to 128kbps and upload
+                if original_format != 'mp3' or bitrate is None or bitrate > 128:
+                    try:
+                        # Reset file pointer before conversion
+                        if hasattr(audio_file, 'seek'):
+                            audio_file.seek(0)
+                        
+                        converted_file = convert_to_128kbps(audio_file)
+                        converted_filename = f"{safe_filename_base}_128.mp3"
+                        converted_audio_url, _ = upload_file_to_r2(
+                            converted_file,
+                            folder='songs/128',
+                            custom_filename=converted_filename
+                        )
+                    except Exception as e:
+                        # Log error but don't fail the whole upload
+                        print(f"Conversion failed: {e}")
+            
+            # Handle cover image upload
+            cover_url = ""
+            if 'cover_image_upload' in request.FILES:
+                cover_file = request.FILES['cover_image_upload']
+                cover_filename = f"{safe_filename_base}_cover.{cover_file.name.split('.')[-1]}"
+                cover_url, _ = upload_file_to_r2(
+                    cover_file,
+                    folder='covers',
+                    custom_filename=cover_filename
+                )
+            
+            # Prepare song data
+            song_data = dict(data)
+            song_data['audio_file'] = audio_url
+            song_data['converted_audio_url'] = converted_audio_url
+            song_data['cover_image'] = cover_url
+            song_data['original_format'] = original_format
+            song_data['duration_seconds'] = duration
+            song_data['uploader'] = request.user
+            
+            # Remove file fields and many-to-many from data for create
+            song_data.pop('audio_file_upload', None)
+            song_data.pop('cover_image_upload', None)
+            genres = song_data.pop('genres', [])
+            sub_genres = song_data.pop('sub_genres', [])
+            moods = song_data.pop('moods', [])
+            tags = song_data.pop('tags', [])
+            
+            song = Song.objects.create(**song_data)
+            
+            # Add many-to-many relationships
+            song.genres.set(genres)
+            song.sub_genres.set(sub_genres)
+            song.moods.set(moods)
+            song.tags.set(tags)
+            
+            return Response(
+                AdminSongSerializer(song).data,
+                status=status.HTTP_201_CREATED
+            )
+            
+        except Artist.DoesNotExist:
+            return Response(
+                {'error': 'Artist not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 @extend_schema(tags=['Admin App Endpoints'])
