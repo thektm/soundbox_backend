@@ -25,7 +25,6 @@ from .admin_serializers import (
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info
 import os
-import io
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -515,19 +514,9 @@ class AdminSongDetailView(APIView):
             data['original_format'] = format_ext
             
             # Handle 128kbps conversion
-            if format_ext == 'mp3' and (bitrate is None or bitrate > 128):
+            if format_ext == 'mp3' and bitrate and bitrate > 128:
                 try:
-                    if hasattr(audio_file, 'read'):
-                        try:
-                            audio_file.seek(0)
-                        except Exception:
-                            pass
-                        audio_bytes = audio_file.read()
-                        buffer_obj = io.BytesIO(audio_bytes)
-                    else:
-                        buffer_obj = audio_file
-
-                    converted_file = convert_to_128kbps(buffer_obj)
+                    converted_file = convert_to_128kbps(audio_file)
                     conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
                     converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
                     data['converted_audio_url'] = converted_url

@@ -151,36 +151,3 @@ def get_audio_info(file_path_or_obj):
     except Exception:
         return None, None, None
 
-def get_audio_info(file_path_or_obj):
-    """
-    Extract duration and bitrate from audio file.
-    """
-    try:
-        # If it's a file object, we might need to save it temporarily or use a library that supports file objects
-        # Mutagen supports file objects for some formats
-        if hasattr(file_path_or_obj, 'seek'):
-            file_path_or_obj.seek(0)
-            
-        # Try MP3
-        try:
-            audio = MP3(file_path_or_obj)
-            duration = int(audio.info.length)
-            bitrate = int(audio.info.bitrate / 1000)
-            return duration, bitrate, 'mp3'
-        except Exception:
-            pass
-            
-        # Try WAV
-        if hasattr(file_path_or_obj, 'seek'):
-            file_path_or_obj.seek(0)
-        try:
-            audio = WAVE(file_path_or_obj)
-            duration = int(audio.info.length)
-            return duration, None, 'wav'
-        except Exception:
-            pass
-            
-        return None, None, None
-    except Exception:
-        return None, None, None
-

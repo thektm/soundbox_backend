@@ -65,7 +65,6 @@ import mimetypes
 import random
 import time
 import secrets
-import io
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
@@ -711,6 +710,25 @@ class SongUploadView(APIView):
             if not original_format:
                 original_format = audio_file.name.split('.')[-1].lower()
             
+            # Convert to 128kbps and upload
+            converted_audio_url = None
+            if original_format != 'mp3' or bitrate is None or bitrate > 128:
+                try:
+                    # Reset file pointer before conversion
+                    if hasattr(audio_file, 'seek'):
+                        audio_file.seek(0)
+                    
+                    converted_file = convert_to_128kbps(audio_file)
+                    converted_filename = f"{safe_filename_base}_128.mp3"
+                    converted_audio_url, _ = upload_file_to_r2(
+                        converted_file,
+                        folder='songs/128',
+                        custom_filename=converted_filename
+                    )
+                except Exception as e:
+                    # Log error but don't fail the whole upload
+                    print(f"Conversion failed: {e}")
+            
             # Upload cover image if provided
             cover_url = ""
             if data.get('cover_image'):
@@ -728,6 +746,7 @@ class SongUploadView(APIView):
                 'artist': artist,
                 'featured_artists': featured,
                 'audio_file': audio_url,
+                'converted_audio_url': converted_audio_url,
                 'cover_image': cover_url,
                 'original_format': original_format,
                 'duration_seconds': duration,
@@ -5306,20 +5325,12 @@ class ArtistSongsManagementView(APIView):
         audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
         
         converted_url = None
-        # Convert to 128kbps if mp3 and bitrate unknown or higher than 128
-        if format_ext == 'mp3' and (bitrate is None or bitrate > 128):
+        # Convert if it's not mp3 OR if it's mp3 with bitrate > 128 OR if bitrate is unknown
+        if format_ext != 'mp3' or bitrate is None or bitrate > 128:
             try:
-                if hasattr(audio_file, 'read'):
-                    try:
-                        audio_file.seek(0)
-                    except Exception:
-                        pass
-                    audio_bytes = audio_file.read()
-                    buffer_obj = io.BytesIO(audio_bytes)
-                else:
-                    buffer_obj = audio_file
-
-                converted_file = convert_to_128kbps(buffer_obj)
+                if hasattr(audio_file, 'seek'):
+                    audio_file.seek(0)
+                converted_file = convert_to_128kbps(audio_file)
                 conv_filename = f"{safe_artist}-{safe_title}(128){version}.mp3"
                 converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
             except Exception as e:
@@ -5432,21 +5443,11 @@ class ArtistSongsManagementView(APIView):
             data['duration_seconds'] = duration
             data['original_format'] = format_ext
             
-            # Convert to 128kbps if mp3 and bitrate unknown or higher than 128
-            if format_ext == 'mp3' and (bitrate is None or bitrate > 128):
+            if format_ext != 'mp3' or bitrate is None or bitrate > 128:
                 try:
-                    # Use an in-memory copy to avoid issues with file pointers or consumed file objects
-                    if hasattr(audio_file, 'read'):
-                        try:
-                            audio_file.seek(0)
-                        except Exception:
-                            pass
-                        audio_bytes = audio_file.read()
-                        buffer_obj = io.BytesIO(audio_bytes)
-                    else:
-                        buffer_obj = audio_file
-
-                    converted_file = convert_to_128kbps(buffer_obj)
+                    if hasattr(audio_file, 'seek'):
+                        audio_file.seek(0)
+                    converted_file = convert_to_128kbps(audio_file)
                     conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
                     converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
                     data['converted_audio_url'] = converted_url
@@ -5609,20 +5610,9 @@ class ArtistAlbumsManagementView(APIView):
             audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
             
             converted_url = None
-            # Convert to 128kbps if mp3 and bitrate unknown or higher than 128
-            if format_ext == 'mp3' and (bitrate is None or bitrate > 128):
+            if format_ext == 'mp3' and bitrate and bitrate > 128:
                 try:
-                    if hasattr(audio_file, 'read'):
-                        try:
-                            audio_file.seek(0)
-                        except Exception:
-                            pass
-                        audio_bytes = audio_file.read()
-                        buffer_obj = io.BytesIO(audio_bytes)
-                    else:
-                        buffer_obj = audio_file
-
-                    converted_file = convert_to_128kbps(buffer_obj)
+                    converted_file = convert_to_128kbps(audio_file)
                     conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
                     converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
                 except Exception:
