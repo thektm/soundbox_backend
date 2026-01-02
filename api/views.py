@@ -579,7 +579,7 @@ class MyLibraryView(APIView):
         })
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class R2UploadView(APIView):
     """Upload a file to an S3-compatible R2 bucket and return a CDN URL."""
     permission_classes = [AllowAny]
@@ -684,7 +684,7 @@ class R2UploadView(APIView):
 
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongUploadView(APIView):
     """
     Upload song with audio file and metadata.
@@ -842,7 +842,7 @@ class SongUploadView(APIView):
             )
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class ArtistListView(APIView):
     """List and Create Artists"""
     def get_permissions(self):
@@ -874,7 +874,7 @@ class ArtistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlaylistDetailView(APIView):
     """Retrieve, Update, and Delete Playlist (Admin/System/Audience)"""
     def get_permissions(self):
@@ -913,7 +913,7 @@ class PlaylistDetailView(APIView):
    
 
    
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlaylistLikeView(APIView):
     """Like or unlike a playlist (Admin/System/Audience)"""
     permission_classes = [IsAuthenticated]
@@ -952,7 +952,7 @@ class PlaylistLikeView(APIView):
         })
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class ArtistDetailView(APIView):
     """Retrieve, Update, and Delete Artist"""
     def get_permissions(self):
@@ -1169,7 +1169,7 @@ class ArtistDetailView(APIView):
 
    
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class AlbumListView(APIView):
     """List and Create Albums"""
     def get_permissions(self):
@@ -1190,7 +1190,7 @@ class AlbumListView(APIView):
     
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class AlbumDetailView(APIView):
     """Retrieve, Update, and Delete Album"""
     def get_permissions(self):
@@ -1640,7 +1640,7 @@ class SubGenreDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongListView(generics.ListCreateAPIView):
     """View for listing and creating songs"""
     serializer_class = SongSerializer
@@ -1679,7 +1679,7 @@ class SongListView(generics.ListCreateAPIView):
         return queryset
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongDetailView(APIView):
     """View for retrieving, updating and deleting a song"""
     def get_permissions(self):
@@ -1779,7 +1779,7 @@ class SongDetailView(APIView):
    
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongLikeView(APIView):
     """Toggle like status for a song"""
     permission_classes = [IsAuthenticated]
@@ -1818,7 +1818,7 @@ class SongLikeView(APIView):
         })
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class AlbumLikeView(APIView):
     """Toggle like status for an album"""
     permission_classes = [IsAuthenticated]
@@ -1857,7 +1857,7 @@ class AlbumLikeView(APIView):
         })
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongIncrementPlaysView(APIView):
     """Increment play count for a song"""
     permission_classes = [IsAuthenticated]
@@ -1885,7 +1885,7 @@ class SongIncrementPlaysView(APIView):
         return Response({'plays': song.plays})
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongStreamListView(generics.ListAPIView):
     """
     List songs with wrapper stream URLs that require unwrapping.
@@ -1943,7 +1943,7 @@ class SongStreamListView(generics.ListAPIView):
 
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class UnwrapStreamView(APIView):
     """
     Unwrap a stream URL token to get the actual signed URL.
@@ -2097,7 +2097,7 @@ class UnwrapStreamView(APIView):
         })
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class StreamShortRedirectView(APIView):
     """
     Short URL redirect that generates signed URL on-the-fly.
@@ -2201,7 +2201,7 @@ class StreamShortRedirectView(APIView):
             )
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class AdSubmitView(APIView):
     """
     Endpoint to submit an ad as seen and get the final stream URL.
@@ -2333,7 +2333,7 @@ def get_client_ip(request):
     return ip
 
 
-@extend_schema(tags=['Utility Endpoints اندپوینت های ابزار و عملیات'])
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlayCountView(APIView):
     """Endpoint to record play counts for songs."""
     permission_classes = [IsAuthenticated]
