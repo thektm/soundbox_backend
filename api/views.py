@@ -75,6 +75,31 @@ from rest_framework import serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 
 
+# Filename helpers
+def get_artist_display_name_from_user(user):
+    """Return the artist's display name (stage name if present, otherwise artist name) for a given user.
+    Returns None if no artist profile is attached.
+    """
+    try:
+        if hasattr(user, 'artist_profile') and user.artist_profile:
+            art = user.artist_profile
+            return art.artistic_name or art.name
+    except Exception:
+        pass
+    return None
+
+
+def make_safe_filename(s: str) -> str:
+    """Sanitize a filename base by removing problematic characters and collapsing whitespace."""
+    if not s:
+        return ''
+    # Allow basic punctuation that is common in music filenames
+    allowed = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.,()')
+    cleaned = ''.join(ch for ch in s if ch in allowed)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -695,7 +720,7 @@ class SongUploadView(APIView):
             else:
                 filename_base = f"{artist_name} - {title}"
             
-            safe_filename_base = filename_base
+            safe_filename_base = make_safe_filename(filename_base)
             
             # Upload audio file
             audio_file = data['audio_file']
@@ -5303,11 +5328,8 @@ class ArtistSongsManagementView(APIView):
         title = request.data.get('title', 'Untitled')
         
         # Determine artist name for filename
-        artist_name = artist.artistic_name
-        if not artist_name:
-            artist_name = f"{request.user.first_name} {request.user.last_name}".strip()
-        if not artist_name:
-            artist_name = request.user.phone_number
+        artist_name = artist.artistic_name or artist.name
+        featured = request.data.getlist('featured_artists') if hasattr(request.data, 'getlist') else request.data.get('featured_artists', [])
 
         # Get audio info
         duration, bitrate, format_ext = get_audio_info(audio_file)
@@ -5316,21 +5338,17 @@ class ArtistSongsManagementView(APIView):
             _, ext = os.path.splitext(audio_file.name)
             format_ext = ext.lstrip('.').lower()
         
-        bitrate_str = str(bitrate) if bitrate else "wav"
-        
-        # Versioning
-        version = Song.objects.filter(artist=artist, title=title).count() + 1
-        
-        # Final filename
-        # mohsen yegane - rage khab (128)1.mp3
-        safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-        safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-        
-        filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
+        # Build filename base and sanitize
+        if featured:
+            filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+        else:
+            filename_base = f"{artist_name} - {title}"
+        safe_filename_base = make_safe_filename(filename_base)
+        audio_filename = f"{safe_filename_base}.{format_ext}"
         
         # Upload original
-        print(f"DEBUG: Uploading original file: {filename}")
-        audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+        print(f"DEBUG: Uploading original file: {audio_filename}")
+        audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=audio_filename)
         print(f"DEBUG: Original file uploaded to: {audio_url}")
         
         converted_url = None
@@ -5338,15 +5356,13 @@ class ArtistSongsManagementView(APIView):
         print(f"DEBUG: format_ext={format_ext}, bitrate={bitrate}")
         if format_ext != 'mp3' or bitrate is None or bitrate > 128:
             print(f"DEBUG: Starting conversion to 128kbps...")
-            import os
-            print(f"DEBUG: PATH={os.environ.get('PATH')}")
             try:
                 if hasattr(audio_file, 'seek'):
                     audio_file.seek(0)
                 converted_file = convert_to_128kbps(audio_file)
-                conv_filename = f"{safe_artist}-{safe_title}(128){version}.mp3"
+                conv_filename = f"{safe_filename_base}_128.mp3"
                 print(f"DEBUG: Uploading converted file: {conv_filename}")
-                converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                converted_url, _ = upload_file_to_r2(converted_file, folder='songs/128', custom_filename=conv_filename)
                 print(f"DEBUG: Converted file uploaded to: {converted_url}")
             except Exception as e:
                 print(f"DEBUG: Conversion failed: {str(e)}")
@@ -5357,7 +5373,8 @@ class ArtistSongsManagementView(APIView):
         cover_image = request.FILES.get('cover_image')
         cover_url = ""
         if cover_image:
-            cover_filename = f"{safe_artist}-{safe_title}{version}_cover"
+            _, ext = os.path.splitext(cover_image.name)
+            cover_filename = f"{safe_filename_base}_cover{ext}"
             cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
 
         # Create a clean dict (avoid copying request.data which may include file objects)
@@ -5446,20 +5463,23 @@ class ArtistSongsManagementView(APIView):
         audio_file = request.FILES.get('audio_file')
         if audio_file:
             title = data.get('title', song.title)
-            artist_name = artist.artistic_name or f"{request.user.first_name} {request.user.last_name}".strip() or request.user.phone_number
+            artist_name = artist.artistic_name or artist.name
+            featured = data.getlist('featured_artists') if hasattr(data, 'getlist') else data.get('featured_artists', song.featured_artists)
             
             duration, bitrate, format_ext = get_audio_info(audio_file)
-            bitrate_str = str(bitrate) if bitrate else "wav"
+            if not format_ext:
+                _, ext = os.path.splitext(audio_file.name)
+                format_ext = ext.lstrip('.').lower()
             
-            # Increment version for re-upload
-            # We can extract version from current filename or just count
-            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            # Build filename base and sanitize
+            if featured:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            else:
+                filename_base = f"{artist_name} - {title}"
+            safe_filename_base = make_safe_filename(filename_base)
+            audio_filename = f"{safe_filename_base}.{format_ext}"
             
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
-            
-            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=audio_filename)
             data['audio_file'] = audio_url
             data['duration_seconds'] = duration
             data['original_format'] = format_ext
@@ -5469,8 +5489,8 @@ class ArtistSongsManagementView(APIView):
                     if hasattr(audio_file, 'seek'):
                         audio_file.seek(0)
                     converted_file = convert_to_128kbps(audio_file)
-                    conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
-                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                    conv_filename = f"{safe_filename_base}_128.mp3"
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs/128', custom_filename=conv_filename)
                     data['converted_audio_url'] = converted_url
                 except Exception as e:
                     print(f"Conversion failed: {e}")
@@ -5478,11 +5498,17 @@ class ArtistSongsManagementView(APIView):
         cover_image = request.FILES.get('cover_image')
         if cover_image:
             title = data.get('title', song.title)
-            artist_name = artist.artistic_name or f"{request.user.first_name} {request.user.last_name}".strip() or request.user.phone_number
-            version = Song.objects.filter(artist=artist, title=title).count()
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+            artist_name = artist.artistic_name or artist.name
+            featured = data.getlist('featured_artists') if hasattr(data, 'getlist') else data.get('featured_artists', song.featured_artists)
+            
+            if featured:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            else:
+                filename_base = f"{artist_name} - {title}"
+            
+            safe_filename_base = make_safe_filename(filename_base)
+            _, ext = os.path.splitext(cover_image.name)
+            cover_filename = f"{safe_filename_base}_cover{ext}"
             cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
             data['cover_image'] = cover_url
 
@@ -5615,34 +5641,37 @@ class ArtistAlbumsManagementView(APIView):
                 continue
 
             # Process this song
-            artist_name = artist.artistic_name or f"{request.user.first_name} {request.user.last_name}".strip() or request.user.phone_number
+            artist_name = artist.artistic_name or artist.name
             duration, bitrate, format_ext = get_audio_info(audio_file)
             if not format_ext:
                 _, ext = os.path.splitext(audio_file.name)
                 format_ext = ext.lstrip('.').lower()
             
-            bitrate_str = str(bitrate) if bitrate else "wav"
-            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            # Build filename base
+            # Note: featured artists for individual songs in album creation might not be supported in the current form structure,
+            # but we'll use the artist name and title.
+            filename_base = f"{artist_name} - {title}"
+            safe_filename_base = make_safe_filename(filename_base)
+            audio_filename = f"{safe_filename_base}.{format_ext}"
             
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
-            
-            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=audio_filename)
             
             converted_url = None
-            if format_ext == 'mp3' and bitrate and bitrate > 128:
+            if format_ext != 'mp3' or bitrate is None or bitrate > 128:
                 try:
+                    if hasattr(audio_file, 'seek'):
+                        audio_file.seek(0)
                     converted_file = convert_to_128kbps(audio_file)
-                    conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
-                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                    conv_filename = f"{safe_filename_base}_128.mp3"
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs/128', custom_filename=conv_filename)
                 except Exception:
                     pass
 
             song_cover = request.FILES.get(f"{prefix}cover_image")
             song_cover_url = ""
             if song_cover:
-                cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+                _, ext = os.path.splitext(song_cover.name)
+                cover_filename = f"{safe_filename_base}_cover{ext}"
                 song_cover_url, _ = upload_file_to_r2(song_cover, folder='covers', custom_filename=cover_filename)
             else:
                 song_cover_url = album.cover_image

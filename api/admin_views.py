@@ -501,24 +501,29 @@ class AdminSongDetailView(APIView):
                 _, ext = os.path.splitext(audio_file.name)
                 format_ext = ext.lstrip('.').lower()
             
-            bitrate_str = str(bitrate) if bitrate else "wav"
-            version = Song.objects.filter(artist=artist, title=title).count() + 1
+            # Build filename base
+            featured = data.get('featured_artists', song.featured_artists)
+            if featured:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            else:
+                filename_base = f"{artist_name} - {title}"
             
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
+            safe_filename_base = filename_base
+            audio_filename = f"{safe_filename_base}.{format_ext}"
             
-            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=audio_filename)
             data['audio_file'] = audio_url
             data['duration_seconds'] = duration
             data['original_format'] = format_ext
             
             # Handle 128kbps conversion
-            if format_ext == 'mp3' and bitrate and bitrate > 128:
+            if format_ext != 'mp3' or bitrate is None or bitrate > 128:
                 try:
+                    if hasattr(audio_file, 'seek'):
+                        audio_file.seek(0)
                     converted_file = convert_to_128kbps(audio_file)
-                    conv_filename = f"{safe_artist} - {safe_title} (128){version}.mp3"
-                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                    conv_filename = f"{safe_filename_base}_128.mp3"
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs/128', custom_filename=conv_filename)
                     data['converted_audio_url'] = converted_url
                 except Exception as e:
                     print(f"Admin conversion failed: {e}")
@@ -534,12 +539,16 @@ class AdminSongDetailView(APIView):
                 except Artist.DoesNotExist:
                     pass
             artist_name = artist.artistic_name or artist.name
-            version = Song.objects.filter(artist=artist, title=title).count() + 1
             
-            safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            featured = data.get('featured_artists', song.featured_artists)
+            if featured:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            else:
+                filename_base = f"{artist_name} - {title}"
             
-            cover_filename = f"{safe_artist} - {safe_title} {version}_cover"
+            safe_filename_base = filename_base
+            _, ext = os.path.splitext(cover_image.name)
+            cover_filename = f"{safe_filename_base}_cover{ext}"
             cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
             data['cover_image'] = cover_url
 
