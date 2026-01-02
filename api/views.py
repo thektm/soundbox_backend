@@ -4104,7 +4104,7 @@ class SearchSectionDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class RulesListCreateView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -4134,7 +4134,7 @@ class RulesListCreateView(APIView):
 
 
 
-@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class RulesDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -4215,7 +4215,7 @@ class RulesLatestView(APIView):
 
    
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistHomeView(APIView):
     """
     Artist Dashboard Home Endpoint.
@@ -4356,7 +4356,7 @@ class ArtistHomeView(APIView):
         })
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistLiveListenersView(APIView):
     """
     Retrieve the current live listener count for the authenticated artist.
@@ -4394,7 +4394,7 @@ class ArtistLiveListenersView(APIView):
         })
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistLiveListenersPollView(APIView):
     """
     Long-polling endpoint for live listener updates.
@@ -4452,7 +4452,7 @@ class ArtistLiveListenersPollView(APIView):
         })
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistAnalyticsView(APIView):
     """
     Comprehensive Artist Analytics Endpoint.
@@ -4619,7 +4619,7 @@ class ArtistAnalyticsView(APIView):
         })
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class DepositRequestView(APIView):
     """
     View for artists to manage their deposit requests.
@@ -4700,7 +4700,7 @@ class DepositRequestView(APIView):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistWalletView(APIView):
     """
     View to get artist's financial summary:
@@ -4773,7 +4773,7 @@ class ArtistWalletView(APIView):
         })
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistFinanceView(APIView):
     """
     Artist financial overview endpoint.
@@ -4971,7 +4971,7 @@ class ArtistFinanceView(APIView):
         })
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistFinanceSongsView(APIView):
     """
     Return paginated list of artist's songs with total income and plays.
@@ -5041,7 +5041,7 @@ class ArtistFinanceSongsView(APIView):
         return Response(results)
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistSettingsView(APIView):
     """Allow an artist to update their profile information and photos.
     Supports PUT (full replace) and PATCH (partial update).
@@ -5146,7 +5146,7 @@ class ArtistSettingsView(APIView):
         return Response(serializer.data)
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistChangePasswordView(APIView):
     """Change user's account password using current password and new password."""
     permission_classes = [IsAuthenticated]
@@ -5194,7 +5194,7 @@ class ArtistChangePasswordView(APIView):
         return Response({"status": "password_changed"}, status=status.HTTP_200_OK)
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistSongsManagementView(APIView):
     """
     View for artists to manage their own songs.
@@ -5522,7 +5522,7 @@ class ArtistSongsManagementView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistAlbumsManagementView(APIView):
     """
     View for artists to manage their own albums.
