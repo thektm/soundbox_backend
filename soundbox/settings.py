@@ -122,6 +122,9 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API documentation for SoundBox project',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    'SWAGGER_UI_SETTINGS': {
+        'displaySchemas': False,
+    },
 }
 
 # CORS - allow all origins for now (change in production)
