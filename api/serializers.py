@@ -705,6 +705,8 @@ class SongSerializer(serializers.ModelSerializer):
         return False
 
     def to_representation(self, instance):
+        print(f"DEBUG: Serializing Song ID: {instance.id}")
+        print(f"DEBUG: instance.converted_audio_url: {instance.converted_audio_url}")
         ret = super().to_representation(instance)
         # Sign URLs if they are on our CDN
         if ret.get('cover_image'):
@@ -713,6 +715,7 @@ class SongSerializer(serializers.ModelSerializer):
             ret['audio_file'] = generate_signed_r2_url(ret['audio_file'])
         if ret.get('converted_audio_url'):
             ret['converted_audio_url'] = generate_signed_r2_url(ret['converted_audio_url'])
+        print(f"DEBUG: Serialized data: {ret}")
         return ret
 
     def get_stream_url(self, obj):

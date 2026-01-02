@@ -60,12 +60,15 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None):
     else:
         filename = original_filename
     
+    print(f"DEBUG: upload_file_to_r2: filename={filename}, folder={folder}")
+    
     # Get original format
     _, ext = os.path.splitext(original_filename)
     original_format = ext.lstrip('.').lower()
     
     # Build key
     key = f"{folder + '/' if folder else ''}{filename}"
+    print(f"DEBUG: R2 Key: {key}")
     
     # Build boto3 client
     client_kwargs = {
@@ -91,16 +94,22 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None):
     if hasattr(file_obj, 'seek'):
         file_obj.seek(0)
         
-    s3.upload_fileobj(
-        file_obj,
-        getattr(settings, 'R2_BUCKET_NAME'),
-        key,
-        ExtraArgs={'ContentType': content_type}
-    )
+    try:
+        s3.upload_fileobj(
+            file_obj,
+            getattr(settings, 'R2_BUCKET_NAME'),
+            key,
+            ExtraArgs={'ContentType': content_type}
+        )
+        print(f"DEBUG: Upload successful")
+    except Exception as e:
+        print(f"DEBUG: R2 Upload failed: {str(e)}")
+        raise e
     
     # Build CDN URL
     cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
     url = f"{cdn_base}/{key}"
+    print(f"DEBUG: Returning URL: {url}")
     
     return url, original_format
 
@@ -109,14 +118,23 @@ def convert_to_128kbps(file_obj):
     Convert an audio file to 128kbps MP3.
     Returns a file-like object.
     """
+    print(f"DEBUG: convert_to_128kbps started")
     if hasattr(file_obj, 'seek'):
         file_obj.seek(0)
     
-    audio = AudioSegment.from_file(file_obj)
-    buffer = io.BytesIO()
-    audio.export(buffer, format="mp3", bitrate="128k")
-    buffer.seek(0)
-    return buffer
+    try:
+        print(f"DEBUG: Loading audio with pydub...")
+        audio = AudioSegment.from_file(file_obj)
+        print(f"DEBUG: Audio loaded. Duration: {len(audio)}ms")
+        buffer = io.BytesIO()
+        print(f"DEBUG: Exporting to mp3 128k...")
+        audio.export(buffer, format="mp3", bitrate="128k")
+        buffer.seek(0)
+        print(f"DEBUG: Export finished. Buffer size: {buffer.getbuffer().nbytes} bytes")
+        return buffer
+    except Exception as e:
+        print(f"DEBUG: pydub conversion error: {str(e)}")
+        raise e
 
 def get_audio_info(file_path_or_obj):
     """

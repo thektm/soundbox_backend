@@ -675,6 +675,7 @@ class SongUploadView(APIView):
         responses={201: SongSerializer}
     )
     def post(self, request, *args, **kwargs):
+        print(f"DEBUG: SongUploadView.post started for user {request.user}")
         serializer = SongUploadSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -712,7 +713,9 @@ class SongUploadView(APIView):
             
             # Convert to 128kbps and upload
             converted_audio_url = None
+            print(f"DEBUG: SongUploadView: format={original_format}, bitrate={bitrate}")
             if original_format != 'mp3' or bitrate is None or bitrate > 128:
+                print(f"DEBUG: SongUploadView: Starting conversion...")
                 try:
                     # Reset file pointer before conversion
                     if hasattr(audio_file, 'seek'):
@@ -720,14 +723,18 @@ class SongUploadView(APIView):
                     
                     converted_file = convert_to_128kbps(audio_file)
                     converted_filename = f"{safe_filename_base}_128.mp3"
+                    print(f"DEBUG: SongUploadView: Uploading converted file...")
                     converted_audio_url, _ = upload_file_to_r2(
                         converted_file,
                         folder='songs/128',
                         custom_filename=converted_filename
                     )
+                    print(f"DEBUG: SongUploadView: Converted URL: {converted_audio_url}")
                 except Exception as e:
                     # Log error but don't fail the whole upload
-                    print(f"Conversion failed: {e}")
+                    print(f"DEBUG: SongUploadView: Conversion failed: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # Upload cover image if provided
             cover_url = ""
@@ -770,6 +777,7 @@ class SongUploadView(APIView):
                 'lyricists': data.get('lyricists', []),
                 'credits': data.get('credits', ''),
             }
+            print(f"DEBUG: SongUploadView: Final song_data: {song_data}")
             
             # Add album if provided
             if data.get('album_id'):
@@ -5283,6 +5291,7 @@ class ArtistSongsManagementView(APIView):
         responses={201: SongSerializer}
     )
     def post(self, request):
+        print(f"DEBUG: ArtistSongsManagementView.post started for user {request.user}")
         artist = self.get_artist(request.user)
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
@@ -5322,19 +5331,29 @@ class ArtistSongsManagementView(APIView):
         filename = f"{safe_artist}-{safe_title}({bitrate_str}){version}.{format_ext}"
         
         # Upload original
+        print(f"DEBUG: Uploading original file: {filename}")
         audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=filename)
+        print(f"DEBUG: Original file uploaded to: {audio_url}")
         
         converted_url = None
         # Convert if it's not mp3 OR if it's mp3 with bitrate > 128 OR if bitrate is unknown
+        print(f"DEBUG: format_ext={format_ext}, bitrate={bitrate}")
         if format_ext != 'mp3' or bitrate is None or bitrate > 128:
+            print(f"DEBUG: Starting conversion to 128kbps...")
+            import os
+            print(f"DEBUG: PATH={os.environ.get('PATH')}")
             try:
                 if hasattr(audio_file, 'seek'):
                     audio_file.seek(0)
                 converted_file = convert_to_128kbps(audio_file)
                 conv_filename = f"{safe_artist}-{safe_title}(128){version}.mp3"
+                print(f"DEBUG: Uploading converted file: {conv_filename}")
                 converted_url, _ = upload_file_to_r2(converted_file, folder='songs', custom_filename=conv_filename)
+                print(f"DEBUG: Converted file uploaded to: {converted_url}")
             except Exception as e:
-                print(f"Conversion failed: {e}")
+                print(f"DEBUG: Conversion failed: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
         # Handle cover image
         cover_image = request.FILES.get('cover_image')
@@ -5383,13 +5402,17 @@ class ArtistSongsManagementView(APIView):
         clean['original_format'] = format_ext
         clean['uploader'] = request.user.id
 
+        print(f"DEBUG: Final clean data for serializer: {clean}")
+
         serializer = SongSerializer(data=clean, context={'request': request})
         if serializer.is_valid():
             serializer.save()
+            print(f"DEBUG: Song saved successfully. ID: {serializer.instance.id}")
             return Response({
                 "message": "OK",
                 "song": serializer.data
             }, status=status.HTTP_201_CREATED)
+        print(f"DEBUG: Serializer errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
