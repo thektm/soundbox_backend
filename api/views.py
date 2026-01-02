@@ -5051,7 +5051,10 @@ class ArtistSettingsView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
 
         # Handle images (upload to R2 and store URL)
         profile_file = request.FILES.get('profile_image')
@@ -5315,12 +5318,23 @@ class ArtistSongsManagementView(APIView):
             cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
 
         # Create song
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
-            if field in data and f"{field}_write" not in data:
-                data[f"{field}_write"] = data.getlist(field) if hasattr(data, 'getlist') else data[field]
+            if field in request.data:
+                if hasattr(request.data, 'getlist'):
+                    data[f"{field}_write"] = request.data.getlist(field)
+                else:
+                    data[f"{field}_write"] = request.data.get(field)
+
+        # Handle other list fields for JSON storage
+        for field in ['featured_artists', 'producers', 'composers', 'lyricists']:
+            if field in request.data and hasattr(request.data, 'getlist'):
+                data[field] = request.data.getlist(field)
 
         data['artist'] = artist.id
         data['audio_file'] = audio_url
@@ -5362,12 +5376,23 @@ class ArtistSongsManagementView(APIView):
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
         
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
 
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
-            if field in data and f"{field}_write" not in data:
-                data[f"{field}_write"] = data.getlist(field) if hasattr(data, 'getlist') else data[field]
+            if field in request.data:
+                if hasattr(request.data, 'getlist'):
+                    data[f"{field}_write"] = request.data.getlist(field)
+                else:
+                    data[f"{field}_write"] = request.data.get(field)
+
+        # Handle other list fields for JSON storage
+        for field in ['featured_artists', 'producers', 'composers', 'lyricists']:
+            if field in request.data and hasattr(request.data, 'getlist'):
+                data[field] = request.data.getlist(field)
         
         audio_file = request.FILES.get('audio_file')
         if audio_file:
@@ -5489,12 +5514,22 @@ class ArtistAlbumsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         # 1. Create Album
-        album_data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            album_data = request.data.dict()
+        else:
+            album_data = request.data.copy()
         
         # Map user-friendly field names to serializer write_only fields for album
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
-            if field in album_data and f"{field}_write" not in album_data:
-                album_data[f"{field}_write"] = album_data.getlist(field) if hasattr(album_data, 'getlist') else album_data[field]
+            if field in request.data:
+                if hasattr(request.data, 'getlist'):
+                    album_data[f"{field}_write"] = request.data.getlist(field)
+                else:
+                    album_data[f"{field}_write"] = request.data.get(field)
+        
+        # Handle existing_song_ids if sent as multiple values
+        if 'existing_song_ids' in request.data and hasattr(request.data, 'getlist'):
+            album_data['existing_song_ids'] = request.data.getlist('existing_song_ids')
 
         # Handle album cover
         album_cover = request.FILES.get('cover_image')
@@ -5637,12 +5672,18 @@ class ArtistAlbumsManagementView(APIView):
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
         
-        album_data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            album_data = request.data.dict()
+        else:
+            album_data = request.data.copy()
         
         # Map user-friendly field names to serializer write_only fields for album
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
-            if field in album_data and f"{field}_write" not in album_data:
-                album_data[f"{field}_write"] = album_data.getlist(field) if hasattr(album_data, 'getlist') else album_data[field]
+            if field in request.data:
+                if hasattr(request.data, 'getlist'):
+                    album_data[f"{field}_write"] = request.data.getlist(field)
+                else:
+                    album_data[f"{field}_write"] = request.data.get(field)
 
         album_cover = request.FILES.get('cover_image')
         if album_cover:

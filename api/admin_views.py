@@ -469,14 +469,17 @@ class AdminSongDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _update_song(self, request, song, partial=False):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         
         # Ensure list fields are correctly extracted from QueryDict
         for field in ['featured_artists', 'producers', 'composers', 'lyricists', 'genres', 'sub_genres', 'moods', 'tags']:
-            if field in data and hasattr(data, 'getlist'):
+            if field in request.data and hasattr(request.data, 'getlist'):
                 # Only use getlist if it's actually a list of values
                 # Sometimes frontend might send a single value or a comma-separated string
-                val = data.getlist(field)
+                val = request.data.getlist(field)
                 if len(val) == 1 and ',' in val[0]:
                     data[field] = [v.strip() for v in val[0].split(',')]
                 else:
@@ -606,7 +609,10 @@ class AdminReportDetailView(APIView):
     )
     def put(self, request, pk):
         report = get_object_or_404(Report, pk=pk)
-        data = request.data.copy()
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         
         # If has_reviewed is being set to true, set reviewed_at
         if data.get('has_reviewed') is True or data.get('has_reviewed') == 'true':
@@ -690,7 +696,10 @@ class AdminBannerAdListView(APIView):
         responses={201: AdminBannerAdSerializer}
     )
     def post(self, request):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         image_file = request.FILES.get('image_upload')
         if image_file:
             safe_title = "".join([c for c in data.get('title', 'banner') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -729,7 +738,10 @@ class AdminBannerAdDetailView(APIView):
     )
     def patch(self, request, pk):
         ad = get_object_or_404(BannerAd, pk=pk)
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         image_file = request.FILES.get('image_upload')
         if image_file:
             safe_title = "".join([c for c in data.get('title', ad.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -779,7 +791,10 @@ class AdminAudioAdListView(APIView):
         responses={201: AdminAudioAdSerializer}
     )
     def post(self, request):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         audio_file = request.FILES.get('audio_upload')
         if audio_file:
             safe_title = "".join([c for c in data.get('title', 'audio_ad') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -831,7 +846,10 @@ class AdminAudioAdDetailView(APIView):
     )
     def patch(self, request, pk):
         ad = get_object_or_404(AudioAd, pk=pk)
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         
         audio_file = request.FILES.get('audio_upload')
         if audio_file:
@@ -940,7 +958,10 @@ class AdminAlbumDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _update_album(self, request, album, partial=False):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         
         # Handle cover image upload
         cover_image = request.FILES.get('cover_image_upload')
@@ -1177,7 +1198,10 @@ class AdminSearchSectionListView(APIView):
         responses={201: AdminSearchSectionSerializer}
     )
     def post(self, request):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         icon_file = request.FILES.get('icon_logo_upload')
         if icon_file:
             safe_title = "".join([c for c in data.get('title', 'section') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -1216,7 +1240,10 @@ class AdminSearchSectionDetailView(APIView):
     )
     def patch(self, request, pk):
         section = get_object_or_404(SearchSection, pk=pk)
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         icon_file = request.FILES.get('icon_logo_upload')
         if icon_file:
             safe_title = "".join([c for c in data.get('title', section.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -1266,7 +1293,10 @@ class AdminEventPlaylistListView(APIView):
         responses={201: AdminEventPlaylistSerializer}
     )
     def post(self, request):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
             safe_title = "".join([c for c in data.get('title', 'event') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -1305,7 +1335,10 @@ class AdminEventPlaylistDetailView(APIView):
     )
     def patch(self, request, pk):
         event = get_object_or_404(EventPlaylist, pk=pk)
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
             safe_title = "".join([c for c in data.get('title', event.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -1355,7 +1388,10 @@ class AdminPlaylistListView(APIView):
         responses={201: AdminPlaylistSerializer}
     )
     def post(self, request):
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
             safe_title = "".join([c for c in data.get('title', 'playlist') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
@@ -1394,7 +1430,10 @@ class AdminPlaylistDetailView(APIView):
     )
     def patch(self, request, pk):
         playlist = get_object_or_404(Playlist, pk=pk)
-        data = dict(request.data)
+        if hasattr(request.data, 'dict'):
+            data = request.data.dict()
+        else:
+            data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
             safe_title = "".join([c for c in data.get('title', playlist.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
