@@ -5320,23 +5320,47 @@ class ArtistSongsManagementView(APIView):
             cover_filename = f"{safe_artist}-{safe_title}{version}_cover"
             cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
 
-        # Create song
-        data = request.data.copy()
-        
-        # Map user-friendly field names to serializer write_only fields
-        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
-            if field in data and f"{field}_write" not in data:
-                data[f"{field}_write"] = data.getlist(field) if hasattr(data, 'getlist') else data[field]
+        # Create a clean dict (avoid copying request.data which may include file objects)
+        clean = {}
 
-        data['artist'] = artist.id
-        data['audio_file'] = audio_url
-        data['converted_audio_url'] = converted_url
-        data['cover_image'] = cover_url
-        data['duration_seconds'] = duration
-        data['original_format'] = format_ext
-        data['uploader'] = request.user.id
-        
-        serializer = SongSerializer(data=data, context={'request': request})
+        # Copy simple scalar fields if provided
+        scalar_fields = ['title', 'is_single', 'release_date', 'language', 'description', 'lyrics',
+                         'tempo', 'energy', 'danceability', 'valence', 'acousticness', 'instrumentalness',
+                         'speechiness', 'live_performed', 'label', 'credits']
+        for field in scalar_fields:
+            if field in request.data:
+                clean[field] = request.data.get(field)
+
+        # Copy list fields (producers, composers, lyricists)
+        for list_field in ['producers', 'composers', 'lyricists']:
+            if hasattr(request.data, 'getlist'):
+                val = request.data.getlist(list_field)
+            else:
+                val = request.data.get(list_field)
+            if val:
+                clean[list_field] = val
+
+        # Map many-to-many id lists to serializer write-only fields
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+            if hasattr(request.data, 'getlist'):
+                val = request.data.getlist(field)
+            else:
+                val = request.data.get(field)
+            if val:
+                clean[f"{field}_write"] = val
+
+        # Attach the derived fields (strings/ids only)
+        clean['artist'] = artist.id
+        clean['audio_file'] = audio_url
+        if converted_url:
+            clean['converted_audio_url'] = converted_url
+        clean['cover_image'] = cover_url
+        if duration is not None:
+            clean['duration_seconds'] = duration
+        clean['original_format'] = format_ext
+        clean['uploader'] = request.user.id
+
+        serializer = SongSerializer(data=clean, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response({
