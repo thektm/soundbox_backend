@@ -689,10 +689,11 @@ class SongUploadView(APIView):
             # Build filename: "Artist - Title (feat. X)" or "Artist - Title"
             title = data['title']
             featured = data.get('featured_artists', [])
+            artist_name = artist.artistic_name or artist.name
             if featured:
-                filename_base = f"{artist.name} - {title} (feat. {', '.join(featured)})"
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
             else:
-                filename_base = f"{artist.name} - {title}"
+                filename_base = f"{artist_name} - {title}"
             
             safe_filename_base = filename_base
             
