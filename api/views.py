@@ -694,8 +694,7 @@ class SongUploadView(APIView):
             else:
                 filename_base = f"{artist.name} - {title}"
             
-            # Make filename URL-safe by replacing spaces with hyphens
-            safe_filename_base = filename_base.replace(' ', '-')
+            safe_filename_base = filename_base
             
             # Upload audio file
             audio_file = data['audio_file']
@@ -5325,10 +5324,8 @@ class ArtistSongsManagementView(APIView):
         # mohsen yegane - rage khab (128)1.mp3
         safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
         safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-        # Replace spaces with hyphens to make URL-safe
-        safe_title = safe_title.replace(' ', '-')
-        safe_artist = safe_artist.replace(' ', '-')
-        filename = f"{safe_artist}-{safe_title}({bitrate_str}){version}.{format_ext}"
+        
+        filename = f"{safe_artist} - {safe_title} ({bitrate_str}){version}.{format_ext}"
         
         # Upload original
         print(f"DEBUG: Uploading original file: {filename}")

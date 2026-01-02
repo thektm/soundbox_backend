@@ -107,8 +107,11 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None):
         raise e
     
     # Build CDN URL
+    from urllib.parse import quote
     cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-    url = f"{cdn_base}/{key}"
+    # URL-encode the key but keep slashes safe
+    encoded_key = quote(key, safe='/')
+    url = f"{cdn_base}/{encoded_key}"
     print(f"DEBUG: Returning URL: {url}")
     
     return url, original_format
