@@ -5051,7 +5051,7 @@ class ArtistSettingsView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
-        data = request.data.copy()
+        data = dict(request.data)
 
         # Handle images (upload to R2 and store URL)
         profile_file = request.FILES.get('profile_image')
@@ -5315,7 +5315,7 @@ class ArtistSongsManagementView(APIView):
             cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
 
         # Create song
-        data = request.data.copy()
+        data = dict(request.data)
         
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
@@ -5362,7 +5362,7 @@ class ArtistSongsManagementView(APIView):
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
         
-        data = request.data.copy()
+        data = dict(request.data)
 
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
@@ -5489,7 +5489,7 @@ class ArtistAlbumsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         # 1. Create Album
-        album_data = request.data.copy()
+        album_data = dict(request.data)
         
         # Map user-friendly field names to serializer write_only fields for album
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
@@ -5637,7 +5637,7 @@ class ArtistAlbumsManagementView(APIView):
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
         
-        album_data = request.data.copy()
+        album_data = dict(request.data)
         
         # Map user-friendly field names to serializer write_only fields for album
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
