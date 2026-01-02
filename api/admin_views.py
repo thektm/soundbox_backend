@@ -31,7 +31,7 @@ class AdminPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 100
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminUserListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -54,7 +54,7 @@ class AdminUserListView(APIView):
         serializer = AdminUserSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminUserDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -107,7 +107,7 @@ class AdminUserDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminUserBanView(APIView):
     """Ban a user and delete their artist profile and content."""
     permission_classes = [permissions.IsAdminUser]
@@ -149,7 +149,7 @@ class AdminUserBanView(APIView):
         
         return Response({"message": f"User {user.phone_number} has been banned and their content deleted."})
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -165,7 +165,7 @@ class AdminArtistListView(APIView):
         serializer = AdminArtistSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminArtistDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
     parser_classes = [MultiPartParser, FormParser]
@@ -218,7 +218,7 @@ class AdminArtistDetailView(APIView):
         artist.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminPendingArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -238,7 +238,7 @@ class AdminPendingArtistListView(APIView):
         serializer = AdminArtistAuthSerializer(result_page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminPendingArtistDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -291,7 +291,7 @@ class AdminPendingArtistDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminHomeSummaryView(APIView):
     """Return overall stream + pay summary for the admin home/dashboard."""
     permission_classes = [permissions.IsAdminUser]
@@ -365,7 +365,7 @@ class AdminHomeSummaryView(APIView):
         })
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminUserSearchView(APIView):
     """Search/list users, artists or pending artist submissions for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -399,7 +399,7 @@ class AdminUserSearchView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminSongListView(APIView):
     """List songs for admin with status filtering."""
     permission_classes = [permissions.IsAdminUser]
@@ -540,7 +540,7 @@ class AdminSongListView(APIView):
             )
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminSongDetailView(APIView):
     """Retrieve, update or delete a song for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -677,7 +677,7 @@ class AdminSongDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminReportListView(APIView):
     """List reports for admin with filtering."""
     permission_classes = [permissions.IsAdminUser]
@@ -710,7 +710,7 @@ class AdminReportListView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminReportDetailView(APIView):
     """Retrieve or update a report for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -757,7 +757,7 @@ class AdminReportDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminPlayConfigurationView(APIView):
     """View for admin to manage global play and price settings."""
     permission_classes = [permissions.IsAdminUser]
@@ -792,7 +792,7 @@ class AdminPlayConfigurationView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminBannerAdListView(APIView):
     """List and create banner ads for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -832,7 +832,7 @@ class AdminBannerAdListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminBannerAdDetailView(APIView):
     """Retrieve, update or delete a banner ad for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -881,7 +881,7 @@ class AdminBannerAdDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminAudioAdListView(APIView):
     """List and create audio ads for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -934,7 +934,7 @@ class AdminAudioAdListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminAudioAdDetailView(APIView):
     """Retrieve, update or delete an audio ad for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -996,7 +996,7 @@ class AdminAudioAdDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminAlbumListView(APIView):
     """List albums for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1020,7 +1020,7 @@ class AdminAlbumListView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminAlbumDetailView(APIView):
     """Retrieve, update or delete an album for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1092,7 +1092,7 @@ class AdminAlbumDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminAlbumSongActionView(APIView):
     """Actions on songs within an album: remove from album or delete song."""
     permission_classes = [permissions.IsAdminUser]
@@ -1127,7 +1127,7 @@ class AdminAlbumSongActionView(APIView):
             return Response({"error": "Invalid action. Use 'remove' or 'delete'"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminFinanceSummaryView(APIView):
     """Summary of payments and deposit requests."""
     permission_classes = [permissions.IsAdminUser]
@@ -1217,7 +1217,7 @@ class AdminFinanceSummaryView(APIView):
         return Response(summary)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminPaymentTransactionListView(APIView):
     """List payment transactions with filtering."""
     permission_classes = [permissions.IsAdminUser]
@@ -1248,7 +1248,7 @@ class AdminPaymentTransactionListView(APIView):
         return response
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminDepositRequestListView(APIView):
     """List deposit requests with filtering."""
     permission_classes = [permissions.IsAdminUser]
@@ -1279,7 +1279,7 @@ class AdminDepositRequestListView(APIView):
         return response
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminSearchSectionListView(APIView):
     """List and create search sections for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1319,7 +1319,7 @@ class AdminSearchSectionListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminSearchSectionDetailView(APIView):
     """Retrieve, update or delete a search section for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1368,7 +1368,7 @@ class AdminSearchSectionDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminEventPlaylistListView(APIView):
     """List and create event playlist groups for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1408,7 +1408,7 @@ class AdminEventPlaylistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminEventPlaylistDetailView(APIView):
     """Retrieve, update or delete an event playlist group for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1457,7 +1457,7 @@ class AdminEventPlaylistDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminPlaylistListView(APIView):
     """List and create playlists for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1497,7 +1497,7 @@ class AdminPlaylistListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminPlaylistDetailView(APIView):
     """Retrieve, update or delete a playlist for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1546,7 +1546,7 @@ class AdminPlaylistDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminEmployeeListView(APIView):
     """List and create employees (managers/supervisors)."""
     permission_classes = [permissions.IsAdminUser]
@@ -1587,7 +1587,7 @@ class AdminEmployeeListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Admin App Endpoints'])
+@extend_schema(tags=['Admin App Endpoints اندپوینت های برنامه ادمین'])
 class AdminEmployeeDetailView(APIView):
     """Retrieve, update or delete an employee."""
     permission_classes = [permissions.IsAdminUser]

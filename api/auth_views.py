@@ -224,7 +224,7 @@ def issue_tokens_for_user(user: User, request) -> dict:
     return {'accessToken': str(access), 'refreshToken': token_str}
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class AuthRegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -300,7 +300,7 @@ class AuthRegisterView(APIView):
         return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class AuthVerifyView(APIView):
     permission_classes = [AllowAny]
 
@@ -366,7 +366,7 @@ class AuthVerifyView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class LoginPasswordView(APIView):
     permission_classes = [AllowAny]
 
@@ -428,7 +428,7 @@ class LoginPasswordView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class LoginOtpRequestView(APIView):
     permission_classes = [AllowAny]
 
@@ -467,7 +467,7 @@ class LoginOtpRequestView(APIView):
         return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class LoginOtpVerifyView(APIView):
     permission_classes = [AllowAny]
 
@@ -525,7 +525,7 @@ class LoginOtpVerifyView(APIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
 
 
-@extend_schema(tags=['Artist App Endpoints'])
+@extend_schema(tags=['Artist App Endpoints اندپوینت های برنامه هنرمند'])
 class ArtistAuthView(APIView):
     """Create / retrieve / update artist authentication submissions for the authenticated user."""
     permission_classes = [IsAuthenticated]
@@ -584,7 +584,7 @@ class ArtistAuthView(APIView):
         return Response(serializer.data)
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
 
@@ -615,7 +615,7 @@ class ForgotPasswordView(APIView):
         return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class PasswordResetView(APIView):
     permission_classes = [AllowAny]
 
@@ -667,7 +667,7 @@ class PasswordResetView(APIView):
         return Response({'error': {'code': 'BAD_REQUEST', 'message': 'phone is required'}}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class TokenRefreshView(APIView):
     permission_classes = [AllowAny]
 
@@ -734,7 +734,7 @@ class TokenRefreshView(APIView):
         return Response({'accessToken': str(new_access), 'refreshToken': str(new_refresh)})
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class LogoutView(APIView):
     permission_classes = [AllowAny]
 
@@ -766,7 +766,7 @@ class LogoutView(APIView):
         return Response({'status': 'ok'})
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class SessionListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -792,7 +792,7 @@ class SessionListView(APIView):
         return Response(serializer.data)
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class SessionRevokeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -813,7 +813,7 @@ class SessionRevokeView(APIView):
         return Response({'status': 'ok'})
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class SessionRevokeOtherView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -856,7 +856,7 @@ class SessionRevokeOtherView(APIView):
         return Response({'status': 'ok', 'revoked_count': revoked_count})
 
 
-@extend_schema(tags=['Auth Endpoints'])
+@extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
