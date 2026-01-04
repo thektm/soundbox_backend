@@ -2634,15 +2634,23 @@ class HomeSummaryView(APIView):
             rec_view = UserRecommendationView()
             # force summary serializer mode on the recommendation view
             rec_view.force_summary = True
-            # Call the recommendation view with the same request so auth/params work
+            # initialize internal view attributes so it behaves like a real DRF view
+            rec_view.request = request
+            rec_view.args = args
+            rec_view.kwargs = kwargs
+            rec_view.format_kwarg = None
+
             rec_resp = rec_view.get(request)
+            # Expect a DRF Response
             if hasattr(rec_resp, 'status_code') and rec_resp.status_code == 200:
                 data['songs_recommendations'] = rec_resp.data
                 sections_count += 1
             else:
+                # Surface non-200 responses for debugging
                 data['songs_recommendations'] = rec_resp.data if hasattr(rec_resp, 'data') else None
-        except Exception:
-            data['songs_recommendations'] = None
+        except Exception as e:
+            # Surface exception message to help debug why recommendations are null
+            data['songs_recommendations'] = {'error': str(e)}
 
         # Helper for pagination links
         def get_next_link(url_name, count, limit):
