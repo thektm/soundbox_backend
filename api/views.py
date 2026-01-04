@@ -2629,6 +2629,9 @@ class HomeSummaryView(APIView):
         try:
             view = UserRecommendationView()
             view.request = request
+            view.args = args
+            view.kwargs = kwargs
+            view.format_kwarg = None
             resp = view.get(request)
             data['songs_recommendations'] = resp.data
             if data['songs_recommendations']:
@@ -2641,23 +2644,28 @@ class HomeSummaryView(APIView):
             try:
                 view_instance = view_class()
                 view_instance.request = request
+                view_instance.args = args
+                view_instance.kwargs = kwargs
                 view_instance.format_kwarg = None
                 
                 # Call get() to ensure all logic (like list() override in PlaylistRecommendationsView) is executed
-                resp = view_instance.get(request)
+                resp = view_instance.get(request, *args, **kwargs)
                 section_data = resp.data
                 
                 # Fix links to point to the specific endpoint instead of home/summary/
-                base_url = request.build_absolute_uri(reverse(url_name))
-                if isinstance(section_data, dict):
-                    if section_data.get('next'):
-                        parts = section_data['next'].split('?')
-                        params = parts[1] if len(parts) > 1 else ''
-                        section_data['next'] = f"{base_url}?{params}" if params else base_url
-                    if section_data.get('previous'):
-                        parts = section_data['previous'].split('?')
-                        params = parts[1] if len(parts) > 1 else ''
-                        section_data['previous'] = f"{base_url}?{params}" if params else base_url
+                try:
+                    base_url = request.build_absolute_uri(reverse(url_name))
+                    if isinstance(section_data, dict):
+                        if section_data.get('next'):
+                            parts = section_data['next'].split('?')
+                            params = parts[1] if len(parts) > 1 else ''
+                            section_data['next'] = f"{base_url}?{params}" if params else base_url
+                        if section_data.get('previous'):
+                            parts = section_data['previous'].split('?')
+                            params = parts[1] if len(parts) > 1 else ''
+                            section_data['previous'] = f"{base_url}?{params}" if params else base_url
+                except Exception:
+                    pass
                 
                 return section_data
             except Exception:
@@ -2757,7 +2765,7 @@ class UserRecommendationView(APIView):
             Q(moods__in=mood_ids) | 
             Q(artist__in=artist_ids) |
             Q(language__in=preferred_languages)
-        ).distinct()
+        ).distinct().prefetch_related('genres', 'moods')
 
         # 4. Scoring & Ranking
         # We'll use a simple weighted scoring system in Python for better control
@@ -2767,8 +2775,8 @@ class UserRecommendationView(APIView):
             score = 0
             
             # Metadata matching
-            song_genres = set(song.genres.values_list('id', flat=True))
-            song_moods = set(song.moods.values_list('id', flat=True))
+            song_genres = {g.id for g in song.genres.all()}
+            song_moods = {m.id for m in song.moods.all()}
             
             score += len(song_genres.intersection(genre_ids)) * 3
             score += len(song_moods.intersection(mood_ids)) * 2
@@ -3279,7 +3287,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             id__in=excluded_ids
         ).filter(
             Q(genres__in=top_genres) | Q(moods__in=top_moods)
-        ).distinct()[:200]
+        ).distinct().prefetch_related('genres', 'moods')[:200]
         
         # Score songs by similarity
         scored_songs = self._score_songs_by_similarity(candidates, top_genres, top_moods, avg_features)
@@ -3701,11 +3709,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             score = 0
             
             # Genre matching
-            song_genres = set(song.genres.values_list('id', flat=True))
+            song_genres = {g.id for g in song.genres.all()}
             score += len(song_genres.intersection(top_genres)) * 3
             
             # Mood matching
-            song_moods = set(song.moods.values_list('id', flat=True))
+            song_moods = {m.id for m in song.moods.all()}
             score += len(song_moods.intersection(top_moods)) * 2
             
             # Audio feature similarity

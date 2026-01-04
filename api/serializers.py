@@ -536,12 +536,11 @@ class PopularAlbumSerializer(AlbumSerializer):
         ]
 
     def get_top_song_covers(self, obj):
-        # obj.songs may be prefetched by the view; choose first 3 by release_date then created_at
+        # obj.songs may be prefetched by the view; choose first 3
         try:
-            songs_qs = obj.songs.all()
-            # If songs were not prefetched in the view, this will hit DB once per album
-            top = songs_qs.order_by('-release_date', '-created_at')[:3]
-            return [s.cover_image for s in top if s.cover_image]
+            # Use prefetched songs if available to avoid N+1 queries
+            songs = list(obj.songs.all())[:3]
+            return [s.cover_image for s in songs if s.cover_image]
         except Exception:
             return []
 
@@ -1274,7 +1273,8 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
 
         if order:
             ids = order[:3]
-            song_map = {s.id: s for s in obj.songs.filter(id__in=ids)}
+            all_songs = list(obj.songs.all())
+            song_map = {s.id: s for s in all_songs if s.id in ids}
             covers = []
             for sid in ids:
                 s = song_map.get(sid)
@@ -1282,22 +1282,22 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
                     covers.append(s.cover_image)
             return covers
 
-        songs = obj.songs.all()[:3]
+        songs = list(obj.songs.all())[:3]
         return [song.cover_image for song in songs if song.cover_image]
     
     def get_songs_count(self, obj):
-        return obj.songs.count()
+        return len(obj.songs.all())
     
     def get_is_liked(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.liked_by.filter(id=request.user.id).exists()
+            return request.user in obj.liked_by.all()
         return False
     
     def get_is_saved(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.saved_by.filter(id=request.user.id).exists()
+            return request.user in obj.saved_by.all()
         return False
     
     def get_likes_count(self, obj):
