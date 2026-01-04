@@ -418,6 +418,8 @@ class LikedSongsView(APIView):
     )
     def get(self, request):
         user = request.user
+        # Support forcing summary serializer selection from callers
+        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
         # Allow callers (e.g. HomeSummaryView) to force summary mode via attribute
         summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
         qs = SongLike.objects.filter(user=user).order_by('-created_at')
