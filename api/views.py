@@ -2609,6 +2609,7 @@ class HomeSummaryView(APIView):
             OpenApiParameter("pa_page", OpenApiTypes.INT, description="صفحه هنرمندان محبوب"),
             OpenApiParameter("pal_page", OpenApiTypes.INT, description="صفحه آلبوم‌های محبوب"),
             OpenApiParameter("pr_page", OpenApiTypes.INT, description="صفحه پلی‌لیست‌های پیشنهادی"),
+            OpenApiParameter("ds_page", OpenApiTypes.INT, description="صفحه اکتشافات"),
         ],
         responses={
             200: inline_serializer(
@@ -2654,6 +2655,14 @@ class HomeSummaryView(APIView):
                             'count': serializers.IntegerField(),
                             'next': serializers.CharField(allow_null=True),
                             'results': PlaylistSummarySerializer(many=True),
+                        }
+                    ),
+                    'discoveries': inline_serializer(
+                        name='DiscoveriesSummary',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'next': serializers.CharField(allow_null=True),
+                            'results': SongSummarySerializer(many=True),
                         }
                     ),
                 }
@@ -2723,6 +2732,36 @@ class HomeSummaryView(APIView):
         playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')
         data['playlist_recommendations'] = self.get_paginated_data(playlists_qs, 'pr_page', 6, PlaylistSummarySerializer, request)
         sections_count += 1
+
+        # 6. Discoveries (6 items)
+        try:
+            ds_view = DiscoveriesView()
+            ds_view.force_summary = True
+            ds_view.request = request
+            ds_view.args = args
+            ds_view.kwargs = kwargs
+            ds_view.format_kwarg = None
+            
+            # We want 6 items for the summary
+            # But DiscoveriesView.get uses ds_page and page_size=10 by default.
+            # I'll modify DiscoveriesView to accept a page_size or just call it and slice.
+            # Actually, I'll just use get_paginated_data logic here if I can, 
+            # but DiscoveriesView has complex exclusion logic.
+            
+            # Let's just call the view and it will return 10 items by default.
+            # The user asked for 6 items for each section based on how heavy it is.
+            # I'll adjust DiscoveriesView to use 6 items if called from here or just generally.
+            
+            ds_resp = ds_view.get(ds_view.request)
+            if hasattr(ds_resp, 'data'):
+                data['discoveries'] = ds_resp.data
+                # Slice to 6 if it returned more
+                if len(data['discoveries'].get('results', [])) > 6:
+                    data['discoveries']['results'] = data['discoveries']['results'][:6]
+                    data['discoveries']['count'] = 6
+                sections_count += 1
+        except Exception as e:
+            data['discoveries'] = {'error': str(e)}
 
         data['sections'] = sections_count
         return Response(data)
@@ -2885,6 +2924,84 @@ class UserRecommendationView(APIView):
             'count': len(recommended_songs),
             'next': next_url,
             'songs': serializer.data
+        })
+
+
+class DiscoveriesView(APIView):
+    """
+    Discovery engine for songs the user hasn't interacted with and aren't in the main summary lists.
+    Provides fresh content to explore.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="اکتشافات (آهنگ‌های جدید)",
+        description="دریافت لیست آهنگ‌هایی که کاربر تا به حال نشنیده و در لیست‌های اصلی صفحه اول نیستند.",
+        responses={
+            200: inline_serializer(
+                name='DiscoveriesResponse',
+                fields={
+                    'count': serializers.IntegerField(),
+                    'next': serializers.CharField(allow_null=True),
+                    'results': SongSummarySerializer(many=True),
+                }
+            )
+        }
+    )
+    def get(self, request):
+        user = request.user
+        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
+        
+        try:
+            page = int(request.query_params.get('ds_page', request.query_params.get('page', 1)))
+        except (ValueError, TypeError):
+            page = 1
+        page_size = 6
+        start = (page - 1) * page_size
+        end = start + page_size
+
+        # 1. Exclude user history
+        liked_song_ids = Song.objects.filter(liked_by=user).values_list('id', flat=True)
+        played_song_ids = PlayCount.objects.filter(user=user).values_list('songs__id', flat=True)
+        
+        # 2. Exclude "Mainstream" / Summary content
+        # Latest 50
+        latest_ids = Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-release_date', '-created_at')[:50].values_list('id', flat=True)
+        # Top 50 popular
+        popular_ids = Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-plays')[:50].values_list('id', flat=True)
+        
+        exclude_ids = set(liked_song_ids) | set(played_song_ids) | set(latest_ids) | set(popular_ids)
+        
+        # 3. Query for discoveries
+        # We use a stable ordering for pagination, but something that feels like "discovery"
+        # Maybe older songs or songs with fewer plays but still published
+        queryset = Song.objects.filter(
+            status=Song.STATUS_PUBLISHED
+        ).exclude(
+            id__in=exclude_ids
+        ).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('?') # Random for discovery
+        
+        # Since '?' is slow on large datasets, we might want to use a seed or a different approach if it grows.
+        # For now, it's the most "discovery" feel.
+        
+        # Manual pagination for random queryset
+        results = list(queryset[start:end + 1])
+        has_next = len(results) > page_size
+        if has_next:
+            results = results[:page_size]
+            params = request.query_params.copy()
+            params['ds_page'] = page + 1
+            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
+        else:
+            next_url = None
+
+        serializer_class = SongSummarySerializer if summary_mode else SongSerializer
+        serializer = serializer_class(results, many=True, context={'request': request})
+        
+        return Response({
+            'count': len(results),
+            'next': next_url,
+            'results': serializer.data
         })
 
 

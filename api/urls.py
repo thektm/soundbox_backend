@@ -52,6 +52,7 @@ from .views import (
     UserPlaylistAddSongView,
     UserPlaylistRemoveSongView,
     UserRecommendationView,
+    DiscoveriesView,
     LatestReleasesView,
     PopularArtistsView,
     PopularAlbumsView,
@@ -171,6 +172,7 @@ urlpatterns = [
     # Home Page Endpoints
     path('home/summary/', HomeSummaryView.as_view(), name='home_summary'),
     path('home/songs-recommendations/', UserRecommendationView.as_view(), name='user_recommendations'),
+    path('home/discoveries/', DiscoveriesView.as_view(), name='user_discoveries'),
     path('home/latest-releases/', LatestReleasesView.as_view(), name='user_latest_releases'),
     path('home/popular-artists/', PopularArtistsView.as_view(), name='user_popular_artists'),
     path('home/popular-albums/', PopularAlbumsView.as_view(), name='user_popular_albums'),
