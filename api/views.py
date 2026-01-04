@@ -418,9 +418,7 @@ class LikedSongsView(APIView):
     )
     def get(self, request):
         user = request.user
-        # Support forcing summary serializer selection from callers
-        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
-        # Allow callers (e.g. HomeSummaryView) to force summary mode via attribute
+        # Allow callers (e.g. HomeSummaryView) to force summary serializer selection
         summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
         qs = SongLike.objects.filter(user=user).order_by('-created_at')
         
@@ -2642,14 +2640,24 @@ class HomeSummaryView(APIView):
             rec_view.kwargs = kwargs
             rec_view.format_kwarg = None
 
-            rec_resp = rec_view.get(request)
-            # Expect a DRF Response
-            if hasattr(rec_resp, 'status_code') and rec_resp.status_code == 200:
+            # Call the view and handle possible return shapes robustly
+            rec_resp = rec_view.get(rec_view.request)
+
+            # If it's a DRF Response, use .data
+            if hasattr(rec_resp, 'data'):
                 data['songs_recommendations'] = rec_resp.data
                 sections_count += 1
+            # If view returned a plain dict/list, accept it directly
+            elif isinstance(rec_resp, (dict, list)):
+                data['songs_recommendations'] = rec_resp
+                sections_count += 1
+            # If view returned a tuple like (data, status) or (data, status, headers)
+            elif isinstance(rec_resp, tuple) and len(rec_resp) >= 1:
+                data['songs_recommendations'] = rec_resp[0]
+                sections_count += 1
             else:
-                # Surface non-200 responses for debugging
-                data['songs_recommendations'] = rec_resp.data if hasattr(rec_resp, 'data') else None
+                # Fallback: set an explanatory null to avoid silent None
+                data['songs_recommendations'] = {'error': 'unexpected recommendation response', 'raw': str(rec_resp)}
         except Exception as e:
             # Surface exception message to help debug why recommendations are null
             data['songs_recommendations'] = {'error': str(e)}
@@ -2731,6 +2739,8 @@ class UserRecommendationView(APIView):
     )
     def get(self, request):
         user = request.user
+        # Allow callers (e.g. HomeSummaryView) to force summary serializer selection
+        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
         
         # 1. Get user's interaction history
         liked_song_ids = set(Song.objects.filter(liked_by=user).values_list('id', flat=True))
