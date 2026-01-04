@@ -42,6 +42,10 @@ from .serializers import (
     ReportSerializer,
     NotificationSerializer,
     AudioAdSerializer,
+    SongSummarySerializer,
+    ArtistSummarySerializer,
+    AlbumSummarySerializer,
+    PlaylistSummarySerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -2563,58 +2567,55 @@ class HomeSummaryView(APIView):
     """
     Aggregated view for the home page summary.
     Contains recommendations, latest releases, popular artists, popular albums, and playlist recommendations.
+    Optimized for speed and minimal JSON size.
     """
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
-        summary="خلاصه صفحه اصلی",
-        description="دریافت مجموعه‌ای از پیشنهادات، جدیدترین‌ها، هنرمندان و آلبوم‌های محبوب و پلی‌لیست‌های پیشنهادی در یک درخواست.",
+        summary="خلاصه صفحه اصلی (بهینه شده)",
+        description="دریافت مجموعه‌ای از پیشنهادات، جدیدترین‌ها، هنرمندان و آلبوم‌های محبوب و پلی‌لیست‌های پیشنهادی در یک درخواست با حجم کم و سرعت بالا.",
         responses={
             200: inline_serializer(
                 name='HomeSummaryResponse',
                 fields={
                     'sections': serializers.IntegerField(),
                     'songs_recommendations': inline_serializer(
-                        name='SongsRec',
+                        name='SongsRecSummary',
                         fields={
                             'type': serializers.CharField(),
-                            'songs': SongSerializer(many=True),
+                            'songs': SongSummarySerializer(many=True),
                         }
                     ),
                     'latest_releases': inline_serializer(
-                        name='LatestRel',
+                        name='LatestRelSummary',
                         fields={
                             'count': serializers.IntegerField(),
                             'next': serializers.CharField(allow_null=True),
-                            'previous': serializers.CharField(allow_null=True),
-                            'results': SongSerializer(many=True),
+                            'results': SongSummarySerializer(many=True),
                         }
                     ),
                     'popular_artists': inline_serializer(
-                        name='PopularArt',
+                        name='PopularArtSummary',
                         fields={
                             'count': serializers.IntegerField(),
                             'next': serializers.CharField(allow_null=True),
-                            'previous': serializers.CharField(allow_null=True),
-                            'results': PopularArtistSerializer(many=True),
+                            'results': ArtistSummarySerializer(many=True),
                         }
                     ),
                     'popular_albums': inline_serializer(
-                        name='PopularAlb',
+                        name='PopularAlbSummary',
                         fields={
                             'count': serializers.IntegerField(),
                             'next': serializers.CharField(allow_null=True),
-                            'previous': serializers.CharField(allow_null=True),
-                            'results': PopularAlbumSerializer(many=True),
+                            'results': AlbumSummarySerializer(many=True),
                         }
                     ),
                     'playlist_recommendations': inline_serializer(
-                        name='PlaylistRec',
+                        name='PlaylistRecSummary',
                         fields={
                             'count': serializers.IntegerField(),
                             'next': serializers.CharField(allow_null=True),
-                            'previous': serializers.CharField(allow_null=True),
-                            'results': RecommendedPlaylistListSerializer(many=True),
+                            'results': PlaylistSummarySerializer(many=True),
                         }
                     ),
                 }
@@ -2622,70 +2623,75 @@ class HomeSummaryView(APIView):
         }
     )
     def get(self, request, *args, **kwargs):
+        user = request.user
         data = {}
         sections_count = 0
 
         # 1. Songs Recommendations
         try:
-            view = UserRecommendationView()
-            view.request = request
-            view.args = args
-            view.kwargs = kwargs
-            view.format_kwarg = None
-            resp = view.get(request)
-            data['songs_recommendations'] = resp.data
-            if data['songs_recommendations']:
+            # Create a mutable copy of query params to set summary=true
+            q_params = request.query_params.copy()
+            q_params['summary'] = 'true'
+            
+            rec_view = UserRecommendationView()
+            rec_view.request = request
+            rec_view.request.query_params = q_params # Inject summary=true
+            
+            rec_resp = rec_view.get(request)
+            if rec_resp.status_code == 200:
+                data['songs_recommendations'] = rec_resp.data
                 sections_count += 1
         except Exception:
             data['songs_recommendations'] = None
 
-        # Helper for paginated sections
-        def get_section_data(view_class, url_name):
-            try:
-                view_instance = view_class()
-                view_instance.request = request
-                view_instance.args = args
-                view_instance.kwargs = kwargs
-                view_instance.format_kwarg = None
-                
-                # Call get() to ensure all logic (like list() override in PlaylistRecommendationsView) is executed
-                resp = view_instance.get(request, *args, **kwargs)
-                section_data = resp.data
-                
-                # Fix links to point to the specific endpoint instead of home/summary/
-                try:
-                    base_url = request.build_absolute_uri(reverse(url_name))
-                    if isinstance(section_data, dict):
-                        if section_data.get('next'):
-                            parts = section_data['next'].split('?')
-                            params = parts[1] if len(parts) > 1 else ''
-                            section_data['next'] = f"{base_url}?{params}" if params else base_url
-                        if section_data.get('previous'):
-                            parts = section_data['previous'].split('?')
-                            params = parts[1] if len(parts) > 1 else ''
-                            section_data['previous'] = f"{base_url}?{params}" if params else base_url
-                except Exception:
-                    pass
-                
-                return section_data
-            except Exception:
-                return None
+        # Helper for pagination links
+        def get_next_link(url_name, count, limit):
+            if count >= limit: # If we reached the limit, there's likely more
+                base_url = request.build_absolute_uri(reverse(url_name))
+                return f"{base_url}?page=2"
+            return None
 
         # 2. Latest Releases
-        data['latest_releases'] = get_section_data(LatestReleasesView, 'user_latest_releases')
-        if data['latest_releases']: sections_count += 1
+        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by').order_by('-release_date', '-created_at')[:20]
+        data['latest_releases'] = {
+            'count': 20,
+            'next': get_next_link('user_latest_releases', 20, 20),
+            'results': SongSummarySerializer(latest_qs, many=True, context={'request': request}).data
+        }
+        sections_count += 1
 
         # 3. Popular Artists
-        data['popular_artists'] = get_section_data(PopularArtistsView, 'user_popular_artists')
-        if data['popular_artists']: sections_count += 1
+        artist_view = PopularArtistsView()
+        artist_view.request = request
+        artists_qs = artist_view.get_queryset().prefetch_related('followers')[:20]
+        data['popular_artists'] = {
+            'count': 20,
+            'next': get_next_link('user_popular_artists', 20, 20),
+            'results': ArtistSummarySerializer(artists_qs, many=True, context={'request': request}).data
+        }
+        sections_count += 1
 
         # 4. Popular Albums
-        data['popular_albums'] = get_section_data(PopularAlbumsView, 'user_popular_albums')
-        if data['popular_albums']: sections_count += 1
+        album_view = PopularAlbumsView()
+        album_view.request = request
+        albums_qs = album_view.get_queryset().select_related('artist').prefetch_related('liked_by')[:20]
+        data['popular_albums'] = {
+            'count': 20,
+            'next': get_next_link('user_popular_albums', 20, 20),
+            'results': AlbumSummarySerializer(albums_qs, many=True, context={'request': request}).data
+        }
+        sections_count += 1
 
         # 5. Playlist Recommendations
-        data['playlist_recommendations'] = get_section_data(PlaylistRecommendationsView, 'user_playlist_recommendations')
-        if data['playlist_recommendations']: sections_count += 1
+        playlist_view = PlaylistRecommendationsView()
+        playlist_view.request = request
+        playlists_qs = playlist_view.get_queryset().prefetch_related('songs', 'liked_by')[:20]
+        data['playlist_recommendations'] = {
+            'count': 20,
+            'next': get_next_link('user_playlist_recommendations', 20, 20),
+            'results': PlaylistSummarySerializer(playlists_qs, many=True, context={'request': request}).data
+        }
+        sections_count += 1
 
         data['sections'] = sections_count
         return Response(data)
@@ -2725,8 +2731,11 @@ class UserRecommendationView(APIView):
         
         # If no history, return trending songs
         if not all_interacted_ids:
-            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-plays')[:10]
-            serializer = SongSerializer(trending_songs, many=True, context={'request': request})
+            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by').order_by('-plays')[:10]
+            
+            serializer_class = SongSummarySerializer if request.query_params.get('summary') == 'true' else SongSerializer
+            serializer = serializer_class(trending_songs, many=True, context={'request': request})
+            
             return Response({
                 'type': 'trending',
                 'message': 'Start listening to get personalized recommendations!',
@@ -2765,7 +2774,7 @@ class UserRecommendationView(APIView):
             Q(moods__in=mood_ids) | 
             Q(artist__in=artist_ids) |
             Q(language__in=preferred_languages)
-        ).distinct().prefetch_related('genres', 'moods')
+        ).distinct().select_related('artist', 'album').prefetch_related('genres', 'moods', 'liked_by')
 
         # 4. Scoring & Ranking
         # We'll use a simple weighted scoring system in Python for better control
@@ -2809,7 +2818,8 @@ class UserRecommendationView(APIView):
             ).order_by('-plays')[:needed]
             recommended_songs.extend(list(trending))
 
-        serializer = SongSerializer(recommended_songs, many=True, context={'request': request})
+        serializer_class = SongSummarySerializer if request.query_params.get('summary') == 'true' else SongSerializer
+        serializer = serializer_class(recommended_songs, many=True, context={'request': request})
         return Response({
             'type': 'personalized',
             'songs': serializer.data

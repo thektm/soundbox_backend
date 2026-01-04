@@ -10,6 +10,109 @@ from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
+class SongSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for songs in summary views"""
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+    album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    stream_url = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Song
+        fields = [
+            'id', 'title', 'artist_name', 'album_title', 'cover_image', 
+            'stream_url', 'duration_seconds', 'is_liked'
+        ]
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            # Use prefetched data if available
+            if hasattr(obj, '_prefetched_objects_cache') and 'liked_by' in obj._prefetched_objects_cache:
+                return request.user in obj.liked_by.all()
+            return SongLike.objects.filter(user=request.user, song=obj).exists()
+        return False
+
+    def get_stream_url(self, obj):
+        # Reuse the logic but maybe we can optimize it later
+        # For now, let's keep it consistent with SongStreamSerializer but without the ad logic for speed
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            import secrets
+            short_token = secrets.token_urlsafe(6)[:8]
+            unique_otplay_id = secrets.token_urlsafe(16)
+            
+            StreamAccess.objects.create(
+                user=request.user,
+                song=obj,
+                short_token=short_token,
+                unique_otplay_id=unique_otplay_id
+            )
+            
+            from django.urls import reverse
+            short_path = reverse('stream-short', kwargs={'token': short_token})
+            return request.build_absolute_uri(short_path)
+        return None
+
+
+class ArtistSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for artists in summary views"""
+    is_following = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Artist
+        fields = ['id', 'name', 'profile_image', 'is_following', 'verified']
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            if hasattr(obj, '_prefetched_objects_cache') and 'followers' in obj._prefetched_objects_cache:
+                return any(f.follower_user_id == request.user.id for f in obj.followers.all())
+            return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
+        return False
+
+
+class AlbumSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for albums in summary views"""
+    artist_name = serializers.CharField(source='artist.name', read_only=True)
+    is_liked = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Album
+        fields = ['id', 'title', 'artist_name', 'cover_image', 'is_liked']
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            if hasattr(obj, '_prefetched_objects_cache') and 'liked_by' in obj._prefetched_objects_cache:
+                return request.user in obj.liked_by.all()
+            return AlbumLike.objects.filter(user=request.user, album=obj).exists()
+        return False
+
+
+class PlaylistSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for playlists in summary views"""
+    songs_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RecommendedPlaylist
+        fields = ['id', 'unique_id', 'title', 'description', 'cover_image', 'songs_count', 'is_liked']
+
+    def get_songs_count(self, obj):
+        if hasattr(obj, 'songs'):
+            return obj.songs.count()
+        return 0
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            if hasattr(obj, '_prefetched_objects_cache') and 'liked_by' in obj._prefetched_objects_cache:
+                return request.user in obj.liked_by.all()
+            return obj.liked_by.filter(id=request.user.id).exists()
+        return False
+
+
 class FollowableEntitySerializer(serializers.Serializer):
     """Unified serializer for both User and Artist in follow lists"""
     id = serializers.IntegerField()
