@@ -418,6 +418,8 @@ class LikedSongsView(APIView):
     )
     def get(self, request):
         user = request.user
+        # Allow callers (e.g. HomeSummaryView) to force summary mode via attribute
+        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
         qs = SongLike.objects.filter(user=user).order_by('-created_at')
         
         paginator = PageNumberPagination()
@@ -2629,19 +2631,16 @@ class HomeSummaryView(APIView):
 
         # 1. Songs Recommendations
         try:
-            # Create a mutable copy of query params to set summary=true
-            q_params = request.query_params.copy()
-            q_params['summary'] = 'true'
-            
             rec_view = UserRecommendationView()
-            rec_view.request = request
-            rec_view.request.query_params = q_params # Inject summary=true
-            
-            # Call get() with the modified request that includes summary=true
-            rec_resp = rec_view.get(rec_view.request)
-            if rec_resp.status_code == 200:
+            # force summary serializer mode on the recommendation view
+            rec_view.force_summary = True
+            # Call the recommendation view with the same request so auth/params work
+            rec_resp = rec_view.get(request)
+            if hasattr(rec_resp, 'status_code') and rec_resp.status_code == 200:
                 data['songs_recommendations'] = rec_resp.data
                 sections_count += 1
+            else:
+                data['songs_recommendations'] = rec_resp.data if hasattr(rec_resp, 'data') else None
         except Exception:
             data['songs_recommendations'] = None
 
@@ -2734,7 +2733,7 @@ class UserRecommendationView(APIView):
         if not all_interacted_ids:
             trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('-plays')[:10]
             
-            serializer_class = SongSummarySerializer if request.query_params.get('summary') == 'true' else SongSerializer
+            serializer_class = SongSummarySerializer if summary_mode else SongSerializer
             serializer = serializer_class(trending_songs, many=True, context={'request': request})
             
             return Response({
@@ -2819,7 +2818,7 @@ class UserRecommendationView(APIView):
             ).order_by('-plays')[:needed]
             recommended_songs.extend(list(trending))
 
-        serializer_class = SongSummarySerializer if request.query_params.get('summary') == 'true' else SongSerializer
+        serializer_class = SongSummarySerializer if summary_mode else SongSerializer
         serializer = serializer_class(recommended_songs, many=True, context={'request': request})
         return Response({
             'type': 'personalized',
