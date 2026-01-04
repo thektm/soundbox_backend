@@ -2685,7 +2685,7 @@ class HomeSummaryView(APIView):
         # 5. Playlist Recommendations
         playlist_view = PlaylistRecommendationsView()
         playlist_view.request = request
-        playlists_qs = playlist_view.get_queryset().prefetch_related('songs', 'liked_by')[:20]
+        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')[:20]
         data['playlist_recommendations'] = {
             'count': 20,
             'next': get_next_link('user_playlist_recommendations', 20, 20),

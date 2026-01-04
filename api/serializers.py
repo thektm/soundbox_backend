@@ -129,10 +129,21 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for playlists in summary views"""
     songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
 
     class Meta:
         model = RecommendedPlaylist
         fields = ['id', 'unique_id', 'title', 'description', 'cover_image', 'songs_count', 'is_liked']
+
+    def get_cover_image(self, obj):
+        # RecommendedPlaylist doesn't have cover_image, but its playlist_ref might
+        if obj.playlist_ref and obj.playlist_ref.cover_image:
+            return obj.playlist_ref.cover_image
+        # Fallback to the first song's cover if available
+        first_song = obj.songs.first()
+        if first_song:
+            return first_song.cover_image
+        return None
 
     def get_songs_count(self, obj):
         if hasattr(obj, 'songs'):
