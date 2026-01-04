@@ -71,6 +71,7 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Q, Count, Avg, F
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 
@@ -2557,6 +2558,131 @@ class UserPlaylistRemoveSongView(APIView):
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
+@extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
+class HomeSummaryView(APIView):
+    """
+    Aggregated view for the home page summary.
+    Contains recommendations, latest releases, popular artists, popular albums, and playlist recommendations.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="خلاصه صفحه اصلی",
+        description="دریافت مجموعه‌ای از پیشنهادات، جدیدترین‌ها، هنرمندان و آلبوم‌های محبوب و پلی‌لیست‌های پیشنهادی در یک درخواست.",
+        responses={
+            200: inline_serializer(
+                name='HomeSummaryResponse',
+                fields={
+                    'sections': serializers.IntegerField(),
+                    'songs_recommendations': inline_serializer(
+                        name='SongsRec',
+                        fields={
+                            'type': serializers.CharField(),
+                            'songs': SongSerializer(many=True),
+                        }
+                    ),
+                    'latest_releases': inline_serializer(
+                        name='LatestRel',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'next': serializers.CharField(allow_null=True),
+                            'previous': serializers.CharField(allow_null=True),
+                            'results': SongSerializer(many=True),
+                        }
+                    ),
+                    'popular_artists': inline_serializer(
+                        name='PopularArt',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'next': serializers.CharField(allow_null=True),
+                            'previous': serializers.CharField(allow_null=True),
+                            'results': PopularArtistSerializer(many=True),
+                        }
+                    ),
+                    'popular_albums': inline_serializer(
+                        name='PopularAlb',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'next': serializers.CharField(allow_null=True),
+                            'previous': serializers.CharField(allow_null=True),
+                            'results': PopularAlbumSerializer(many=True),
+                        }
+                    ),
+                    'playlist_recommendations': inline_serializer(
+                        name='PlaylistRec',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'next': serializers.CharField(allow_null=True),
+                            'previous': serializers.CharField(allow_null=True),
+                            'results': RecommendedPlaylistListSerializer(many=True),
+                        }
+                    ),
+                }
+            )
+        }
+    )
+    def get(self, request, *args, **kwargs):
+        data = {}
+        sections_count = 0
+
+        # 1. Songs Recommendations
+        try:
+            view = UserRecommendationView()
+            view.request = request
+            resp = view.get(request)
+            data['songs_recommendations'] = resp.data
+            if data['songs_recommendations']:
+                sections_count += 1
+        except Exception:
+            data['songs_recommendations'] = None
+
+        # Helper for paginated sections
+        def get_section_data(view_class, url_name):
+            try:
+                view_instance = view_class()
+                view_instance.request = request
+                view_instance.format_kwarg = None
+                
+                # Call get() to ensure all logic (like list() override in PlaylistRecommendationsView) is executed
+                resp = view_instance.get(request)
+                section_data = resp.data
+                
+                # Fix links to point to the specific endpoint instead of home/summary/
+                base_url = request.build_absolute_uri(reverse(url_name))
+                if isinstance(section_data, dict):
+                    if section_data.get('next'):
+                        parts = section_data['next'].split('?')
+                        params = parts[1] if len(parts) > 1 else ''
+                        section_data['next'] = f"{base_url}?{params}" if params else base_url
+                    if section_data.get('previous'):
+                        parts = section_data['previous'].split('?')
+                        params = parts[1] if len(parts) > 1 else ''
+                        section_data['previous'] = f"{base_url}?{params}" if params else base_url
+                
+                return section_data
+            except Exception:
+                return None
+
+        # 2. Latest Releases
+        data['latest_releases'] = get_section_data(LatestReleasesView, 'user_latest_releases')
+        if data['latest_releases']: sections_count += 1
+
+        # 3. Popular Artists
+        data['popular_artists'] = get_section_data(PopularArtistsView, 'user_popular_artists')
+        if data['popular_artists']: sections_count += 1
+
+        # 4. Popular Albums
+        data['popular_albums'] = get_section_data(PopularAlbumsView, 'user_popular_albums')
+        if data['popular_albums']: sections_count += 1
+
+        # 5. Playlist Recommendations
+        data['playlist_recommendations'] = get_section_data(PlaylistRecommendationsView, 'user_playlist_recommendations')
+        if data['playlist_recommendations']: sections_count += 1
+
+        data['sections'] = sections_count
+        return Response(data)
+
+
 class UserRecommendationView(APIView):
     """
     Spotify-level recommendation engine.
