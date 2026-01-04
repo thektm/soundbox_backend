@@ -2973,16 +2973,18 @@ class DiscoveriesView(APIView):
         exclude_ids = set(liked_song_ids) | set(played_song_ids) | set(latest_ids) | set(popular_ids)
         
         # 3. Query for discoveries
-        # We use a stable ordering for pagination, but something that feels like "discovery"
-        # Maybe older songs or songs with fewer plays but still published
+        # We use random ordering to ensure it always feels fresh.
         queryset = Song.objects.filter(
             status=Song.STATUS_PUBLISHED
         ).exclude(
             id__in=exclude_ids
-        ).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('?') # Random for discovery
+        )
         
-        # Since '?' is slow on large datasets, we might want to use a seed or a different approach if it grows.
-        # For now, it's the most "discovery" feel.
+        # If no songs left after strict exclusion, fallback to all published songs to avoid empty section
+        if not queryset.exists():
+            queryset = Song.objects.filter(status=Song.STATUS_PUBLISHED)
+            
+        queryset = queryset.select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('?') # Random for discovery
         
         # Manual pagination for random queryset
         results = list(queryset[start:end + 1])
