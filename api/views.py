@@ -2637,7 +2637,8 @@ class HomeSummaryView(APIView):
             rec_view.request = request
             rec_view.request.query_params = q_params # Inject summary=true
             
-            rec_resp = rec_view.get(request)
+            # Call get() with the modified request that includes summary=true
+            rec_resp = rec_view.get(rec_view.request)
             if rec_resp.status_code == 200:
                 data['songs_recommendations'] = rec_resp.data
                 sections_count += 1
