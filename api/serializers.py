@@ -16,13 +16,30 @@ class SongSummarySerializer(serializers.ModelSerializer):
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     stream_url = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    genre_names = serializers.SerializerMethodField()
+    tag_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
+    sub_genre_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Song
         fields = [
             'id', 'title', 'artist_name', 'album_title', 'cover_image', 
-            'stream_url', 'duration_seconds', 'is_liked'
+            'stream_url', 'duration_seconds', 'is_liked',
+            'genre_names', 'tag_names', 'mood_names', 'sub_genre_names'
         ]
+
+    def get_genre_names(self, obj):
+        return [g.name for g in obj.genres.all()]
+
+    def get_tag_names(self, obj):
+        return [t.name for t in obj.tags.all()]
+
+    def get_mood_names(self, obj):
+        return [m.name for m in obj.moods.all()]
+
+    def get_sub_genre_names(self, obj):
+        return [sg.name for sg in obj.sub_genres.all()]
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
@@ -58,16 +75,22 @@ class SongSummarySerializer(serializers.ModelSerializer):
 class ArtistSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for artists in summary views"""
     is_following = serializers.SerializerMethodField()
+    followers_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Artist
-        fields = ['id', 'name', 'profile_image', 'is_following', 'verified']
+        fields = ['id', 'name', 'profile_image', 'is_following', 'verified', 'followers_count']
+
+    def get_followers_count(self, obj):
+        if hasattr(obj, '_prefetched_objects_cache') and 'follower_artist_relations' in obj._prefetched_objects_cache:
+            return len(obj.follower_artist_relations.all())
+        return Follow.objects.filter(followed_artist=obj).count()
 
     def get_is_following(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            if hasattr(obj, '_prefetched_objects_cache') and 'followers' in obj._prefetched_objects_cache:
-                return any(f.follower_user_id == request.user.id for f in obj.followers.all())
+            if hasattr(obj, '_prefetched_objects_cache') and 'follower_artist_relations' in obj._prefetched_objects_cache:
+                return any(f.follower_user_id == request.user.id for f in obj.follower_artist_relations.all())
             return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
         return False
 
@@ -76,10 +99,22 @@ class AlbumSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for albums in summary views"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     is_liked = serializers.SerializerMethodField()
+    genre_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
+    sub_genre_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Album
-        fields = ['id', 'title', 'artist_name', 'cover_image', 'is_liked']
+        fields = ['id', 'title', 'artist_name', 'cover_image', 'is_liked', 'genre_names', 'mood_names', 'sub_genre_names']
+
+    def get_genre_names(self, obj):
+        return [g.name for g in obj.genres.all()]
+
+    def get_mood_names(self, obj):
+        return [m.name for m in obj.moods.all()]
+
+    def get_sub_genre_names(self, obj):
+        return [sg.name for sg in obj.sub_genres.all()]
 
     def get_is_liked(self, obj):
         request = self.context.get('request')

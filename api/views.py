@@ -2652,7 +2652,7 @@ class HomeSummaryView(APIView):
             return None
 
         # 2. Latest Releases
-        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by').order_by('-release_date', '-created_at')[:20]
+        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('-release_date', '-created_at')[:20]
         data['latest_releases'] = {
             'count': 20,
             'next': get_next_link('user_latest_releases', 20, 20),
@@ -2663,7 +2663,7 @@ class HomeSummaryView(APIView):
         # 3. Popular Artists
         artist_view = PopularArtistsView()
         artist_view.request = request
-        artists_qs = artist_view.get_queryset().prefetch_related('followers')[:20]
+        artists_qs = artist_view.get_queryset().prefetch_related('follower_artist_relations')[:20]
         data['popular_artists'] = {
             'count': 20,
             'next': get_next_link('user_popular_artists', 20, 20),
@@ -2674,7 +2674,7 @@ class HomeSummaryView(APIView):
         # 4. Popular Albums
         album_view = PopularAlbumsView()
         album_view.request = request
-        albums_qs = album_view.get_queryset().select_related('artist').prefetch_related('liked_by')[:20]
+        albums_qs = album_view.get_queryset().select_related('artist').prefetch_related('liked_by', 'genres', 'moods', 'sub_genres')[:20]
         data['popular_albums'] = {
             'count': 20,
             'next': get_next_link('user_popular_albums', 20, 20),
@@ -2731,7 +2731,7 @@ class UserRecommendationView(APIView):
         
         # If no history, return trending songs
         if not all_interacted_ids:
-            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by').order_by('-plays')[:10]
+            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('-plays')[:10]
             
             serializer_class = SongSummarySerializer if request.query_params.get('summary') == 'true' else SongSerializer
             serializer = serializer_class(trending_songs, many=True, context={'request': request})
@@ -2774,7 +2774,7 @@ class UserRecommendationView(APIView):
             Q(moods__in=mood_ids) | 
             Q(artist__in=artist_ids) |
             Q(language__in=preferred_languages)
-        ).distinct().select_related('artist', 'album').prefetch_related('genres', 'moods', 'liked_by')
+        ).distinct().select_related('artist', 'album').prefetch_related('genres', 'moods', 'tags', 'sub_genres', 'liked_by')
 
         # 4. Scoring & Ranking
         # We'll use a simple weighted scoring system in Python for better control
