@@ -420,6 +420,22 @@ class LikedSongsView(APIView):
         user = request.user
         # Allow callers (e.g. HomeSummaryView) to force summary serializer selection
         summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
+
+        # Pagination parameters used for slicing ranked/trending lists
+        try:
+            page = int(request.query_params.get('page', 1))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get('page_size', 10))
+        except (ValueError, TypeError):
+            page_size = 10
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 10
+        start = (page - 1) * page_size
+        end = start + page_size
         # pagination defaults
         try:
             page = int(request.query_params.get('page', 1))
