@@ -26,7 +26,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'artist_name', 'album_title', 'cover_image', 
             'stream_url', 'duration_seconds', 'is_liked',
-            'genre_names', 'tag_names', 'mood_names', 'sub_genre_names'
+            'genre_names', 'tag_names', 'mood_names', 'sub_genre_names', 'play_counts'
         ]
 
     def get_genre_names(self, obj):
@@ -70,6 +70,22 @@ class SongSummarySerializer(serializers.ModelSerializer):
             short_path = reverse('stream-short', kwargs={'token': short_token})
             return request.build_absolute_uri(short_path)
         return None
+
+    def get_play_counts(self, obj):
+        # Prefer the denormalized `plays` field when present (cheapest)
+        try:
+            if getattr(obj, 'plays', None) is not None:
+                return int(obj.plays)
+        except Exception:
+            pass
+
+        # Fallback to counting PlayCount relation (use prefetched cache if available)
+        try:
+            if hasattr(obj, '_prefetched_objects_cache') and 'play_counts' in obj._prefetched_objects_cache:
+                return len(obj.play_counts.all())
+            return obj.play_counts.count()
+        except Exception:
+            return 0
 
 
 class ArtistSummarySerializer(serializers.ModelSerializer):

@@ -2652,7 +2652,7 @@ class HomeSummaryView(APIView):
             return None
 
         # 2. Latest Releases
-        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('-release_date', '-created_at')[:20]
+        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-release_date', '-created_at')[:20]
         data['latest_releases'] = {
             'count': 20,
             'next': get_next_link('user_latest_releases', 20, 20),
@@ -2731,7 +2731,7 @@ class UserRecommendationView(APIView):
         
         # If no history, return trending songs
         if not all_interacted_ids:
-            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('-plays')[:10]
+            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-plays')[:10]
             
             serializer_class = SongSummarySerializer if summary_mode else SongSerializer
             serializer = serializer_class(trending_songs, many=True, context={'request': request})
