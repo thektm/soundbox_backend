@@ -420,6 +420,21 @@ class LikedSongsView(APIView):
         user = request.user
         # Allow callers (e.g. HomeSummaryView) to force summary serializer selection
         summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
+        # pagination support
+        try:
+            page = int(request.query_params.get('page', 1))
+        except Exception:
+            page = 1
+        try:
+            page_size = int(request.query_params.get('page_size', 10))
+        except Exception:
+            page_size = 10
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 10
+        start = (page - 1) * page_size
+        end = start + page_size
         qs = SongLike.objects.filter(user=user).order_by('-created_at')
         
         paginator = PageNumberPagination()
@@ -2628,38 +2643,71 @@ class HomeSummaryView(APIView):
         user = request.user
         data = {}
         sections_count = 0
+        # Per-section page sizes (smaller for heavier sections)
+        section_page_sizes = {
+            'songs_recommendations': 10,
+            'latest_releases': 10,
+            'popular_artists': 6,
+            'popular_albums': 6,
+            'playlist_recommendations': 6,
+        }
 
-        # 1. Songs Recommendations
+        # helper to build pagination metadata and next link
+        def build_section_meta(qs, serializer_cls, page_size, url_name, extra_params=None):
+            total = qs.count()
+            page = 1
+            start = 0
+            end = page_size
+            items_qs = qs[start:end]
+            items = serializer_cls(items_qs, many=True, context={'request': request}).data
+            next_link = None
+            if total > end:
+                base_url = request.build_absolute_uri(reverse(url_name))
+                params = f"?page=2&page_size={page_size}"
+                if extra_params:
+                    # append extra params after preserving ?
+                    params += '&' + '&'.join(f"{k}={v}" for k, v in (extra_params.items()))
+                next_link = f"{base_url}{params}"
+            return {
+                'count': page_size,
+                'next': next_link,
+                'results': items
+            }
+
+        # 1. Songs Recommendations (paginated)
         try:
             rec_view = UserRecommendationView()
-            # force summary serializer mode on the recommendation view
             rec_view.force_summary = True
-            # initialize internal view attributes so it behaves like a real DRF view
             rec_view.request = request
             rec_view.args = args
             rec_view.kwargs = kwargs
             rec_view.format_kwarg = None
 
-            # Call the view and handle possible return shapes robustly
-            rec_resp = rec_view.get(rec_view.request)
-
-            # If it's a DRF Response, use .data
+            # Use the recommendation view as the source of truth but request only first page
+            # Build a queryset-like wrapper by calling the view with page params if supported
+            # Here we call the view and expect it to honor page/page_size query params.
+            # Ensure the request has default page_size for summary
+            # (don't mutate original request object; build a shallow copy of query_params)
+            from django.http import QueryDict
+            qp = request.GET.copy()
+            qp._mutable = True
+            qp['page'] = qp.get('page', '1')
+            qp['page_size'] = qp.get('page_size', str(section_page_sizes['songs_recommendations']))
+            # attach to a shallow wrapper request
+            req_copy = request._request
+            req_copy.GET = QueryDict(qp.urlencode())
+            # call view
+            rec_resp = rec_view.get(request._request)
             if hasattr(rec_resp, 'data'):
+                # rec_resp.data expected to be {'type':..., 'songs':[...]} — keep as-is
                 data['songs_recommendations'] = rec_resp.data
                 sections_count += 1
-            # If view returned a plain dict/list, accept it directly
-            elif isinstance(rec_resp, (dict, list)):
+            elif isinstance(rec_resp, dict):
                 data['songs_recommendations'] = rec_resp
                 sections_count += 1
-            # If view returned a tuple like (data, status) or (data, status, headers)
-            elif isinstance(rec_resp, tuple) and len(rec_resp) >= 1:
-                data['songs_recommendations'] = rec_resp[0]
-                sections_count += 1
             else:
-                # Fallback: set an explanatory null to avoid silent None
                 data['songs_recommendations'] = {'error': 'unexpected recommendation response', 'raw': str(rec_resp)}
         except Exception as e:
-            # Surface exception message to help debug why recommendations are null
             data['songs_recommendations'] = {'error': str(e)}
 
         # Helper for pagination links
@@ -2669,46 +2717,30 @@ class HomeSummaryView(APIView):
                 return f"{base_url}?page=2"
             return None
 
-        # 2. Latest Releases
-        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-release_date', '-created_at')[:20]
-        data['latest_releases'] = {
-            'count': 20,
-            'next': get_next_link('user_latest_releases', 20, 20),
-            'results': SongSummarySerializer(latest_qs, many=True, context={'request': request}).data
-        }
+        # 2. Latest Releases (paginated)
+        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-release_date', '-created_at')
+        data['latest_releases'] = build_section_meta(latest_qs, SongSummarySerializer, section_page_sizes['latest_releases'], 'user_latest_releases')
         sections_count += 1
 
-        # 3. Popular Artists
+        # 3. Popular Artists (paginated)
         artist_view = PopularArtistsView()
         artist_view.request = request
-        artists_qs = artist_view.get_queryset().prefetch_related('follower_artist_relations')[:20]
-        data['popular_artists'] = {
-            'count': 20,
-            'next': get_next_link('user_popular_artists', 20, 20),
-            'results': ArtistSummarySerializer(artists_qs, many=True, context={'request': request}).data
-        }
+        artists_qs = artist_view.get_queryset().prefetch_related('follower_artist_relations')
+        data['popular_artists'] = build_section_meta(artists_qs, ArtistSummarySerializer, section_page_sizes['popular_artists'], 'user_popular_artists')
         sections_count += 1
 
-        # 4. Popular Albums
+        # 4. Popular Albums (paginated)
         album_view = PopularAlbumsView()
         album_view.request = request
-        albums_qs = album_view.get_queryset().select_related('artist').prefetch_related('liked_by', 'genres', 'moods', 'sub_genres')[:20]
-        data['popular_albums'] = {
-            'count': 20,
-            'next': get_next_link('user_popular_albums', 20, 20),
-            'results': AlbumSummarySerializer(albums_qs, many=True, context={'request': request}).data
-        }
+        albums_qs = album_view.get_queryset().select_related('artist').prefetch_related('liked_by', 'genres', 'moods', 'sub_genres')
+        data['popular_albums'] = build_section_meta(albums_qs, AlbumSummarySerializer, section_page_sizes['popular_albums'], 'user_popular_albums')
         sections_count += 1
 
-        # 5. Playlist Recommendations
+        # 5. Playlist Recommendations (paginated)
         playlist_view = PlaylistRecommendationsView()
         playlist_view.request = request
-        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')[:20]
-        data['playlist_recommendations'] = {
-            'count': 20,
-            'next': get_next_link('user_playlist_recommendations', 20, 20),
-            'results': PlaylistSummarySerializer(playlists_qs, many=True, context={'request': request}).data
-        }
+        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')
+        data['playlist_recommendations'] = build_section_meta(playlists_qs, PlaylistSummarySerializer, section_page_sizes['playlist_recommendations'], 'user_playlist_recommendations')
         sections_count += 1
 
         data['sections'] = sections_count
@@ -2751,11 +2783,10 @@ class UserRecommendationView(APIView):
         
         # If no history, return trending songs
         if not all_interacted_ids:
-            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-plays')[:10]
-            
+            trending_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-plays')
+            trending_songs = trending_qs[start:end]
             serializer_class = SongSummarySerializer if summary_mode else SongSerializer
             serializer = serializer_class(trending_songs, many=True, context={'request': request})
-            
             return Response({
                 'type': 'trending',
                 'message': 'Start listening to get personalized recommendations!',
@@ -2795,12 +2826,13 @@ class UserRecommendationView(APIView):
             Q(artist__in=artist_ids) |
             Q(language__in=preferred_languages)
         ).distinct().select_related('artist', 'album').prefetch_related('genres', 'moods', 'tags', 'sub_genres', 'liked_by')
-
         # 4. Scoring & Ranking
         # We'll use a simple weighted scoring system in Python for better control
         scored_candidates = []
+        # choose candidate limit based on requested page_size to allow multiple pages
+        candidate_limit = max(200, page_size * 6)
         
-        for song in candidates[:100]: # Limit to 100 candidates for performance
+        for song in candidates[:candidate_limit]:
             score = 0
             
             # Metadata matching
@@ -2825,16 +2857,16 @@ class UserRecommendationView(APIView):
         # Sort by score descending
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
         
-        # Take top 10
-        recommended_songs = [item[0] for item in scored_candidates[:10]]
+        # Take top N (we'll page over the ranked list)
+        ranked = [item[0] for item in scored_candidates]
+        recommended_songs = ranked[start:end]
         
         # If we don't have enough recommendations, fill with trending
-        if len(recommended_songs) < 10:
-            needed = 10 - len(recommended_songs)
+        if len(recommended_songs) < page_size:
+            needed = page_size - len(recommended_songs)
+            exclude_ids = list(all_interacted_ids) + [s.id for s in recommended_songs]
             trending = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(
-                id__in=all_interacted_ids
-            ).exclude(
-                id__in=[s.id for s in recommended_songs]
+                id__in=exclude_ids
             ).order_by('-plays')[:needed]
             recommended_songs.extend(list(trending))
 
