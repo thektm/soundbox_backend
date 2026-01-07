@@ -2202,6 +2202,52 @@ class StreamShortRedirectView(APIView):
             return UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
             
         except StreamAccess.DoesNotExist:
+            # Try to find a StreamAccess with this token regardless of user.
+            # If found, it means the short link exists but belongs to another user
+            # or was expired/removed for this user. Create a new short token for
+            # the current user for the same song and return 421 with the new link.
+            from django.urls import reverse
+            other = StreamAccess.objects.select_related('song').filter(short_token=token).first()
+            if other and other.song:
+                # generate a new short token and unique_otplay_id
+                import secrets
+                from uuid import uuid4
+
+                short_token = None
+                for _ in range(6):
+                    candidate = secrets.token_urlsafe(6)[:8]
+                    if not StreamAccess.objects.filter(short_token=candidate).exists():
+                        short_token = candidate
+                        break
+                if not short_token:
+                    short_token = uuid4().hex[:8]
+
+                unique_otplay_id = None
+                for _ in range(6):
+                    candidate = secrets.token_urlsafe(16)
+                    if not StreamAccess.objects.filter(unique_otplay_id=candidate).exists():
+                        unique_otplay_id = candidate
+                        break
+                if not unique_otplay_id:
+                    unique_otplay_id = uuid4().hex
+
+                # create a new StreamAccess for this user and same song
+                new_sa = StreamAccess.objects.create(
+                    user=request.user,
+                    song=other.song,
+                    short_token=short_token,
+                    unique_otplay_id=unique_otplay_id
+                )
+
+                new_path = reverse('stream-short', kwargs={'token': short_token})
+                new_url = request.build_absolute_uri(new_path) if hasattr(request, 'build_absolute_uri') else new_path
+
+                return Response({
+                    'error': 'Stream link expired or unauthorized for this user',
+                    'message': 'A new short stream link has been generated',
+                    'new_stream_url': new_url
+                }, status=421)
+
             return Response(
                 {'error': 'Invalid or unauthorized stream URL'},
                 status=status.HTTP_404_NOT_FOUND
