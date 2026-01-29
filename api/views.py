@@ -2853,7 +2853,94 @@ class HomeSummaryView(APIView):
             # If generation fails, fall back to returning any existing recommendations
             pass
         playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')
-        data['playlist_recommendations'] = self.get_paginated_data(playlists_qs, 'pr_page', 6, PlaylistSummarySerializer, request)
+
+        # Custom pagination + per-request shuffling and ephemeral cover selection
+        try:
+            page = int(request.query_params.get('pr_page', 1))
+        except (ValueError, TypeError):
+            page = 1
+        page_size = 6
+        start = (page - 1) * page_size
+        end = start + page_size
+
+        # fetch one extra to detect next
+        results_qs = list(playlists_qs[start:end + 1])
+        has_next = len(results_qs) > page_size
+        if has_next:
+            results_list = results_qs[:page_size]
+        else:
+            results_list = results_qs
+
+        # Shuffle playlist order (so each request sees different sequence)
+        try:
+            random.shuffle(results_list)
+        except Exception:
+            pass
+
+        # For each recommended playlist, reshuffle song order (persist if possible)
+        for rec in results_list:
+            try:
+                songs = list(rec.songs.all())
+                if not songs:
+                    continue
+
+                # score songs by popularity (plays + likes*50) then randomize ties
+                scored = []
+                for s in songs:
+                    likes = s.liked_by.count() if hasattr(s, 'liked_by') else 0
+                    score = (getattr(s, 'plays', 0) or 0) + likes * 50
+                    scored.append((s, score))
+                scored.sort(key=lambda tup: (-tup[1], random.random()))
+                new_order_ids = [s.id for s, _ in scored]
+
+                if rec.song_order and rec.song_order == new_order_ids:
+                    tmp = new_order_ids[:]
+                    random.shuffle(tmp)
+                    new_order_ids = tmp
+
+                rec.song_order = new_order_ids
+                try:
+                    rec.save(update_fields=['song_order'])
+                except Exception:
+                    pass
+            except Exception:
+                continue
+
+        # Serialize
+        serialized = PlaylistSummarySerializer(results_list, many=True, context={'request': request}).data
+
+        # Post-process serialized to select an ephemeral cover image from songs (different each request)
+        import time
+        now_seed = int(time.time() * 1000)
+        rec_map = {str(r.unique_id): r for r in results_list}
+        for i, item in enumerate(serialized):
+            try:
+                rec_obj = rec_map.get(item.get('unique_id'))
+                if not rec_obj:
+                    continue
+                songs = list(rec_obj.songs.all())
+                candidates = []
+                for s in songs:
+                    cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
+                    if cover:
+                        candidates.append(cover)
+                if candidates:
+                    idx = (abs(hash(str(rec_obj.unique_id))) + now_seed + i) % len(candidates)
+                    item['cover_image'] = candidates[idx]
+            except Exception:
+                continue
+
+        next_url = None
+        if has_next:
+            params = request.query_params.copy()
+            params['pr_page'] = page + 1
+            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
+
+        data['playlist_recommendations'] = {
+            'count': len(serialized),
+            'next': next_url,
+            'results': serialized
+        }
         sections_count += 1
 
         # 6. Discoveries (6 items)
