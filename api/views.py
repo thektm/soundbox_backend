@@ -2144,10 +2144,80 @@ class StreamShortRedirectView(APIView):
             
             # Check if already unwrapped
             if stream_access.unwrapped:
-                return Response(
-                    {'error': 'This stream URL has already been used'},
-                    status=status.HTTP_400_BAD_REQUEST
+                # Generate a new short token for this user/song and return it
+                from django.urls import reverse
+                import secrets
+                from uuid import uuid4
+                import random
+
+                short_token = None
+                for _ in range(6):
+                    candidate = secrets.token_urlsafe(6)[:8]
+                    if not StreamAccess.objects.filter(short_token=candidate).exists():
+                        short_token = candidate
+                        break
+                if not short_token:
+                    short_token = uuid4().hex[:8]
+
+                unique_otplay_id = None
+                for _ in range(6):
+                    candidate = secrets.token_urlsafe(16)
+                    if not StreamAccess.objects.filter(unique_otplay_id=candidate).exists():
+                        unique_otplay_id = candidate
+                        break
+                if not unique_otplay_id:
+                    unique_otplay_id = uuid4().hex
+
+                # create a new StreamAccess for this user and same song
+                new_sa = StreamAccess.objects.create(
+                    user=request.user,
+                    song=stream_access.song,
+                    short_token=short_token,
+                    unique_otplay_id=unique_otplay_id
                 )
+
+                # Build new short URL
+                new_path = reverse('stream-short', kwargs={'token': short_token})
+                new_url = request.build_absolute_uri(new_path) if hasattr(request, 'build_absolute_uri') else new_path
+
+                # Count unwrapped streams for this user (last 24 hours for fairness)
+                cutoff_time = timezone.now() - timedelta(hours=24)
+                unwrapped_count = StreamAccess.objects.filter(
+                    user=request.user,
+                    unwrapped=True,
+                    unwrapped_at__gte=cutoff_time
+                ).count()
+
+                # Consider ad system: if ad should be shown now, attach ad info to new StreamAccess and return ad response
+                config = PlayConfiguration.objects.last()
+                ad_freq = config.ad_frequency if config else 15
+
+                if ad_freq > 0 and unwrapped_count % ad_freq == 0:
+                    active_ads = AudioAd.objects.filter(is_active=True)
+                    if active_ads.exists():
+                        ad = random.choice(active_ads)
+                        submit_id = secrets.token_urlsafe(32)
+
+                        new_sa.ad_required = True
+                        new_sa.ad_seen = False
+                        new_sa.ad_submit_id = submit_id
+                        new_sa.ad_object = ad
+                        new_sa.save(update_fields=['ad_required', 'ad_seen', 'ad_submit_id', 'ad_object'])
+
+                        return Response({
+                            'type': 'ad',
+                            'ad': AudioAdSerializer(ad).data,
+                            'submit_id': submit_id,
+                            'message': 'Please listen to this brief advertisement',
+                            'unwrap_count': unwrapped_count,
+                            'new_stream_url': new_url,
+                        }, status=413)
+
+                # Otherwise return error with new stream url and HTTP 413
+                return Response({
+                    'error': 'This stream URL has already been used',
+                    'new_stream_url': new_url
+                }, status=413)
 
             # Check if user has any pending ads (required but not seen) from previous requests
             pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
