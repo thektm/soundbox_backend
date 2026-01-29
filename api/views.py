@@ -3487,7 +3487,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             Q(user=user) | Q(user__isnull=True)  # User-specific or general recommendations
         ).filter(
             Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())  # Not expired
-        ).prefetch_related('songs', 'liked_by', 'saved_by')
+        ).prefetch_related('songs', 'liked_by', 'saved_by').order_by('-created_at')
         
         return queryset
 
@@ -4154,20 +4154,35 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         ).first()
         
         # Create or update the canonical Playlist object
+        # Choose a cover image from the playlist songs to avoid repeated static covers
+        def choose_cover(songs_list):
+            for s in songs_list:
+                # prefer song.cover_image, fallback to album.cover_image
+                cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
+                if cover:
+                    return cover
+            return None
+
+        songs_list = playlist_data.get('songs', [])
+        cover_choice = choose_cover(songs_list)
+
         if existing and existing.playlist_ref:
             pl = existing.playlist_ref
             pl.title = playlist_data['title']
             pl.description = playlist_data['description']
+            if cover_choice:
+                pl.cover_image = cover_choice
             pl.save()
         else:
             pl = Playlist.objects.create(
                 title=playlist_data['title'],
                 description=playlist_data['description'],
-                created_by=Playlist.CREATED_BY_SYSTEM
+                created_by=Playlist.CREATED_BY_SYSTEM,
+                cover_image=cover_choice or None
             )
-        
+
         # Sync songs to the canonical playlist
-        pl.songs.set(playlist_data['songs'])
+        pl.songs.set(songs_list)
         
         if existing:
             # Update existing
@@ -4212,6 +4227,17 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 random.shuffle(song_ids)
                 playlist.song_order = song_ids
                 playlist.save()
+        
+        # Ensure playlist_ref.cover_image is set for the saved recommended playlist
+        try:
+            ref = (existing.playlist_ref if existing and existing.playlist_ref else playlist.playlist_ref)
+            if ref and (not ref.cover_image) and songs_list:
+                chosen = choose_cover(songs_list)
+                if chosen:
+                    ref.cover_image = chosen
+                    ref.save()
+        except Exception:
+            pass
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
