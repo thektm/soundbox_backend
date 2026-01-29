@@ -3520,7 +3520,14 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         # If no pagination is applied (page is None), fall back to full list
         results = page if page is not None else list(qs)
 
-        # For each recommended playlist in the page, pick a new cover and reshuffle song order
+        # Shuffle playlist order for each request so HomeSummary sees a different sequence
+        try:
+            results = list(results)
+            random.shuffle(results)
+        except Exception:
+            pass
+
+        # For each recommended playlist in the page, pick a new cover (ephemeral) and reshuffle song order (persisted)
         for rec in results:
             try:
                 # choose a random cover from songs that's different than current playlist_ref.cover_image
@@ -3549,13 +3556,8 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                     else:
                         chosen = random.choice(candidates)
 
-                    # persist the new cover on the canonical playlist so next request will differ
-                    try:
-                        if rec.playlist_ref and chosen and rec.playlist_ref.cover_image != chosen:
-                            rec.playlist_ref.cover_image = chosen
-                            rec.playlist_ref.save(update_fields=['cover_image'])
-                    except Exception:
-                        pass
+                    # do not require persisting cover change for each request (too frequent);
+                    # we'll apply the chosen cover to the serialized response below.
 
                 # reshuffle song order for this request, biasing by popularity (plays + likes)
                 try:
@@ -3576,17 +3578,48 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                         new_order_ids = tmp
 
                     rec.song_order = new_order_ids
-                    rec.save(update_fields=['song_order'])
+                    try:
+                        rec.save(update_fields=['song_order'])
+                    except Exception:
+                        # ignore save failures but keep ephemeral change
+                        pass
                 except Exception:
                     pass
             except Exception:
                 continue
 
-        # serialize and return paginated response
+        # serialize
         serializer = self.get_serializer(results, many=True, context={'request': request})
+        serialized = serializer.data
+
+        # Post-process serialized data: assign a fresh cover_image for each playlist item
+        import time
+        now_seed = int(time.time() * 1000)
+        rec_map = {str(r.unique_id): r for r in results}
+
+        for i, item in enumerate(serialized):
+            try:
+                rec_obj = rec_map.get(item.get('unique_id'))
+                if not rec_obj:
+                    continue
+
+                songs = list(rec_obj.songs.all())
+                candidates = []
+                for s in songs:
+                    cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
+                    if cover:
+                        candidates.append(cover)
+
+                if candidates:
+                    idx = (abs(hash(str(rec_obj.unique_id))) + now_seed + i) % len(candidates)
+                    chosen = candidates[idx]
+                    item['cover_image'] = chosen
+            except Exception:
+                continue
+
         if page is not None:
-            return self.get_paginated_response(serializer.data)
-        return Response(serializer.data)
+            return self.get_paginated_response(serialized)
+        return Response(serialized)
 
 
     def _generate_recommendations(self, user, force=False):
