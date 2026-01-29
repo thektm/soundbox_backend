@@ -3513,7 +3513,80 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         if cnt % 3 == 0:
             self._generate_recommendations(user, force=True)
 
-        return super().list(request, *args, **kwargs)
+        # Fetch queryset and paginate manually so we can reshuffle per-request
+        qs = self.get_queryset()
+        page = self.paginate_queryset(qs)
+
+        # If no pagination is applied (page is None), fall back to full list
+        results = page if page is not None else list(qs)
+
+        # For each recommended playlist in the page, pick a new cover and reshuffle song order
+        for rec in results:
+            try:
+                # choose a random cover from songs that's different than current playlist_ref.cover_image
+                songs = list(rec.songs.all())
+                if not songs:
+                    continue
+
+                # collect candidate covers
+                candidates = []
+                for s in songs:
+                    cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
+                    if cover:
+                        candidates.append(cover)
+
+                # pick a cover different from existing if possible
+                chosen = None
+                if candidates:
+                    current_cover = None
+                    if rec.playlist_ref:
+                        current_cover = rec.playlist_ref.cover_image
+
+                    # try to pick a different cover
+                    different = [c for c in candidates if c != current_cover]
+                    if different:
+                        chosen = random.choice(different)
+                    else:
+                        chosen = random.choice(candidates)
+
+                    # persist the new cover on the canonical playlist so next request will differ
+                    try:
+                        if rec.playlist_ref and chosen and rec.playlist_ref.cover_image != chosen:
+                            rec.playlist_ref.cover_image = chosen
+                            rec.playlist_ref.save(update_fields=['cover_image'])
+                    except Exception:
+                        pass
+
+                # reshuffle song order for this request, biasing by popularity (plays + likes)
+                try:
+                    # compute a popularity score and sort with random tie-breaker to get new order each time
+                    scored = []
+                    for s in songs:
+                        likes = s.liked_by.count() if hasattr(s, 'liked_by') else 0
+                        score = (getattr(s, 'plays', 0) or 0) + likes * 50
+                        scored.append((s, score))
+
+                    scored.sort(key=lambda tup: (-tup[1], random.random()))
+                    new_order_ids = [s.id for s, _ in scored]
+
+                    # If the new order matches existing, shuffle slightly to ensure change
+                    if rec.song_order and rec.song_order == new_order_ids:
+                        tmp = new_order_ids[:]
+                        random.shuffle(tmp)
+                        new_order_ids = tmp
+
+                    rec.song_order = new_order_ids
+                    rec.save(update_fields=['song_order'])
+                except Exception:
+                    pass
+            except Exception:
+                continue
+
+        # serialize and return paginated response
+        serializer = self.get_serializer(results, many=True, context={'request': request})
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
 
     def _generate_recommendations(self, user, force=False):
