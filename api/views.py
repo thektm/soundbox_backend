@@ -2845,6 +2845,13 @@ class HomeSummaryView(APIView):
         # 5. Playlist Recommendations (6 items)
         playlist_view = PlaylistRecommendationsView()
         playlist_view.request = request
+        # Generate fresh recommendations on every HomeSummary request so the
+        # playlist section is never empty and feels new to the user.
+        try:
+            playlist_view._generate_recommendations(user, force=True)
+        except Exception:
+            # If generation fails, fall back to returning any existing recommendations
+            pass
         playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')
         data['playlist_recommendations'] = self.get_paginated_data(playlists_qs, 'pr_page', 6, PlaylistSummarySerializer, request)
         sections_count += 1
