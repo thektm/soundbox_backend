@@ -110,19 +110,60 @@ class AlbumSummarySerializer(serializers.ModelSerializer):
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     sub_genre_names = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Album
         fields = ['id', 'title', 'artist_name', 'cover_image', 'is_liked', 'genre_names', 'mood_names', 'sub_genre_names']
 
+    def get_cover_image(self, obj):
+        if obj.cover_image:
+            return obj.cover_image
+        # Fallback to the first song's cover if available
+        try:
+            songs = obj.songs.all()
+            first_song = songs[0] if songs else None
+            if first_song:
+                return first_song.cover_image
+        except Exception:
+            pass
+        return None
+
     def get_genre_names(self, obj):
-        return [g.name for g in obj.genres.all()]
+        # Extract from album directly
+        names = set(g.name for g in obj.genres.all())
+        # Aggregate from all songs in this album
+        try:
+            for song in obj.songs.all():
+                for g in song.genres.all():
+                    names.add(g.name)
+        except Exception:
+            pass
+        return list(names)
 
     def get_mood_names(self, obj):
-        return [m.name for m in obj.moods.all()]
+        # Extract from album directly
+        names = set(m.name for m in obj.moods.all())
+        # Aggregate from all songs in this album
+        try:
+            for song in obj.songs.all():
+                for m in song.moods.all():
+                    names.add(m.name)
+        except Exception:
+            pass
+        return list(names)
 
     def get_sub_genre_names(self, obj):
-        return [sg.name for sg in obj.sub_genres.all()]
+        # Extract from album directly
+        names = set(sg.name for sg in obj.sub_genres.all())
+        # Aggregate from all songs in this album
+        try:
+            for song in obj.songs.all():
+                for sg in song.sub_genres.all():
+                    names.add(sg.name)
+        except Exception:
+            pass
+        return list(names)
 
     def get_is_liked(self, obj):
         request = self.context.get('request')

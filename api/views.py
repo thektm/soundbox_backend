@@ -3363,8 +3363,11 @@ class PopularAlbumsView(generics.ListAPIView):
             score=F('total_song_plays') + F('total_song_likes') + F('album_likes') + F('total_playlist_adds')
         ).order_by('-score', '-total_song_plays')
 
-        # Prefetch songs ordered so serializer can quickly access first 3 covers
-        song_prefetch = Prefetch('songs', queryset=Song.objects.order_by('-release_date', '-created_at'))
+        # Prefetch songs with their metadata ordered so serializer can quickly access first 3 covers and aggregate tags
+        song_prefetch = Prefetch(
+            'songs', 
+            queryset=Song.objects.prefetch_related('genres', 'moods', 'sub_genres').order_by('-release_date', '-created_at')
+        )
         queryset = queryset.prefetch_related(song_prefetch)
 
         return queryset
