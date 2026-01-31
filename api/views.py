@@ -2773,6 +2773,20 @@ class HomeSummaryView(APIView):
                             'results': PlaylistSummarySerializer(many=True),
                         }
                     ),
+                    'genre_playlists': inline_serializer(
+                        name='GenrePlaylistsSummary',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'results': PlaylistSummarySerializer(many=True),
+                        }
+                    ),
+                    'mood_playlists': inline_serializer(
+                        name='MoodPlaylistsSummary',
+                        fields={
+                            'count': serializers.IntegerField(),
+                            'results': PlaylistSummarySerializer(many=True),
+                        }
+                    ),
                     'discoveries': inline_serializer(
                         name='DiscoveriesSummary',
                         fields={
@@ -2862,74 +2876,58 @@ class HomeSummaryView(APIView):
         # so we ensure we select the related ref.
         playlists_qs = playlists_qs.select_related('playlist_ref').prefetch_related('songs', 'liked_by')
 
-        # Pagination + Shuffling
+        # Get all candidates for the user
+        all_recs = list(playlists_qs)
+        
+        # 5.1 Personalized Playlist Recommendations (Shuffle and take 8)
+        # Anything not specifically genre/mood explorer is considered personalized algorithm results
+        personalized = [r for r in all_recs if r.playlist_type not in ['discover_genre', 'mood_based']]
+        random.shuffle(personalized)
+        
         try:
             page = int(request.query_params.get('pr_page', 1))
         except (ValueError, TypeError):
             page = 1
-        page_size = 6
-        
-        # Get all candidates for the user
-        results_list = list(playlists_qs)
-        random.shuffle(results_list) # Shuffle the whole set
-        
+        page_size = 8
         start = (page - 1) * page_size
         end = start + page_size
+        paged_personalized = personalized[start:end]
+        has_next_pr = len(personalized) > end
         
-        paged_results = results_list[start:end]
-        has_next = len(results_list) > end
-
-        # For each recommended playlist, reshuffle song order (persist)
-        for rec in paged_results:
-            try:
-                songs = list(rec.songs.all())
-                if not songs: continue
-
-                # score songs by popularity (plays + likes*50) then randomize ties
-                scored = []
-                for s in songs:
-                    likes = s.liked_by.count() if hasattr(s, 'liked_by') else 0
-                    score = (getattr(s, 'plays', 0) or 0) + likes * 50
-                    scored.append((s, score))
-                scored.sort(key=lambda tup: (-tup[1], random.random()))
-                new_order_ids = [s.id for s, _ in scored]
-
-                rec.song_order = new_order_ids
-                rec.save(update_fields=['song_order'])
-            except Exception:
-                continue
-
-        # Serialize
-        serialized = PlaylistSummarySerializer(paged_results, many=True, context={'request': request}).data
-
-        # Post-process serialized to select an ephemeral cover image from songs
-        import time
-        now_seed = int(time.time() * 1000)
-        rec_map = {str(r.unique_id): r for r in paged_results}
-        for i, item in enumerate(serialized):
-            try:
-                rec_obj = rec_map.get(item.get('unique_id'))
-                if not rec_obj: continue
-                songs = list(rec_obj.songs.all())
-                candidates = []
-                for s in songs:
-                    cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
-                    if cover: candidates.append(cover)
-                if candidates:
-                    idx = (abs(hash(str(rec_obj.unique_id))) + now_seed + i) % len(candidates)
-                    item['cover_image'] = candidates[idx]
-            except Exception: continue
-
-        next_url = None
-        if has_next:
+        serialized_pr = PlaylistSummarySerializer(paged_personalized, many=True, context={'request': request}).data
+        
+        next_url_pr = None
+        if has_next_pr:
             params = request.query_params.copy()
             params['pr_page'] = page + 1
-            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
+            next_url_pr = request.build_absolute_uri(request.path) + '?' + params.urlencode()
 
         data['playlist_recommendations'] = {
-            'count': len(serialized),
-            'next': next_url,
-            'results': serialized
+            'count': len(personalized),
+            'next': next_url_pr,
+            'results': serialized_pr
+        }
+        sections_count += 1
+
+        # 5.2 Genre Playlists (All available)
+        genre_recs = [r for r in all_recs if r.playlist_type == 'discover_genre']
+        # Sort by title or shuffle? User said dynamic and synced. 
+        # Shuffling might feel too unstable if they want "synced". 
+        # But they also said "make it randomly shuffled and change order" in the comments earlier (which I saw in the file).
+        # Actually, let's shuffle them.
+        random.shuffle(genre_recs)
+        data['genre_playlists'] = {
+            'count': len(genre_recs),
+            'results': PlaylistSummarySerializer(genre_recs, many=True, context={'request': request}).data
+        }
+        sections_count += 1
+
+        # 5.3 Mood Playlists (All available)
+        mood_recs = [r for r in all_recs if r.playlist_type == 'mood_based']
+        random.shuffle(mood_recs)
+        data['mood_playlists'] = {
+            'count': len(mood_recs),
+            'results': PlaylistSummarySerializer(mood_recs, many=True, context={'request': request}).data
         }
         sections_count += 1
 
@@ -3659,31 +3657,6 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         serializer = self.get_serializer(results, many=True, context={'request': request})
         serialized = serializer.data
 
-        # Post-process serialized data: assign a fresh cover_image for each playlist item
-        import time
-        now_seed = int(time.time() * 1000)
-        rec_map = {str(r.unique_id): r for r in results}
-
-        for i, item in enumerate(serialized):
-            try:
-                rec_obj = rec_map.get(item.get('unique_id'))
-                if not rec_obj:
-                    continue
-
-                songs = list(rec_obj.songs.all())
-                candidates = []
-                for s in songs:
-                    cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
-                    if cover:
-                        candidates.append(cover)
-
-                if candidates:
-                    idx = (abs(hash(str(rec_obj.unique_id))) + now_seed + i) % len(candidates)
-                    chosen = candidates[idx]
-                    item['cover_image'] = chosen
-            except Exception:
-                continue
-
         if page is not None:
             return self.get_paginated_response(serialized)
         return Response(serialized)
@@ -3853,8 +3826,8 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             general_playlists = self._create_general_cohesive_playlists(user, all_interacted_ids, 6 - len(generated_playlists), used_song_ids)
             generated_playlists.extend(general_playlists)
         
-        # Save all generated playlists (ensure at least 6, max 12)
-        for playlist_data in generated_playlists[:12]:
+        # Save all generated playlists (ensuring we include all genres and moods as requested)
+        for playlist_data in generated_playlists:
             self._save_playlist(user, playlist_data)
 
     def _create_similar_taste_playlist(self, user, excluded_ids, top_genres, top_moods, avg_features, used_song_ids=None):
@@ -3911,18 +3884,16 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         }
 
     def _create_genre_discovery_playlists(self, user, excluded_ids, top_genres, used_song_ids=None):
-        """Create playlists to help discover new genres"""
+        """Create playlists for all available genres"""
         from .models import Genre
         
         playlists = []
         used_song_ids = used_song_ids or set()
 
-        # Get genres user hasn't explored much
-        all_genres = list(Genre.objects.exclude(id__in=top_genres)[:20])
-        random.shuffle(all_genres)
-        selected_genres = all_genres[:3]
+        # Get all available genres to ensure we cover everything dynamically
+        all_genres = list(Genre.objects.all())
 
-        for genre in selected_genres:
+        for genre in all_genres:
             qs = Song.objects.filter(
                 status=Song.STATUS_PUBLISHED,
                 genres=genre
@@ -3945,9 +3916,9 @@ class PlaylistRecommendationsView(generics.ListAPIView):
 
             if len(songs) >= 10:
                 import hashlib, random as _rnd
-                unique_id = hashlib.sha256(f"discover_{genre.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                unique_id = hashlib.sha256(f"genre_{genre.id}_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
 
-                title, desc = self._get_farsi_descriptor(songs, f"کشف {genre.name}", f"کاوش در آهنگ‌های منتخب سبک {genre.name}")
+                title, desc = self._get_farsi_descriptor(songs, f"برترین‌های {genre.name}", f"گلچینی از بهترین آهنگ‌های سبک {genre.name}")
                 
                 playlists.append({
                     'unique_id': unique_id,
@@ -3962,18 +3933,16 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         return playlists
 
     def _create_mood_playlists(self, user, excluded_ids, top_moods, avg_features, used_song_ids=None):
-        """Create mood-based playlists"""
+        """Create playlists for all available moods"""
         from .models import Mood
         
         playlists = []
         used_song_ids = used_song_ids or set()
 
-        # Get user's favorite moods
-        moods = list(Mood.objects.filter(id__in=top_moods)[:5])
-        random.shuffle(moods)
-        selected_moods = moods[:2]
+        # Get all available moods to ensure we cover everything dynamically
+        all_moods = list(Mood.objects.all())
 
-        for mood in selected_moods:
+        for mood in all_moods:
             qs = Song.objects.filter(
                 status=Song.STATUS_PUBLISHED,
                 moods=mood
@@ -3987,11 +3956,17 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             scored = self._score_songs_by_similarity(qs[:100], [], [], avg_features)
             songs = [s[0] for s in scored[:20]]
 
+            # Fallback if too few songs
+            if len(songs) < 10:
+                qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=mood).exclude(id__in=excluded_ids)
+                scored = self._score_songs_by_similarity(qs[:100], [], [], avg_features)
+                songs = [s[0] for s in scored[:20]]
+
             if len(songs) >= 10:
                 import hashlib, random as _rnd
-                unique_id = hashlib.sha256(f"mood_{mood.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                unique_id = hashlib.sha256(f"mood_{mood.id}_{user.id}_{timezone.now().date()}".encode()).hexdigest()[:32]
 
-                title, desc = self._get_farsi_descriptor(songs, mood.name, f"مجموعه‌ای برای حال و هوای {mood.name}")
+                title, desc = self._get_farsi_descriptor(songs, mood.name, f"مجموعه‌ای شنیدنی برای حال و هوای {mood.name}")
                 
                 playlists.append({
                     'unique_id': unique_id,

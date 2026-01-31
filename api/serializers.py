@@ -137,21 +137,35 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for playlists in summary views"""
     songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
-    cover_image = serializers.SerializerMethodField()
+    covers = serializers.SerializerMethodField()
 
     class Meta:
         model = RecommendedPlaylist
-        fields = ['id', 'unique_id', 'title', 'description', 'cover_image', 'songs_count', 'is_liked']
+        fields = ['id', 'unique_id', 'title', 'description', 'covers', 'songs_count', 'is_liked']
 
-    def get_cover_image(self, obj):
-        # RecommendedPlaylist doesn't have cover_image, but its playlist_ref might
-        if obj.playlist_ref and obj.playlist_ref.cover_image:
-            return obj.playlist_ref.cover_image
-        # Fallback to the first song's cover if available
-        first_song = obj.songs.first()
-        if first_song:
-            return first_song.cover_image
-        return None
+    def get_covers(self, obj):
+        """Return first 3 song cover images, respecting explicit `song_order` when present."""
+        try:
+            order = obj.song_order if hasattr(obj, 'song_order') and obj.song_order else None
+        except Exception:
+            order = None
+
+        if order:
+            ids = order[:3]
+            # Use prefetch if possible, but here we assume it might not be perfect
+            song_qs = obj.songs.filter(id__in=ids)
+            song_map = {s.id: s for s in song_qs}
+            covers = []
+            for sid in ids:
+                s = song_map.get(sid)
+                if s:
+                    cover = s.cover_image or (s.album.cover_image if s.album else None)
+                    if cover:
+                        covers.append(cover)
+            return covers
+
+        songs = obj.songs.all()[:3]
+        return [s.cover_image or (s.album.cover_image if s.album else None) for s in songs if (s.cover_image or (s.album and s.album.cover_image))]
 
     def get_songs_count(self, obj):
         if hasattr(obj, 'songs'):
@@ -1422,7 +1436,6 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
     
     def get_covers(self, obj):
         """Return first 3 song cover images, respecting explicit `song_order` when present."""
-        # If song_order is available, use it to select ordered covers
         try:
             order = obj.song_order if hasattr(obj, 'song_order') and obj.song_order else None
         except Exception:
@@ -1430,17 +1443,19 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
 
         if order:
             ids = order[:3]
-            all_songs = list(obj.songs.all())
-            song_map = {s.id: s for s in all_songs if s.id in ids}
+            song_qs = obj.songs.filter(id__in=ids).select_related('album')
+            song_map = {s.id: s for s in song_qs}
             covers = []
             for sid in ids:
                 s = song_map.get(sid)
-                if s and s.cover_image:
-                    covers.append(s.cover_image)
+                if s:
+                    cover = s.cover_image or (s.album.cover_image if s.album else None)
+                    if cover:
+                        covers.append(cover)
             return covers
 
-        songs = list(obj.songs.all())[:3]
-        return [song.cover_image for song in songs if song.cover_image]
+        songs = obj.songs.all().select_related('album')[:3]
+        return [s.cover_image or (s.album.cover_image if s.album else None) for s in songs if (s.cover_image or (s.album and s.album.cover_image))]
     
     def get_songs_count(self, obj):
         return len(obj.songs.all())
