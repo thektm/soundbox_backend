@@ -2845,44 +2845,45 @@ class HomeSummaryView(APIView):
         # 5. Playlist Recommendations (6 items)
         playlist_view = PlaylistRecommendationsView()
         playlist_view.request = request
-        # Generate fresh recommendations on every HomeSummary request so the
-        # playlist section is never empty and feels new to the user.
+        
+        # Try to regenerate if the user is new or hasn't had recommendations recently
+        # We'll use the _generate_recommendations logic which now handles force=True by deleting old ones
+        # and skip generation if recent ones exist. To ensure "freshness every time", we can set force=True
+        # but the user said "make it randomly shuffled and change order and make unique new ones every time".
+        # We'll set force=True to satisfy the "unique new ones every time" while the view's list() 
+        # already does random.shuffle(results).
         try:
             playlist_view._generate_recommendations(user, force=True)
         except Exception:
-            # If generation fails, fall back to returning any existing recommendations
             pass
-        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')
+            
+        playlists_qs = playlist_view.get_queryset()
+        # The model RecommendedPlaylist doesn't have cover_image directly (it's in playlist_ref),
+        # so we ensure we select the related ref.
+        playlists_qs = playlists_qs.select_related('playlist_ref').prefetch_related('songs', 'liked_by')
 
-        # Custom pagination + per-request shuffling and ephemeral cover selection
+        # Pagination + Shuffling
         try:
             page = int(request.query_params.get('pr_page', 1))
         except (ValueError, TypeError):
             page = 1
         page_size = 6
+        
+        # Get all candidates for the user
+        results_list = list(playlists_qs)
+        random.shuffle(results_list) # Shuffle the whole set
+        
         start = (page - 1) * page_size
         end = start + page_size
+        
+        paged_results = results_list[start:end]
+        has_next = len(results_list) > end
 
-        # fetch one extra to detect next
-        results_qs = list(playlists_qs[start:end + 1])
-        has_next = len(results_qs) > page_size
-        if has_next:
-            results_list = results_qs[:page_size]
-        else:
-            results_list = results_qs
-
-        # Shuffle playlist order (so each request sees different sequence)
-        try:
-            random.shuffle(results_list)
-        except Exception:
-            pass
-
-        # For each recommended playlist, reshuffle song order (persist if possible)
-        for rec in results_list:
+        # For each recommended playlist, reshuffle song order (persist)
+        for rec in paged_results:
             try:
                 songs = list(rec.songs.all())
-                if not songs:
-                    continue
+                if not songs: continue
 
                 # score songs by popularity (plays + likes*50) then randomize ties
                 scored = []
@@ -2893,42 +2894,31 @@ class HomeSummaryView(APIView):
                 scored.sort(key=lambda tup: (-tup[1], random.random()))
                 new_order_ids = [s.id for s, _ in scored]
 
-                if rec.song_order and rec.song_order == new_order_ids:
-                    tmp = new_order_ids[:]
-                    random.shuffle(tmp)
-                    new_order_ids = tmp
-
                 rec.song_order = new_order_ids
-                try:
-                    rec.save(update_fields=['song_order'])
-                except Exception:
-                    pass
+                rec.save(update_fields=['song_order'])
             except Exception:
                 continue
 
         # Serialize
-        serialized = PlaylistSummarySerializer(results_list, many=True, context={'request': request}).data
+        serialized = PlaylistSummarySerializer(paged_results, many=True, context={'request': request}).data
 
-        # Post-process serialized to select an ephemeral cover image from songs (different each request)
+        # Post-process serialized to select an ephemeral cover image from songs
         import time
         now_seed = int(time.time() * 1000)
-        rec_map = {str(r.unique_id): r for r in results_list}
+        rec_map = {str(r.unique_id): r for r in paged_results}
         for i, item in enumerate(serialized):
             try:
                 rec_obj = rec_map.get(item.get('unique_id'))
-                if not rec_obj:
-                    continue
+                if not rec_obj: continue
                 songs = list(rec_obj.songs.all())
                 candidates = []
                 for s in songs:
                     cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
-                    if cover:
-                        candidates.append(cover)
+                    if cover: candidates.append(cover)
                 if candidates:
                     idx = (abs(hash(str(rec_obj.unique_id))) + now_seed + i) % len(candidates)
                     item['cover_image'] = candidates[idx]
-            except Exception:
-                continue
+            except Exception: continue
 
         next_url = None
         if has_next:
@@ -2952,20 +2942,9 @@ class HomeSummaryView(APIView):
             ds_view.kwargs = kwargs
             ds_view.format_kwarg = None
             
-            # We want 6 items for the summary
-            # But DiscoveriesView.get uses ds_page and page_size=10 by default.
-            # I'll modify DiscoveriesView to accept a page_size or just call it and slice.
-            # Actually, I'll just use get_paginated_data logic here if I can, 
-            # but DiscoveriesView has complex exclusion logic.
-            
-            # Let's just call the view and it will return 10 items by default.
-            # The user asked for 6 items for each section based on how heavy it is.
-            # I'll adjust DiscoveriesView to use 6 items if called from here or just generally.
-            
             ds_resp = ds_view.get(ds_view.request)
             if hasattr(ds_resp, 'data'):
                 data['discoveries'] = ds_resp.data
-                # Slice to 6 if it returned more
                 if len(data['discoveries'].get('results', [])) > 6:
                     data['discoveries']['results'] = data['discoveries']['results'][:6]
                     data['discoveries']['count'] = 6
@@ -3341,8 +3320,10 @@ class PopularAlbumsView(generics.ListAPIView):
 
     def get_queryset(self):
         # Annotate album with song-level aggregates
-        # Exclude albums literally titled "single" (case-insensitive)
-        queryset = Album.objects.all().exclude(title__iexact='single')
+        # Exclude albums literally titled "single" or Persian equivalent (case-insensitive)
+        queryset = Album.objects.exclude(
+            Q(title__iexact='single') | Q(title__iexact='سینگل')
+        )
 
         queryset = queryset.annotate(
             total_song_plays=Coalesce(Sum('songs__plays'), 0),
@@ -3438,7 +3419,9 @@ class DailyTopAlbumsView(generics.ListAPIView):
 
     def get_queryset(self):
         last_24h = timezone.now() - timedelta(hours=24)
-        queryset = Album.objects.annotate(
+        queryset = Album.objects.exclude(
+            Q(title__iexact='single') | Q(title__iexact='سینگل')
+        ).annotate(
             daily_plays=Count(
                 'songs__play_counts', 
                 filter=Q(songs__play_counts__created_at__gte=last_24h)
@@ -3530,7 +3513,9 @@ class WeeklyTopAlbumsView(generics.ListAPIView):
         last_week = timezone.now() - timedelta(days=7)
         # Filter albums whose songs have at least one play in the last week
         # and annotate with the count of plays in that period
-        queryset = Album.objects.annotate(
+        queryset = Album.objects.exclude(
+            Q(title__iexact='single') | Q(title__iexact='سینگل')
+        ).annotate(
             weekly_plays=Count(
                 'songs__play_counts', 
                 filter=Q(songs__play_counts__created_at__gte=last_week)
@@ -3602,17 +3587,15 @@ class PlaylistRecommendationsView(generics.ListAPIView):
 
         # Fetch queryset and paginate manually so we can reshuffle per-request
         qs = self.get_queryset()
-        page = self.paginate_queryset(qs)
+        
+        # shuffle the queryset result a bit to make it feel fresh every time
+        results = list(qs)
+        random.shuffle(results)
+        
+        page = self.paginate_queryset(results)
 
         # If no pagination is applied (page is None), fall back to full list
-        results = page if page is not None else list(qs)
-
-        # Shuffle playlist order for each request so HomeSummary sees a different sequence
-        try:
-            results = list(results)
-            random.shuffle(results)
-        except Exception:
-            pass
+        results = page if page is not None else results
 
         # For each recommended playlist in the page, pick a new cover (ephemeral) and reshuffle song order (persisted)
         for rec in results:
@@ -3642,9 +3625,6 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                         chosen = random.choice(different)
                     else:
                         chosen = random.choice(candidates)
-
-                    # do not require persisting cover change for each request (too frequent);
-                    # we'll apply the chosen cover to the serialized response below.
 
                 # reshuffle song order for this request, biasing by popularity (plays + likes)
                 try:
@@ -3708,22 +3688,101 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             return self.get_paginated_response(serialized)
         return Response(serialized)
 
+    def _get_farsi_descriptor(self, songs, base_title=None, base_desc=None):
+        """Analyze a list of songs to generate a descriptive Farsi title and description based on content and audio features."""
+        if not songs:
+            return base_title or "پلی‌لیست پیشنهادی", base_desc or "گلچین آهنگ‌های منتخب"
+
+        # Count occurrences of genres, moods, and audio features
+        genres = {}
+        moods = {}
+        total_energy = 0
+        total_dance = 0
+        total_valence = 0
+        total_instrumental = 0
+        count = len(songs)
+
+        for s in songs:
+            # Aggregate stats
+            try:
+                for g in s.genres.all():
+                    genres[g.name] = genres.get(g.name, 0) + 1
+                for m in s.moods.all():
+                    moods[m.name] = moods.get(m.name, 0) + 1
+            except Exception: pass
+            
+            total_energy += s.energy if s.energy is not None else 50
+            total_dance += s.danceability if s.danceability is not None else 50
+            total_valence += s.valence if s.valence is not None else 50
+            total_instrumental += s.instrumentalness if s.instrumentalness is not None else 0
+
+        avg_energy = total_energy / count
+        avg_dance = total_dance / count
+        avg_valence = total_valence / count
+        avg_instrumental = total_instrumental / count
+
+        # Pick top genre/mood for naming
+        sorted_genres = sorted(genres.items(), key=lambda x: x[1], reverse=True)
+        top_genre = sorted_genres[0][0] if sorted_genres else None
+        
+        sorted_moods = sorted(moods.items(), key=lambda x: x[1], reverse=True)
+        top_mood = sorted_moods[0][0] if sorted_moods else None
+
+        # Determine Title (Farsi)
+        if avg_instrumental > 55:
+            title = f"آرامش بیکلام: {top_genre}" if top_genre else "میکس آرامش‌بخش بیکلام"
+        elif avg_energy > 75:
+            title = f"انرژی و هیجان: {top_genre or top_mood or 'میکس پاپ داغ'}"
+        elif avg_valence < 35:
+            title = f"سفر احساسی با {top_mood or top_genre or 'آهنگ‌های عمیق'}"
+        elif avg_valence > 75:
+            title = f"شاد و پرانرژی: {top_genre or 'میکس مثبت'}"
+        elif avg_dance > 75:
+            title = f"ریتم و رقص {top_genre or 'میکس شنیدنی'}"
+        elif top_genre:
+            prefixes = ["برترین‌های", "میکس اختصاصی", "دنیای"]
+            title = f"{random.choice(prefixes)} {top_genre}"
+        else:
+            title = base_title or "میکس پیشنهادی برای شما"
+
+        # Determine Description (Farsi)
+        features = []
+        if avg_energy > 70: features.append("پرانرژی")
+        if avg_dance > 70: features.append("مناسب رقص")
+        if avg_valence > 75: features.append("شاد و سرزنده")
+        if avg_valence < 35: features.append("عمیق و احساسی")
+        if avg_instrumental > 50: features.append("بیکلام")
+        if avg_energy < 40: features.append("ملایم و آرام")
+        
+        feature_str = " و ".join(features)
+        if feature_str:
+            description = f"مجموعه‌ای {feature_str} از آثار برتر {top_genre or top_mood or 'موسیقی'}"
+        else:
+            description = base_desc or "گلچینی از آهنگ‌های محبوب و متفاوت که بر اساس سلیقه و فعالیت‌های اخیر شما انتخاب شده‌اند."
+
+        return title, description
 
     def _generate_recommendations(self, user, force=False):
         """Generate personalized playlist recommendations based on user activity"""
         from .models import RecommendedPlaylist
         import hashlib
         
-        # Check if we have recent recommendations (generated in last 6 hours)
-        recent_cutoff = timezone.now() - timedelta(hours=6)
-        recent_count = RecommendedPlaylist.objects.filter(
-            user=user,
-            created_at__gte=recent_cutoff
-        ).count()
+        # If forced, cleanup old recommendations for this user to keep it fresh and small
+        if force:
+            # Note: We delete old RecommendedPlaylist records. 
+            # System-created Playlist objects will also eventually be orphaned or can be cleaned by a task.
+            RecommendedPlaylist.objects.filter(user=user).delete()
+        else:
+            # Check if we have recent recommendations (generated in last 6 hours)
+            recent_cutoff = timezone.now() - timedelta(hours=6)
+            recent_count = RecommendedPlaylist.objects.filter(
+                user=user,
+                created_at__gte=recent_cutoff
+            ).count()
 
-        # If we have recent recommendations and not forced, skip generation
-        if not force and recent_count >= 6:
-            return
+            # If we have recent recommendations and not forced, skip generation
+            if recent_count >= 6:
+                return
         
         # 1. Get user's interaction history
         liked_song_ids = set(Song.objects.filter(liked_by=user).values_list('id', flat=True))
@@ -3809,11 +3868,12 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         ).filter(
             Q(genres__in=top_genres) | Q(moods__in=top_moods)
         ).distinct().prefetch_related('genres', 'moods')[:200]
+        
         # Exclude songs already used across other playlists when possible
         if used_song_ids:
             candidates = candidates.exclude(id__in=list(used_song_ids))
 
-        # Score songs by similarity
+        # Score songs by popularity and taste similarity
         scored_songs = self._score_songs_by_similarity(candidates, top_genres, top_moods, avg_features)
         
         if len(scored_songs) < 10:
@@ -3833,19 +3893,17 @@ class PlaylistRecommendationsView(generics.ListAPIView):
 
         # Calculate match percentage based on average score
         avg_score = sum(s[1] for s in scored_songs[:20]) / len(scored_songs[:20])
-        match_percentage = min(100.0, (avg_score / 20) * 100)  # Normalize to 0-100
+        match_percentage = min(100.0, (avg_score / 25) * 100) # Normalize
 
         import hashlib, random as _rnd
         unique_id = hashlib.sha256(f"similar_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
 
-        # Farsi title/description
-        title_fa = 'بیشتر از آنچه دوست دارید'
-        desc_fa = 'آهنگ‌هایی مشابه سلیقه شما'
+        title, desc = self._get_farsi_descriptor(selected_songs, "بیشتر از آنچه دوست دارید", "آهنگ‌هایی مشابه سلیقه و سبک مورد علاقه شما")
 
         return {
             'unique_id': unique_id,
-            'title': title_fa,
-            'description': desc_fa,
+            'title': title,
+            'description': desc,
             'playlist_type': 'similar_taste',
             'songs': selected_songs,
             'relevance_score': 10.0,
@@ -3860,9 +3918,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         used_song_ids = used_song_ids or set()
 
         # Get genres user hasn't explored much
-        all_genres = Genre.objects.exclude(id__in=top_genres)[:6]
+        all_genres = list(Genre.objects.exclude(id__in=top_genres)[:20])
+        random.shuffle(all_genres)
+        selected_genres = all_genres[:3]
 
-        for genre in all_genres:
+        for genre in selected_genres:
             qs = Song.objects.filter(
                 status=Song.STATUS_PUBLISHED,
                 genres=genre
@@ -3873,28 +3933,33 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             if used_song_ids:
                 qs = qs.exclude(id__in=list(used_song_ids))
 
-            songs = qs.order_by('-plays')[:20]
+            # Prioritize by plays/likes
+            scored = self._score_songs_by_similarity(qs[:100], [], [], None)
+            songs = [s[0] for s in scored[:20]]
 
             # If exclusion removed too many, allow reuse
-            if songs.count() < 10 and used_song_ids:
-                songs = Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=genre).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+            if len(songs) < 10 and used_song_ids:
+                qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=genre).exclude(id__in=excluded_ids)
+                scored = self._score_songs_by_similarity(qs[:100], [], [], None)
+                songs = [s[0] for s in scored[:20]]
 
-            if songs.count() >= 10:
+            if len(songs) >= 10:
                 import hashlib, random as _rnd
                 unique_id = hashlib.sha256(f"discover_{genre.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
 
-                # Farsi title uses the genre name (which is stored in Farsi)
+                title, desc = self._get_farsi_descriptor(songs, f"کشف {genre.name}", f"کاوش در آهنگ‌های منتخب سبک {genre.name}")
+                
                 playlists.append({
                     'unique_id': unique_id,
-                    'title': f'کشف {genre.name}',
-                    'description': f'کاوش در آهنگ‌های منتخب {genre.name}',
+                    'title': title,
+                    'description': desc,
                     'playlist_type': 'discover_genre',
-                    'songs': list(songs),
+                    'songs': songs,
                     'relevance_score': 7.0,
-                    'match_percentage': 0.0  # Discovery playlists don't match existing taste
+                    'match_percentage': 0.0
                 })
 
-        return playlists[:3]  # Max 3 discovery playlists
+        return playlists
 
     def _create_mood_playlists(self, user, excluded_ids, top_moods, avg_features, used_song_ids=None):
         """Create mood-based playlists"""
@@ -3904,9 +3969,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         used_song_ids = used_song_ids or set()
 
         # Get user's favorite moods
-        moods = Mood.objects.filter(id__in=top_moods)[:3]
+        moods = list(Mood.objects.filter(id__in=top_moods)[:5])
+        random.shuffle(moods)
+        selected_moods = moods[:2]
 
-        for mood in moods:
+        for mood in selected_moods:
             qs = Song.objects.filter(
                 status=Song.STATUS_PUBLISHED,
                 moods=mood
@@ -3917,35 +3984,23 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             if used_song_ids:
                 qs = qs.exclude(id__in=list(used_song_ids))
 
-            # Filter by similar audio features
-            if avg_features.get('avg_valence'):
-                qs = qs.filter(
-                    valence__gte=avg_features['avg_valence'] - 20,
-                    valence__lte=avg_features['avg_valence'] + 20
-                )
+            scored = self._score_songs_by_similarity(qs[:100], [], [], avg_features)
+            songs = [s[0] for s in scored[:20]]
 
-            songs = qs.order_by('-plays')[:20]
-
-            # Fallback to allow reuse if too few
-            if songs.count() < 10 and used_song_ids:
-                qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=mood).exclude(id__in=excluded_ids)
-                if avg_features.get('avg_valence'):
-                    qs = qs.filter(valence__gte=avg_features['avg_valence'] - 20, valence__lte=avg_features['avg_valence'] + 20)
-                songs = qs.order_by('-plays')[:20]
-
-            if songs.count() >= 10:
+            if len(songs) >= 10:
                 import hashlib, random as _rnd
                 unique_id = hashlib.sha256(f"mood_{mood.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
 
-                # Title uses mood.name (stored in Farsi)
+                title, desc = self._get_farsi_descriptor(songs, mood.name, f"مجموعه‌ای برای حال و هوای {mood.name}")
+                
                 playlists.append({
                     'unique_id': unique_id,
-                    'title': f'{mood.name}',
-                    'description': f'مجموعه‌ای برای حال و هوای {mood.name}',
+                    'title': title,
+                    'description': desc,
                     'playlist_type': 'mood_based',
-                    'songs': list(songs),
+                    'songs': songs,
                     'relevance_score': 8.5,
-                    'match_percentage': 75.0  # Mood-based matches user's mood preferences
+                    'match_percentage': 75.0
                 })
 
         return playlists
@@ -3955,382 +4010,224 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         playlists = []
         used_song_ids = used_song_ids or set()
 
-        if not avg_features.get('avg_energy'):
-            return playlists
+        # 1. High energy
+        high_energy_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, energy__gte=70).exclude(id__in=excluded_ids)
+        if used_song_ids: high_energy_qs = high_energy_qs.exclude(id__in=list(used_song_ids))
         
-        # High energy playlist
-        high_energy_songs = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED,
-            energy__gte=70
-        ).exclude(
-            id__in=excluded_ids
-        )
-        if used_song_ids:
-            high_energy_songs = high_energy_songs.exclude(id__in=list(used_song_ids))
-        high_energy_songs = high_energy_songs.order_by('-energy', '-plays')[:20]
+        scored_high = self._score_songs_by_similarity(high_energy_qs[:100], [], [], None)
+        high_songs = [s[0] for s in scored_high[:20]]
         
-        if high_energy_songs.count() >= 10:
+        if len(high_songs) >= 10:
             import hashlib, random as _rnd
-            unique_id = hashlib.sha256(f"high_energy_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-            
+            unique_id = hashlib.sha256(f"high_{user.id}_{_rnd.random()}".encode()).hexdigest()[:32]
+            title, desc = self._get_farsi_descriptor(high_songs, "انرژی و هیجان", "آهنگ‌هایی برای بالا بردن سطح انرژی")
             playlists.append({
                 'unique_id': unique_id,
-                'title': 'انرژی بالا',
-                'description': 'آهنگ‌هایی با انرژی بالا برای افزایش هیجان',
+                'title': title,
+                'description': desc,
                 'playlist_type': 'energy',
-                'songs': list(high_energy_songs),
+                'songs': high_songs,
                 'relevance_score': 7.5,
-                'match_percentage': 60.0  # Energy-based has moderate match
+                'match_percentage': 60.0
             })
         
-        # Chill/Relaxing playlist
-        chill_songs = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED,
-            energy__lte=40,
-            acousticness__gte=30
-        ).exclude(
-            id__in=excluded_ids
-        )
-        if used_song_ids:
-            chill_songs = chill_songs.exclude(id__in=list(used_song_ids))
-        chill_songs = chill_songs.order_by('energy', '-plays')[:20]
+        # 2. Chill
+        chill_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, energy__lte=45).exclude(id__in=excluded_ids)
+        if used_song_ids: chill_qs = chill_qs.exclude(id__in=list(used_song_ids))
         
-        if chill_songs.count() >= 10:
+        scored_chill = self._score_songs_by_similarity(chill_qs[:100], [], [], None)
+        chill_songs = [s[0] for s in scored_chill[:20]]
+        
+        if len(chill_songs) >= 10:
             import hashlib, random as _rnd
-            unique_id = hashlib.sha256(f"chill_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-            
+            unique_id = hashlib.sha256(f"chill_{user.id}_{_rnd.random()}".encode()).hexdigest()[:32]
+            title, desc = self._get_farsi_descriptor(chill_songs, "آرامش‌بخش", "آهنگ‌های ملایم برای استراحت و تمرکز")
             playlists.append({
                 'unique_id': unique_id,
-                'title': 'آرامش و ریلکس',
-                'description': 'آهنگ‌های آرامش‌بخش برای استراحت',
+                'title': title,
+                'description': desc,
                 'playlist_type': 'energy',
-                'songs': list(chill_songs),
+                'songs': chill_songs,
                 'relevance_score': 7.5,
-                'match_percentage': 60.0  # Energy-based has moderate match
+                'match_percentage': 60.0
             })
         
-        return playlists  # Return all energy playlists (up to 2)
+        return playlists
 
     def _create_artist_mix_playlists(self, user, excluded_ids, top_artists, used_song_ids=None):
         """Create playlists mixing songs from favorite artists"""
         from .models import Artist
-        
         playlists = []
-        
         used_song_ids = used_song_ids or set()
 
-        if len(top_artists) < 2:
-            return playlists
+        if len(top_artists) < 1: return playlists
         
-        # Get songs from top 3 artists
-        artists = Artist.objects.filter(id__in=top_artists[:3])
+        artists = list(Artist.objects.filter(id__in=top_artists[:5]))
+        random.shuffle(artists)
+        selected_artists = artists[:3]
         
-        songs_qs = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED,
-            artist__in=artists
-        ).exclude(
-            id__in=excluded_ids
-        )
-        if used_song_ids:
-            songs_qs = songs_qs.exclude(id__in=list(used_song_ids))
-        songs = songs_qs.order_by('-plays', '-release_date')[:20]
+        songs_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, artist__in=selected_artists).exclude(id__in=excluded_ids)
+        if used_song_ids: songs_qs = songs_qs.exclude(id__in=list(used_song_ids))
         
-        if songs.count() >= 10:
-            artist_names = '، '.join([a.name for a in artists[:2]])
+        scored = self._score_songs_by_similarity(songs_qs[:100], [], [], None)
+        songs = [s[0] for s in scored[:20]]
+        
+        if len(songs) >= 10:
+            names = '، '.join([a.name for a in selected_artists[:2]])
             import hashlib, random as _rnd
-            unique_id = hashlib.sha256(f"artist_mix_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+            unique_id = hashlib.sha256(f"artmix_{user.id}_{_rnd.random()}".encode()).hexdigest()[:32]
+            
+            title, desc = self._get_farsi_descriptor(songs, f"میکس {names}", "گلچینی از هنرمندان مورد علاقه شما")
             
             playlists.append({
                 'unique_id': unique_id,
-                'title': f'میکس {artist_names}',
-                'description': f'یک میکس از هنرمندان مورد علاقه شما',
+                'title': title,
+                'description': desc,
                 'playlist_type': 'artist_mix',
-                'songs': list(songs),
+                'songs': songs,
                 'relevance_score': 9.0,
-                'match_percentage': 85.0  # Artist mix has high match with user taste
+                'match_percentage': 85.0
             })
         
         return playlists
 
     def _generate_trending_playlists(self, user):
-        """Generate general trending playlists for users without history"""
+        """Generate general trending playlists for users without history, ensure randomness and popular priority."""
         import hashlib
         playlists = []
         used_song_ids = set()
 
-        # Trending overall
-        trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id__in=list(used_song_ids)).order_by('-plays')[:20]
-        if trending_songs.count() >= 10:
+        # 1. Trending pool (pick from top 100)
+        trending_pool = list(Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-plays')[:100])
+        random.shuffle(trending_pool)
+        trending_songs = trending_pool[:20]
+        
+        if len(trending_songs) >= 10:
             import random as _rnd
-            unique_id = hashlib.sha256(f"trending_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+            unique_id = hashlib.sha256(f"trend_{user.id}_{_rnd.random()}".encode()).hexdigest()[:32]
+            title, desc = self._get_farsi_descriptor(trending_songs, "محبوب‌ترین‌ها", "داغ‌ترین و پرشنونده‌ترین آهنگ‌های حال حاضر")
             playlists.append({
                 'unique_id': unique_id,
-                'title': 'محبوب‌ترین‌ها',
-                'description': 'محبوب‌ترین آهنگ‌ها در حال حاضر',
+                'title': title,
+                'description': desc,
                 'playlist_type': 'similar_taste',
-                'songs': list(trending_songs),
+                'songs': trending_songs,
                 'relevance_score': 5.0,
                 'match_percentage': 0.0
             })
             used_song_ids.update([s.id for s in trending_songs])
 
-        # New releases
-        new_releases = Song.objects.filter(status=Song.STATUS_PUBLISHED, release_date__isnull=False).exclude(id__in=list(used_song_ids)).order_by('-release_date')[:20]
-        if new_releases.count() >= 10:
+        # 2. New releases pool (pick from top 50)
+        new_pool = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, release_date__isnull=False).order_by('-release_date')[:50])
+        random.shuffle(new_pool)
+        new_releases = new_pool[:20]
+        
+        if len(new_releases) >= 10:
             import random as _rnd
-            unique_id = hashlib.sha256(f"new_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+            unique_id = hashlib.sha256(f"new_{user.id}_{_rnd.random()}".encode()).hexdigest()[:32]
+            title, desc = self._get_farsi_descriptor(new_releases, "آهنگ‌های جدید", "تازه‌ترین آثار منتشر شده در soundBox")
             playlists.append({
                 'unique_id': unique_id,
-                'title': 'آهنگ‌های جدید',
-                'description': 'آهنگ‌های تازه منتشر شده',
+                'title': title,
+                'description': desc,
                 'playlist_type': 'similar_taste',
-                'songs': list(new_releases),
+                'songs': new_releases,
                 'relevance_score': 5.0,
                 'match_percentage': 0.0
             })
             used_song_ids.update([s.id for s in new_releases])
 
-        # Add general cohesive playlists to reach at least 6
+        # Add general cohesive ones
         if len(playlists) < 6:
-            general_playlists = self._create_general_cohesive_playlists(user, set(), 6 - len(playlists), used_song_ids)
-            playlists.extend(general_playlists)
+            general = self._create_general_cohesive_playlists(user, set(), 6 - len(playlists), used_song_ids)
+            playlists.extend(general)
 
-        # Save all playlists
-        for playlist_data in playlists:
+        # Save all
+        for playlist_data in playlists[:10]:
             self._save_playlist(user, playlist_data)
 
     def _create_general_cohesive_playlists(self, user, excluded_ids, count_needed, used_song_ids=None):
-        """Create general playlists that are cohesive but not user-specific"""
+        """Create general playlists that are cohesive but not user-specific, with popular priority."""
         from .models import Genre, Mood
         import hashlib
         playlists = []
         used_song_ids = used_song_ids or set()
 
-        # 1. High Energy Workout
-        if count_needed > 0:
-            high_energy_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                energy__gte=75,
-                danceability__gte=60
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                high_energy_qs = high_energy_qs.exclude(id__in=list(used_song_ids))
-            high_energy = high_energy_qs.order_by('-plays')[:20]
-            if high_energy.count() >= 10:
+        # Define configurations
+        configs = [
+            {'id': 'gym', 'title': 'تمرین پرانرژی', 'energy__gte': 75, 'danceability__gte': 60},
+            {'id': 'chill', 'title': 'آکوستیک و ملایم', 'acousticness__gte': 60, 'energy__lte': 45},
+            {'id': 'happy', 'title': 'شاد و سرزنده', 'valence__gte': 70, 'energy__gte': 60},
+            {'id': 'deep', 'title': 'سفر احساسی', 'valence__lte': 40, 'energy__lte': 55},
+            {'id': 'dance', 'title': 'رقص و ریتم', 'danceability__gte': 75},
+            {'id': 'focus', 'title': 'تمرکز بیکلام', 'instrumentalness__gte': 50, 'energy__lte': 50},
+            {'id': 'night', 'title': 'حال و هوای شب', 'energy__lte': 40, 'valence__range': (30, 60)},
+        ]
+        random.shuffle(configs)
+
+        for cfg in configs:
+            if len(playlists) >= count_needed: break
+            
+            filter_kwargs = {k: v for k, v in cfg.items() if k not in ['id', 'title']}
+            qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, **filter_kwargs).exclude(id__in=excluded_ids)
+            if used_song_ids: qs = qs.exclude(id__in=list(used_song_ids))
+            
+            # Prioritize popular
+            scored = self._score_songs_by_similarity(qs[:100], [], [], None)
+            songs = [s[0] for s in scored[:20]]
+            
+            if len(songs) >= 10:
                 import random as _rnd
-                unique_id = hashlib.sha256(f"gen_energy_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                unique_id = hashlib.sha256(f"gen_{cfg['id']}_{user.id}_{_rnd.random()}".encode()).hexdigest()[:32]
+                title, desc = self._get_farsi_descriptor(songs, cfg['title'])
                 playlists.append({
                     'unique_id': unique_id,
-                    'title': 'تمرین پرانرژی',
-                    'description': 'آهنگ‌های پر انرژی برای تمرین و ورزش',
+                    'title': title,
+                    'description': desc,
                     'playlist_type': 'energy',
-                    'songs': list(high_energy),
+                    'songs': songs,
                     'relevance_score': 6.0,
                     'match_percentage': 0.0
                 })
-                used_song_ids.update([s.id for s in high_energy])
+                used_song_ids.update([s.id for s in songs])
 
-        # 2. Acoustic & Chill
-        if len(playlists) < count_needed:
-            acoustic_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                acousticness__gte=60,
-                energy__lte=50
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                acoustic_qs = acoustic_qs.exclude(id__in=list(used_song_ids))
-            acoustic = acoustic_qs.order_by('-plays')[:20]
-            if acoustic.count() >= 10:
-                import random as _rnd
-                unique_id = hashlib.sha256(f"gen_acoustic_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': 'آکوستیک و آرام',
-                    'description': 'آهنگ‌های آکوستیک برای آرامش',
-                    'playlist_type': 'mood_based',
-                    'songs': list(acoustic),
-                    'relevance_score': 6.0,
-                    'match_percentage': 0.0
-                })
-                used_song_ids.update([s.id for s in acoustic])
-
-        # 3. Happy & Upbeat
-        if len(playlists) < count_needed:
-            happy_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                valence__gte=70,
-                energy__gte=60
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                happy_qs = happy_qs.exclude(id__in=list(used_song_ids))
-            happy = happy_qs.order_by('-plays')[:20]
-            if happy.count() >= 10:
-                import random as _rnd
-                unique_id = hashlib.sha256(f"gen_happy_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': 'شاد و سرزنده',
-                    'description': 'آهنگ‌های شاد برای بالا بردن روحیه',
-                    'playlist_type': 'mood_based',
-                    'songs': list(happy),
-                    'relevance_score': 6.0,
-                    'match_percentage': 0.0
-                })
-                used_song_ids.update([s.id for s in happy])
-
-        # 4. Melancholic & Dramatic
-        if len(playlists) < count_needed:
-            dramatic_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                valence__lte=40,
-                energy__lte=60
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                dramatic_qs = dramatic_qs.exclude(id__in=list(used_song_ids))
-            dramatic = dramatic_qs.order_by('-plays')[:20]
-            if dramatic.count() >= 10:
-                import random as _rnd
-                unique_id = hashlib.sha256(f"gen_dramatic_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': 'سفر احساسی',
-                    'description': 'آهنگ‌های عمیق و احساسی برای لحظات تأملی',
-                    'playlist_type': 'mood_based',
-                    'songs': list(dramatic),
-                    'relevance_score': 6.0,
-                    'match_percentage': 0.0
-                })
-                used_song_ids.update([s.id for s in dramatic])
-
-        # 5. Dance Party
-        if len(playlists) < count_needed:
-            dance_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                danceability__gte=75
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                dance_qs = dance_qs.exclude(id__in=list(used_song_ids))
-            dance = dance_qs.order_by('-plays')[:20]
-            if dance.count() >= 10:
-                import random as _rnd
-                unique_id = hashlib.sha256(f"gen_dance_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': 'رقص و جشن',
-                    'description': 'آهنگ‌های ریتمیک و دوست‌داشتنی برای رقص',
-                    'playlist_type': 'energy',
-                    'songs': list(dance),
-                    'relevance_score': 6.0,
-                    'match_percentage': 0.0
-                })
-                used_song_ids.update([s.id for s in dance])
-
-        # 6. Focus & Study
-        if len(playlists) < count_needed:
-            focus_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                instrumentalness__gte=50,
-                energy__lte=50
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                focus_qs = focus_qs.exclude(id__in=list(used_song_ids))
-            focus = focus_qs.order_by('-plays')[:20]
-            if focus.count() >= 10:
-                import random as _rnd
-                unique_id = hashlib.sha256(f"gen_focus_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': 'تمرکز و مطالعه',
-                    'description': 'آهنگ‌های بدون کلام برای تمرکز',
-                    'playlist_type': 'mood_based',
-                    'songs': list(focus),
-                    'relevance_score': 6.0,
-                    'match_percentage': 0.0
-                })
-                used_song_ids.update([s.id for s in focus])
-
-        # 7. Late Night Vibes
-        if len(playlists) < count_needed:
-            night_qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                energy__lte=45,
-                valence__range=(30, 60)
-            ).exclude(id__in=excluded_ids)
-            if used_song_ids:
-                night_qs = night_qs.exclude(id__in=list(used_song_ids))
-            night = night_qs.order_by('-plays')[:20]
-            if night.count() >= 10:
-                import random as _rnd
-                unique_id = hashlib.sha256(f"gen_night_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': 'حال و هوای شب',
-                    'description': 'آهنگ‌های ملایم برای شب',
-                    'playlist_type': 'mood_based',
-                    'songs': list(night),
-                    'relevance_score': 6.0,
-                    'match_percentage': 0.0
-                })
-                used_song_ids.update([s.id for s in night])
-
-        # 8. Genre-based fallbacks
-        if len(playlists) < count_needed:
-            all_genres = Genre.objects.all()[:8]
-            for genre in all_genres:
-                if len(playlists) >= count_needed:
-                    break
-                    
-                genre_qs = Song.objects.filter(
-                    status=Song.STATUS_PUBLISHED,
-                    genres=genre
-                ).exclude(id__in=excluded_ids)
-                if used_song_ids:
-                    genre_qs = genre_qs.exclude(id__in=list(used_song_ids))
-                genre_songs = genre_qs.order_by('-plays')[:20]
-                if genre_songs.count() < 10 and used_song_ids:
-                    genre_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=genre).exclude(id__in=excluded_ids).order_by('-plays')[:20]
-                
-                if genre_songs.count() >= 10:
-                    import random as _rnd
-                    unique_id = hashlib.sha256(f"gen_genre_{genre.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-                    playlists.append({
-                        'unique_id': unique_id,
-                        'title': f'برترین‌های {genre.name}',
-                        'description': f'بهترین آهنگ‌های {genre.name}',
-                        'playlist_type': 'discover_genre',
-                        'songs': list(genre_songs),
-                        'relevance_score': 5.5,
-                        'match_percentage': 0.0
-                    })
-                    used_song_ids.update([s.id for s in genre_songs])
-
-        return playlists[:count_needed]
+        return playlists
 
     def _score_songs_by_similarity(self, songs, top_genres, top_moods, avg_features):
-        """Score songs by similarity to user preferences"""
+        """Score songs by similarity to user preferences with a strong boost for popularity (plays and likes)."""
         scored = []
         
         for song in songs:
             score = 0
             
-            # Genre matching
-            song_genres = {g.id for g in song.genres.all()}
-            score += len(song_genres.intersection(top_genres)) * 3
+            # 1. Taste matching
+            try:
+                song_genres = {g.id for g in song.genres.all()}
+                score += len(song_genres.intersection(top_genres)) * 5
+                
+                song_moods = {m.id for m in song.moods.all()}
+                score += len(song_moods.intersection(top_moods)) * 3
+            except Exception: pass
             
-            # Mood matching
-            song_moods = {m.id for m in song.moods.all()}
-            score += len(song_moods.intersection(top_moods)) * 2
+            # 2. Audio feature similarity (if provided)
+            if avg_features:
+                if avg_features.get('avg_energy') and song.energy:
+                    score += max(0, (100 - abs(song.energy - avg_features['avg_energy'])) / 10)
+                if avg_features.get('avg_dance') and song.danceability:
+                    score += max(0, (100 - abs(song.danceability - avg_features['avg_dance'])) / 10)
+                if avg_features.get('avg_valence') and song.valence:
+                    score += max(0, (100 - abs(song.valence - avg_features['avg_valence'])) / 10)
             
-            # Audio feature similarity
-            if avg_features['avg_energy'] and song.energy:
-                score += max(0, (100 - abs(song.energy - avg_features['avg_energy'])) / 10)
-            if avg_features['avg_dance'] and song.danceability:
-                score += max(0, (100 - abs(song.danceability - avg_features['avg_dance'])) / 10)
-            if avg_features['avg_valence'] and song.valence:
-                score += max(0, (100 - abs(song.valence - avg_features['avg_valence'])) / 10)
+            # 3. Popularity & Engagement (User specifically asked for this)
+            plays_score = min(song.plays / 5000, 20)
+            # Use cached count if available, or just count
+            likes_count = song.liked_by.count() if hasattr(song, 'liked_by') else 0
+            likes_score = min(likes_count / 100, 30)
             
-            # Popularity boost (but not too much)
-            score += min(song.plays / 1000, 5)
+            score += plays_score + likes_score
+            
+            # 4. Tie-breaker
+            score += random.random()
             
             scored.append((song, score))
         
