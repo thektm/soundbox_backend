@@ -180,10 +180,39 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
     is_liked = serializers.SerializerMethodField()
     cover_image = serializers.SerializerMethodField()
     top_three_song_covers = serializers.SerializerMethodField()
+    genre_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
 
     class Meta:
         model = RecommendedPlaylist
-        fields = ['id', 'unique_id', 'title', 'description', 'cover_image', 'top_three_song_covers', 'songs_count', 'is_liked']
+        fields = [
+            'id', 'unique_id', 'title', 'description', 'cover_image', 
+            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 'mood_names'
+        ]
+
+    def get_genre_names(self, obj):
+        """Aggregate unique genre names from all songs in this playlist."""
+        try:
+            # Try to use prefetched data
+            names = set()
+            for song in obj.songs.all():
+                for g in song.genres.all():
+                    names.add(g.name)
+            return list(names)
+        except Exception:
+            return []
+
+    def get_mood_names(self, obj):
+        """Aggregate unique mood names from all songs in this playlist."""
+        try:
+            # Try to use prefetched data
+            names = set()
+            for song in obj.songs.all():
+                for m in song.moods.all():
+                    names.add(m.name)
+            return list(names)
+        except Exception:
+            return []
 
     def get_top_three_song_covers(self, obj):
         """Return the cover images of the first 3 songs in the playlist."""
@@ -1465,6 +1494,8 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
     is_saved = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     playlist_ref = PlaylistSerializer(read_only=True)
+    genre_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
     
     class Meta:
         model = RecommendedPlaylist
@@ -1472,9 +1503,31 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'covers', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
             'views', 'relevance_score', 'match_percentage', 'created_at',
-            'playlist_ref'
+            'playlist_ref', 'genre_names', 'mood_names'
         ]
         read_only_fields = fields
+
+    def get_genre_names(self, obj):
+        """Aggregate unique genre names from all songs in this playlist."""
+        try:
+            names = set()
+            for song in obj.songs.prefetch_related('genres').all():
+                for g in song.genres.all():
+                    names.add(g.name)
+            return list(names)
+        except Exception:
+            return []
+
+    def get_mood_names(self, obj):
+        """Aggregate unique mood names from all songs in this playlist."""
+        try:
+            names = set()
+            for song in obj.songs.prefetch_related('moods').all():
+                for m in song.moods.all():
+                    names.add(m.name)
+            return list(names)
+        except Exception:
+            return []
     
     def get_covers(self, obj):
         """Return first 3 song cover images, respecting explicit `song_order` when present."""
@@ -1525,6 +1578,8 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     songs_count = serializers.SerializerMethodField()
     playlist_ref = PlaylistSerializer(read_only=True)
+    genre_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
     
     class Meta:
         model = RecommendedPlaylist
@@ -1532,9 +1587,29 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'songs', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
             'views', 'relevance_score', 'match_percentage', 'created_at', 'updated_at',
-            'playlist_ref'
+            'playlist_ref', 'genre_names', 'mood_names'
         ]
         read_only_fields = fields
+
+    def get_genre_names(self, obj):
+        try:
+            names = set()
+            for song in obj.songs.prefetch_related('genres').all():
+                for g in song.genres.all():
+                    names.add(g.name)
+            return list(names)
+        except Exception:
+            return []
+
+    def get_mood_names(self, obj):
+        try:
+            names = set()
+            for song in obj.songs.prefetch_related('moods').all():
+                for m in song.moods.all():
+                    names.add(m.name)
+            return list(names)
+        except Exception:
+            return []
     
     def get_songs(self, obj):
         """Return all songs with stream links"""

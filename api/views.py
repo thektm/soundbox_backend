@@ -2856,7 +2856,9 @@ class HomeSummaryView(APIView):
         except Exception:
             # If generation fails, fall back to returning any existing recommendations
             pass
-        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related('songs', 'liked_by')
+        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related(
+            'songs', 'songs__genres', 'songs__moods', 'liked_by'
+        )
 
         # Custom pagination + per-request shuffling and ephemeral cover selection
         try:
@@ -3447,7 +3449,9 @@ class DailyTopAlbumsView(generics.ListAPIView):
 
     def get_queryset(self):
         last_24h = timezone.now() - timedelta(hours=24)
-        queryset = Album.objects.annotate(
+        queryset = Album.objects.exclude(
+            Q(title__iexact='single') | Q(title='سینگل')
+        ).annotate(
             daily_plays=Count(
                 'songs__play_counts', 
                 filter=Q(songs__play_counts__created_at__gte=last_24h)
@@ -3539,7 +3543,9 @@ class WeeklyTopAlbumsView(generics.ListAPIView):
         last_week = timezone.now() - timedelta(days=7)
         # Filter albums whose songs have at least one play in the last week
         # and annotate with the count of plays in that period
-        queryset = Album.objects.annotate(
+        queryset = Album.objects.exclude(
+            Q(title__iexact='single') | Q(title='سینگل')
+        ).annotate(
             weekly_plays=Count(
                 'songs__play_counts', 
                 filter=Q(songs__play_counts__created_at__gte=last_week)
@@ -3774,8 +3780,8 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             generated_playlists.append(similar_playlist)
             used_song_ids.update([s.id for s in similar_playlist.get('songs', []) if getattr(s, 'id', None)])
 
-        # B. Discover Genre Playlists - Explore genres they haven't tried much
-        genre_playlists = self._create_genre_discovery_playlists(user, all_interacted_ids, top_genres, used_song_ids)
+        # B. Genre-Based Playlists (using top genres)
+        genre_playlists = self._create_genre_playlists(user, all_interacted_ids, top_genres, used_song_ids)
         generated_playlists.extend(genre_playlists)
         for p in genre_playlists:
             used_song_ids.update([s.id for s in p.get('songs', []) if getattr(s, 'id', None)])
@@ -3861,17 +3867,17 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             'match_percentage': round(match_percentage, 1)
         }
 
-    def _create_genre_discovery_playlists(self, user, excluded_ids, top_genres, used_song_ids=None):
-        """Create playlists to help discover new genres"""
+    def _create_genre_playlists(self, user, excluded_ids, genre_ids, used_song_ids=None):
+        """Create playlists based on specific genres"""
         from .models import Genre
         
         playlists = []
         used_song_ids = used_song_ids or set()
 
-        # Get genres user hasn't explored much
-        all_genres = Genre.objects.exclude(id__in=top_genres)[:6]
+        # Get the actual genre objects for the IDs provided
+        genres = Genre.objects.filter(id__in=genre_ids)[:5]
 
-        for genre in all_genres:
+        for genre in genres:
             qs = Song.objects.filter(
                 status=Song.STATUS_PUBLISHED,
                 genres=genre
@@ -3890,20 +3896,20 @@ class PlaylistRecommendationsView(generics.ListAPIView):
 
             if songs.count() >= 10:
                 import hashlib, random as _rnd
-                unique_id = hashlib.sha256(f"discover_{genre.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                unique_id = hashlib.sha256(f"genre_{genre.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
 
                 # Farsi title uses the genre name (which is stored in Farsi)
                 playlists.append({
                     'unique_id': unique_id,
-                    'title': f'کشف {genre.name}',
+                    'title': f'سبک {genre.name}',
                     'description': f'کاوش در آهنگ‌های منتخب {genre.name}',
                     'playlist_type': 'discover_genre',
                     'songs': list(songs),
                     'relevance_score': 7.0,
-                    'match_percentage': 0.0  # Discovery playlists don't match existing taste
+                    'match_percentage': 0.0
                 })
 
-        return playlists[:3]  # Max 3 discovery playlists
+        return playlists
 
     def _create_mood_playlists(self, user, excluded_ids, top_moods, avg_features, used_song_ids=None):
         """Create mood-based playlists"""
@@ -3949,7 +3955,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 # Title uses mood.name (stored in Farsi)
                 playlists.append({
                     'unique_id': unique_id,
-                    'title': f'{mood.name}',
+                    'title': f'مود {mood.name}',
                     'description': f'مجموعه‌ای برای حال و هوای {mood.name}',
                     'playlist_type': 'mood_based',
                     'songs': list(songs),
