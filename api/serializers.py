@@ -13,6 +13,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 class SongSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for songs in summary views"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
+    artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     stream_url = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
@@ -25,7 +26,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_name', 'album_title', 'cover_image', 
+            'id', 'title', 'artist_id', 'artist_name', 'album_title', 'cover_image', 
             'stream_url', 'duration_seconds', 'is_liked',
             'genre_names', 'tag_names', 'mood_names', 'sub_genre_names', 'play_count'
         ]
