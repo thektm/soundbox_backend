@@ -864,6 +864,7 @@ class SongSerializer(serializers.ModelSerializer):
     plays = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     added_to_playlists_count = serializers.SerializerMethodField()
+    added_to_playlist = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     
     # For write operations
@@ -923,7 +924,7 @@ class SongSerializer(serializers.ModelSerializer):
             'id', 'title', 'artist', 'artist_name', 'featured_artists',
             'album', 'album_title', 'is_single', 'stream_url', 'audio_file', 'converted_audio_url', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
-            'likes_count', 'added_to_playlists_count', 'is_liked',
+            'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked',
             'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
             'mood_ids', 'tag_ids', 'description', 'lyrics', 'tempo', 'energy',
             'danceability', 'valence', 'acousticness', 'instrumentalness',
@@ -932,7 +933,7 @@ class SongSerializer(serializers.ModelSerializer):
             'updated_at', 'display_title', 'similar_songs',
             'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write', 'tag_ids_write'
         ]
-        read_only_fields = ['id', 'plays', 'likes_count', 'added_to_playlists_count', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
+        read_only_fields = ['id', 'plays', 'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked', 'created_at', 'updated_at', 'duration_display', 'display_title']
 
     def get_plays(self, obj):
         # Return the sum of the legacy 'plays' field and the actual PlayCount records
@@ -946,6 +947,10 @@ class SongSerializer(serializers.ModelSerializer):
 
     def get_added_to_playlists_count(self, obj):
         return obj.user_playlists.count()
+
+    def get_added_to_playlist(self, obj):
+        # Count distinct users who have added this song to at least one of their playlists
+        return obj.user_playlists.values('user').distinct().count()
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
@@ -1156,8 +1161,7 @@ class SongSerializer(serializers.ModelSerializer):
         end = start + page_size
         page_items = [item[0] for item in scored[start:end]]
 
-        from .serializers import SongStreamSerializer
-        serializer = SongStreamSerializer(page_items, many=True, context=self.context)
+        serializer = SongSummarySerializer(page_items, many=True, context=self.context)
         items_data = serializer.data
 
         has_next = end < total
