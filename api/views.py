@@ -3378,14 +3378,14 @@ class PopularAlbumsView(generics.ListAPIView):
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class DailyTopSongsView(generics.ListAPIView):
     """Return songs ordered by play count in the last 24 hours (Global)."""
-    serializer_class = SongSerializer
+    serializer_class = SongSummarySerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
 
     @extend_schema(
         summary="برترین آهنگ‌های روز",
         description="لیست آهنگ‌هایی که بیشترین پخش را در ۲۴ ساعت گذشته داشته‌اند.",
-        responses={200: SongSerializer(many=True)}
+        responses={200: SongSummarySerializer(many=True)}
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
@@ -3398,6 +3398,8 @@ class DailyTopSongsView(generics.ListAPIView):
             daily_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=last_24h))
         ).filter(
             daily_plays__gt=0
+        ).select_related('artist', 'album').prefetch_related(
+            'liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts'
         ).order_by('-daily_plays', '-plays')
         
         return queryset.distinct()
@@ -3473,14 +3475,14 @@ class DailyTopAlbumsView(generics.ListAPIView):
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class WeeklyTopSongsView(generics.ListAPIView):
     """Return songs ordered by play count in the last 7 days (Global)."""
-    serializer_class = SongSerializer
+    serializer_class = SongSummarySerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
 
     @extend_schema(
         summary="برترین آهنگ‌های هفته",
         description="لیست آهنگ‌هایی که بیشترین پخش را در ۷ روز گذشته داشته‌اند.",
-        responses={200: SongSerializer(many=True)}
+        responses={200: SongSummarySerializer(many=True)}
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
@@ -3495,6 +3497,8 @@ class WeeklyTopSongsView(generics.ListAPIView):
             weekly_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=last_week))
         ).filter(
             weekly_plays__gt=0
+        ).select_related('artist', 'album').prefetch_related(
+            'liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts'
         ).order_by('-weekly_plays', '-plays')
         
         return queryset.distinct()
