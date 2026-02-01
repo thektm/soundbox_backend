@@ -3460,6 +3460,13 @@ class DailyTopAlbumsView(generics.ListAPIView):
             daily_plays__gt=0
         ).order_by('-daily_plays')
         
+        # Prefetch songs to avoid N+1 queries when falling back to song cover image
+        song_prefetch = Prefetch(
+            'songs',
+            queryset=Song.objects.only('id', 'album_id', 'cover_image').order_by('-release_date', '-created_at')
+        )
+        queryset = queryset.prefetch_related(song_prefetch)
+        
         return queryset.distinct()
 
 
@@ -3553,6 +3560,13 @@ class WeeklyTopAlbumsView(generics.ListAPIView):
         ).filter(
             weekly_plays__gt=0
         ).order_by('-weekly_plays')
+        
+        # Prefetch songs to avoid N+1 queries when falling back to song cover image
+        song_prefetch = Prefetch(
+            'songs',
+            queryset=Song.objects.only('id', 'album_id', 'cover_image').order_by('-release_date', '-created_at')
+        )
+        queryset = queryset.prefetch_related(song_prefetch)
         
         return queryset.distinct()
 

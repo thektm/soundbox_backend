@@ -757,7 +757,15 @@ class AlbumSerializer(serializers.ModelSerializer):
 
     def get_mood_ids(self, obj):
         return [mood.name for mood in obj.moods.all()]
-        return False
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        if not representation.get('cover_image'):
+            # Fallback to the cover image of the first song in the album if the album cover is missing
+            first_song = instance.songs.all().first()
+            if first_song and first_song.cover_image:
+                representation['cover_image'] = first_song.cover_image
+        return representation
 
 
 class PopularAlbumSerializer(AlbumSerializer):
