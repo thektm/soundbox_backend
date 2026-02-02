@@ -581,7 +581,7 @@ class ArtistSerializer(serializers.ModelSerializer):
     is_following = serializers.SerializerMethodField()
     followers = serializers.SerializerMethodField()
     following = serializers.SerializerMethodField()
-    social_accounts = ArtistSocialAccountSerializer(many=True, read_only=True, source='artistsocialaccount_set')
+    social_accounts = ArtistSocialAccountSerializer(many=True, read_only=True, source='social_account_links')
     
     class Meta:
         model = Artist
