@@ -545,7 +545,18 @@ class PasswordResetSerializer(serializers.Serializer):
 class TokenRefreshRequestSerializer(serializers.Serializer):
     refreshToken = serializers.CharField()
 
+class ArtistSocialAccountSerializer(serializers.ModelSerializer):
+    platform_name = serializers.CharField(source='platform.name', read_only=True)
+    platform_slug = serializers.CharField(source='platform.slug', read_only=True)
+    platform_base_url = serializers.CharField(source='platform.base_url', read_only=True)
 
+    class Meta:
+        model = ArtistSocialAccount
+        fields = [
+            'id', 'platform', 'platform_name', 'platform_slug', 'platform_base_url',
+            'username', 'url', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'platform_name', 'platform_slug', 'platform_base_url']
 class LogoutSerializer(serializers.Serializer):
     refreshToken = serializers.CharField()
 
@@ -1950,15 +1961,3 @@ class AudioAdSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'audio_url', 'image_cover', 'navigate_link', 'duration', 'skippable_after']
 
 
-class ArtistSocialAccountSerializer(serializers.ModelSerializer):
-    platform_name = serializers.CharField(source='platform.name', read_only=True)
-    platform_slug = serializers.CharField(source='platform.slug', read_only=True)
-    platform_base_url = serializers.CharField(source='platform.base_url', read_only=True)
-
-    class Meta:
-        model = ArtistSocialAccount
-        fields = [
-            'id', 'platform', 'platform_name', 'platform_slug', 'platform_base_url',
-            'username', 'url', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'platform_name', 'platform_slug', 'platform_base_url']
