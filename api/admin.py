@@ -6,11 +6,18 @@ from .models import (
     Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
-    PaymentTransaction, BannerAd, AudioAd
+    PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform
 )
 from .models import ActivePlayback
 
 User = get_user_model()
+
+
+class ArtistSocialAccountInline(admin.TabularInline):
+    model = ArtistSocialAccount
+    extra = 0
+    fields = ('platform', 'username', 'url')
+    readonly_fields = ('created_at', 'updated_at')
 
 
 @admin.register(Follow)
@@ -45,6 +52,7 @@ class ArtistAdmin(admin.ModelAdmin):
     list_filter = ('verified', 'created_at', 'city')
     search_fields = ('name', 'artistic_name', 'user__phone_number', 'email', 'id_number', 'city')
     readonly_fields = ('created_at',)
+    inlines = [ArtistSocialAccountInline]
     fieldsets = (
         ('Basic Info', {
             'fields': ('name', 'artistic_name', 'user', 'bio', 'verified', 'email', 'city', 'id_number', 'date_of_birth', 'address')
@@ -71,6 +79,18 @@ class ArtistAuthAdmin(admin.ModelAdmin):
         ('Timestamps', {'fields': ('created_at', 'updated_at')})
     )
 
+@admin.register(ArtistSocialAccount)
+class ArtistSocialAccountAdmin(admin.ModelAdmin):
+    list_display = ('id', 'artist', 'platform', 'username', 'url', 'updated_at')
+    list_filter = ('platform', 'updated_at')
+    search_fields = ('artist__name', 'platform__name', 'username', 'url')
+    readonly_fields = ('created_at', 'updated_at')
+
+@admin.register(SocialPlatform)
+class SocialPlatformAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'slug', 'base_url')
+    search_fields = ('name', 'slug')
+    prepopulated_fields = {'slug': ('name',)}
 
 @admin.register(ArtistMonthlyListener)
 class ArtistMonthlyListenerAdmin(admin.ModelAdmin):

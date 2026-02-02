@@ -8,7 +8,7 @@ from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    ActivePlayback, DepositRequest, Report, Notification, AudioAd
+    ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount
 )
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -46,6 +46,7 @@ from .serializers import (
     ArtistSummarySerializer,
     AlbumSummarySerializer,
     PlaylistSummarySerializer,
+    ArtistSocialAccountSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -1166,6 +1167,108 @@ class ArtistDetailView(APIView):
         })
 
    
+
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
+class ArtistSocialAccountsView(APIView):
+    """Manage social accounts for the authenticated artist"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if User.ROLE_ARTIST not in user.roles:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        social_accounts = ArtistSocialAccount.objects.filter(artist=artist)
+        serializer = ArtistSocialAccountSerializer(social_accounts, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="افزودن حساب اجتماعی جدید",
+        description="افزودن یک حساب اجتماعی جدید برای هنرمند.",
+        request=ArtistSocialAccountSerializer,
+        responses={201: ArtistSocialAccountSerializer}
+    )
+    def post(self, request):
+        user = request.user
+        if User.ROLE_ARTIST not in user.roles:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ArtistSocialAccountSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(artist=artist)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
+class ArtistSocialAccountDetailView(APIView):
+    """Update or delete a specific social account for the authenticated artist"""
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, pk, artist):
+        try:
+            return ArtistSocialAccount.objects.get(pk=pk, artist=artist)
+        except ArtistSocialAccount.DoesNotExist:
+            return None
+
+    @extend_schema(
+        summary="ویرایش حساب اجتماعی",
+        description="ویرایش یک حساب اجتماعی خاص.",
+        request=ArtistSocialAccountSerializer,
+        responses={200: ArtistSocialAccountSerializer}
+    )
+    def put(self, request, pk):
+        user = request.user
+        if User.ROLE_ARTIST not in user.roles:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        social_account = self.get_object(pk, artist)
+        if not social_account:
+            return Response({"detail": "Social account not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ArtistSocialAccountSerializer(social_account, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        summary="حذف حساب اجتماعی",
+        description="حذف یک حساب اجتماعی خاص.",
+        responses={204: OpenApiTypes.NONE}
+    )
+    def delete(self, request, pk):
+        user = request.user
+        if User.ROLE_ARTIST not in user.roles:
+            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        social_account = self.get_object(pk, artist)
+        if not social_account:
+            return Response({"detail": "Social account not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        social_account.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class AlbumListView(APIView):
