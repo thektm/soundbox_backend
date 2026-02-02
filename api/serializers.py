@@ -1528,7 +1528,7 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'covers', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
             'views', 'relevance_score', 'match_percentage', 'created_at',
-            'playlist_ref', 'genre_names', 'mood_names'
+            'genre_names', 'mood_names'
         ]
         read_only_fields = fields
 
