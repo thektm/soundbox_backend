@@ -1518,7 +1518,6 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
-    playlist_ref = PlaylistSerializer(read_only=True)
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     
