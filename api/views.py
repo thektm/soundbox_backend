@@ -3772,15 +3772,34 @@ class PlaylistRecommendationsView(generics.ListAPIView):
 
                 # reshuffle song order for this request, biasing by popularity (plays + likes)
                 try:
-                    # compute a popularity score and sort with random tie-breaker to get new order each time
-                    scored = []
+                    # Separate songs with covers from those without
+                    songs_with_covers = []
+                    songs_without_covers = []
                     for s in songs:
+                        has_cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
+                        if has_cover:
+                            songs_with_covers.append(s)
+                        else:
+                            songs_without_covers.append(s)
+                    
+                    # Score and sort songs with covers
+                    scored_with = []
+                    for s in songs_with_covers:
                         likes = s.liked_by.count() if hasattr(s, 'liked_by') else 0
                         score = (getattr(s, 'plays', 0) or 0) + likes * 50
-                        scored.append((s, score))
-
-                    scored.sort(key=lambda tup: (-tup[1], random.random()))
-                    new_order_ids = [s.id for s, _ in scored]
+                        scored_with.append((s, score))
+                    scored_with.sort(key=lambda tup: (-tup[1], random.random()))
+                    
+                    # Score and sort songs without covers
+                    scored_without = []
+                    for s in songs_without_covers:
+                        likes = s.liked_by.count() if hasattr(s, 'liked_by') else 0
+                        score = (getattr(s, 'plays', 0) or 0) + likes * 50
+                        scored_without.append((s, score))
+                    scored_without.sort(key=lambda tup: (-tup[1], random.random()))
+                    
+                    # Combine: songs with covers first, then without
+                    new_order_ids = [s.id for s, _ in scored_with] + [s.id for s, _ in scored_without]
 
                     # If the new order matches existing, shuffle slightly to ensure change
                     if rec.song_order and rec.song_order == new_order_ids:
