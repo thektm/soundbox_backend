@@ -1307,7 +1307,7 @@ class PlaylistSerializer(serializers.ModelSerializer):
     genres = GenreSerializer(many=True, read_only=True)
     moods = MoodSerializer(many=True, read_only=True)
     tags = TagSerializer(many=True, read_only=True)
-    songs = SongSerializer(many=True, read_only=True)
+    songs = SongSummarySerializer(many=True, read_only=True)
 
     # Write fields: accept lists of primary keys
     genre_ids = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False)
