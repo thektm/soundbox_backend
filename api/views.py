@@ -13,6 +13,7 @@ from .models import (
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
     RegisterSerializer, 
+    ArtistSocialAccountSerializer,
     CustomTokenObtainPairSerializer,
     ArtistSerializer,
     PopularArtistSerializer,
