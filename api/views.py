@@ -3883,9 +3883,14 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         # 2. Extract preferences
         interacted_songs = Song.objects.filter(id__in=all_interacted_ids)
         
-        # Get top preferences
-        top_genres = list(interacted_songs.values_list('genres', flat=True).distinct())[:5]
-        top_moods = list(interacted_songs.values_list('moods', flat=True).distinct())[:5]
+        # Get genres and moods with more than 1 song related
+        from django.db.models import Count
+        genre_counts = interacted_songs.values('genres').annotate(count=Count('id')).filter(count__gt=1).order_by('-count')
+        top_genres = [item['genres'] for item in genre_counts][:10]  # Increase to 10 for more variety
+        
+        mood_counts = interacted_songs.values('moods').annotate(count=Count('id')).filter(count__gt=1).order_by('-count')
+        top_moods = [item['moods'] for item in mood_counts][:10]
+        
         top_artists = list(interacted_songs.values_list('artist', flat=True).distinct())[:5]
         
         # Average audio features
@@ -3932,7 +3937,26 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         for p in artist_playlists:
             used_song_ids.update([s.id for s in p.get('songs', []) if getattr(s, 'id', None)])
 
-        # F. If we don't have enough playlists, add general cohesive playlists
+        # F. Additional Genre Playlists for all genres with >1 song not in top_genres
+        from django.db.models import Count
+        all_genres = Genre.objects.annotate(song_count=Count('song')).filter(song_count__gt=1).exclude(id__in=top_genres)
+        all_genre_ids = list(all_genres.values_list('id', flat=True))
+        if all_genre_ids:
+            additional_genre_playlists = self._create_genre_playlists(user, all_interacted_ids, all_genre_ids, used_song_ids)
+            generated_playlists.extend(additional_genre_playlists)
+            for p in additional_genre_playlists:
+                used_song_ids.update([s.id for s in p.get('songs', []) if getattr(s, 'id', None)])
+
+        # G. Additional Mood Playlists for all moods with >1 song not in top_moods
+        all_moods = Mood.objects.annotate(song_count=Count('song')).filter(song_count__gt=1).exclude(id__in=top_moods)
+        all_mood_ids = list(all_moods.values_list('id', flat=True))
+        if all_mood_ids:
+            additional_mood_playlists = self._create_mood_playlists(user, all_interacted_ids, all_mood_ids, avg_features, used_song_ids)
+            generated_playlists.extend(additional_mood_playlists)
+            for p in additional_mood_playlists:
+                used_song_ids.update([s.id for s in p.get('songs', []) if getattr(s, 'id', None)])
+
+        # H. If we don't have enough playlists, add general cohesive playlists
         if len(generated_playlists) < 6:
             general_playlists = self._create_general_cohesive_playlists(user, all_interacted_ids, 6 - len(generated_playlists), used_song_ids)
             generated_playlists.extend(general_playlists)
@@ -3996,7 +4020,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         }
 
     def _create_genre_playlists(self, user, excluded_ids, genre_ids, used_song_ids=None):
-        """Create playlists based on specific genres"""
+        """Create playlists based on specific genres - two per genre"""
         from .models import Genre
         
         playlists = []
@@ -4006,41 +4030,43 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         genres = Genre.objects.filter(id__in=genre_ids)[:5]
 
         for genre in genres:
-            qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                genres=genre
-            ).exclude(
-                id__in=excluded_ids
-            )
+            for i in range(2):  # Create two playlists per genre
+                qs = Song.objects.filter(
+                    status=Song.STATUS_PUBLISHED,
+                    genres=genre
+                ).exclude(
+                    id__in=excluded_ids
+                )
 
-            if used_song_ids:
-                qs = qs.exclude(id__in=list(used_song_ids))
+                if used_song_ids:
+                    qs = qs.exclude(id__in=list(used_song_ids))
 
-            songs = qs.order_by('-plays')[:20]
+                songs = qs.order_by('?')[:20]  # Random order
 
-            # If exclusion removed too many, allow reuse
-            if songs.count() < 10 and used_song_ids:
-                songs = Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=genre).exclude(id__in=excluded_ids).order_by('-plays')[:20]
+                # If exclusion removed too many, allow reuse
+                if songs.count() < 10 and used_song_ids:
+                    songs = Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=genre).exclude(id__in=excluded_ids).order_by('?')[:20]
 
-            if songs.count() >= 10:
-                import hashlib, random as _rnd
-                unique_id = hashlib.sha256(f"genre_{genre.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                if songs.count() >= 10:
+                    import hashlib, random as _rnd
+                    unique_id = hashlib.sha256(f"genre_{genre.id}_{user.id}_{timezone.now().date()}_{i}_{_rnd.random()}".encode()).hexdigest()[:32]
 
-                # Farsi title uses the genre name (which is stored in Farsi)
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': f'سبک {genre.name}',
-                    'description': f'کاوش در آهنگ‌های منتخب {genre.name}',
-                    'playlist_type': 'discover_genre',
-                    'songs': list(songs),
-                    'relevance_score': 7.0,
-                    'match_percentage': 0.0
-                })
+                    # Farsi title uses the genre name (which is stored in Farsi)
+                    playlists.append({
+                        'unique_id': unique_id,
+                        'title': f'سبک {genre.name} ({i+1})',
+                        'description': f'کاوش در آهنگ‌های منتخب {genre.name}',
+                        'playlist_type': 'discover_genre',
+                        'songs': list(songs),
+                        'relevance_score': 7.0,
+                        'match_percentage': 0.0
+                    })
+                    used_song_ids.update([s.id for s in songs])
 
         return playlists
 
     def _create_mood_playlists(self, user, excluded_ids, top_moods, avg_features, used_song_ids=None):
-        """Create mood-based playlists"""
+        """Create mood-based playlists - two per mood"""
         from .models import Mood
         
         playlists = []
@@ -4050,46 +4076,48 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         moods = Mood.objects.filter(id__in=top_moods)[:3]
 
         for mood in moods:
-            qs = Song.objects.filter(
-                status=Song.STATUS_PUBLISHED,
-                moods=mood
-            ).exclude(
-                id__in=excluded_ids
-            )
-
-            if used_song_ids:
-                qs = qs.exclude(id__in=list(used_song_ids))
-
-            # Filter by similar audio features
-            if avg_features.get('avg_valence'):
-                qs = qs.filter(
-                    valence__gte=avg_features['avg_valence'] - 20,
-                    valence__lte=avg_features['avg_valence'] + 20
+            for i in range(2):  # Create two playlists per mood
+                qs = Song.objects.filter(
+                    status=Song.STATUS_PUBLISHED,
+                    moods=mood
+                ).exclude(
+                    id__in=excluded_ids
                 )
 
-            songs = qs.order_by('-plays')[:20]
+                if used_song_ids:
+                    qs = qs.exclude(id__in=list(used_song_ids))
 
-            # Fallback to allow reuse if too few
-            if songs.count() < 10 and used_song_ids:
-                qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=mood).exclude(id__in=excluded_ids)
+                # Filter by similar audio features
                 if avg_features.get('avg_valence'):
-                    qs = qs.filter(valence__gte=avg_features['avg_valence'] - 20, valence__lte=avg_features['avg_valence'] + 20)
-                songs = qs.order_by('-plays')[:20]
+                    qs = qs.filter(
+                        valence__gte=avg_features['avg_valence'] - 20,
+                        valence__lte=avg_features['avg_valence'] + 20
+                    )
 
-            if songs.count() >= 10:
-                import hashlib, random as _rnd
-                unique_id = hashlib.sha256(f"mood_{mood.id}_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                songs = qs.order_by('?')[:20]  # Random order
 
-                # Title uses mood.name (stored in Farsi)
-                playlists.append({
-                    'unique_id': unique_id,
-                    'title': f'مود {mood.name}',
-                    'description': f'مجموعه‌ای برای حال و هوای {mood.name}',
-                    'playlist_type': 'mood_based',
-                    'songs': list(songs),
-                    'relevance_score': 8.5,
-                    'match_percentage': 75.0  # Mood-based matches user's mood preferences
-                })
+                # Fallback to allow reuse if too few
+                if songs.count() < 10 and used_song_ids:
+                    qs = Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=mood).exclude(id__in=excluded_ids)
+                    if avg_features.get('avg_valence'):
+                        qs = qs.filter(valence__gte=avg_features['avg_valence'] - 20, valence__lte=avg_features['avg_valence'] + 20)
+                    songs = qs.order_by('?')[:20]
+
+                if songs.count() >= 10:
+                    import hashlib, random as _rnd
+                    unique_id = hashlib.sha256(f"mood_{mood.id}_{user.id}_{timezone.now().date()}_{i}_{_rnd.random()}".encode()).hexdigest()[:32]
+
+                    # Title uses mood.name (stored in Farsi)
+                    playlists.append({
+                        'unique_id': unique_id,
+                        'title': f'مود {mood.name} ({i+1})',
+                        'description': f'مجموعه‌ای برای حال و هوای {mood.name}',
+                        'playlist_type': 'mood_based',
+                        'songs': list(songs),
+                        'relevance_score': 8.5,
+                        'match_percentage': 75.0  # Mood-based matches user's mood preferences
+                    })
+                    used_song_ids.update([s.id for s in songs])
 
         return playlists
 
@@ -4196,42 +4224,63 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         return playlists
 
     def _generate_trending_playlists(self, user):
-        """Generate general trending playlists for users without history"""
+        """Generate general trending playlists for users without history - cover all genres and moods with >1 song"""
+        from django.db.models import Count
         import hashlib
         playlists = []
         used_song_ids = set()
 
-        # Trending overall
-        trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id__in=list(used_song_ids)).order_by('-plays')[:20]
-        if trending_songs.count() >= 10:
-            import random as _rnd
-            unique_id = hashlib.sha256(f"trending_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-            playlists.append({
-                'unique_id': unique_id,
-                'title': 'محبوب‌ترین‌ها',
-                'description': 'محبوب‌ترین آهنگ‌ها در حال حاضر',
-                'playlist_type': 'similar_taste',
-                'songs': list(trending_songs),
-                'relevance_score': 5.0,
-                'match_percentage': 0.0
-            })
-            used_song_ids.update([s.id for s in trending_songs])
+        # Get all genres and moods with >1 song
+        all_genres = Genre.objects.annotate(song_count=Count('song')).filter(song_count__gt=1)
+        all_genre_ids = list(all_genres.values_list('id', flat=True))
+        all_moods = Mood.objects.annotate(song_count=Count('song')).filter(song_count__gt=1)
+        all_mood_ids = list(all_moods.values_list('id', flat=True))
 
-        # New releases
-        new_releases = Song.objects.filter(status=Song.STATUS_PUBLISHED, release_date__isnull=False).exclude(id__in=list(used_song_ids)).order_by('-release_date')[:20]
-        if new_releases.count() >= 10:
-            import random as _rnd
-            unique_id = hashlib.sha256(f"new_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
-            playlists.append({
-                'unique_id': unique_id,
-                'title': 'آهنگ‌های جدید',
-                'description': 'آهنگ‌های تازه منتشر شده',
-                'playlist_type': 'similar_taste',
-                'songs': list(new_releases),
-                'relevance_score': 5.0,
-                'match_percentage': 0.0
-            })
-            used_song_ids.update([s.id for s in new_releases])
+        # Create genre playlists
+        genre_playlists = self._create_genre_playlists(user, set(), all_genre_ids, used_song_ids)
+        playlists.extend(genre_playlists)
+        for p in genre_playlists:
+            used_song_ids.update([s.id for s in p.get('songs', []) if getattr(s, 'id', None)])
+
+        # Create mood playlists
+        mood_playlists = self._create_mood_playlists(user, set(), all_mood_ids, {}, used_song_ids)  # No avg_features
+        playlists.extend(mood_playlists)
+        for p in mood_playlists:
+            used_song_ids.update([s.id for s in p.get('songs', []) if getattr(s, 'id', None)])
+
+        # If still not enough, add trending and new
+        if len(playlists) < 6:
+            # Trending overall
+            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id__in=list(used_song_ids)).order_by('-plays')[:20]
+            if trending_songs.count() >= 10:
+                import random as _rnd
+                unique_id = hashlib.sha256(f"trending_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'محبوب‌ترین‌ها',
+                    'description': 'محبوب‌ترین آهنگ‌ها در حال حاضر',
+                    'playlist_type': 'similar_taste',
+                    'songs': list(trending_songs),
+                    'relevance_score': 5.0,
+                    'match_percentage': 0.0
+                })
+                used_song_ids.update([s.id for s in trending_songs])
+
+            # New releases
+            new_releases = Song.objects.filter(status=Song.STATUS_PUBLISHED, release_date__isnull=False).exclude(id__in=list(used_song_ids)).order_by('-release_date')[:20]
+            if new_releases.count() >= 10:
+                import random as _rnd
+                unique_id = hashlib.sha256(f"new_{user.id}_{timezone.now().date()}_{_rnd.random()}".encode()).hexdigest()[:32]
+                playlists.append({
+                    'unique_id': unique_id,
+                    'title': 'آهنگ‌های جدید',
+                    'description': 'آهنگ‌های تازه منتشر شده',
+                    'playlist_type': 'similar_taste',
+                    'songs': list(new_releases),
+                    'relevance_score': 5.0,
+                    'match_percentage': 0.0
+                })
+                used_song_ids.update([s.id for s in new_releases])
 
         # Add general cohesive playlists to reach at least 6
         if len(playlists) < 6:
