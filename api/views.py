@@ -2119,7 +2119,9 @@ class UnwrapStreamView(APIView):
             config = PlayConfiguration.objects.last()
             ad_freq = config.ad_frequency if config else 15
             
-            if ad_freq > 0 and unwrapped_count % ad_freq == 0:
+            # ONLY show ads for FREE users
+            is_premium = request.user.plan == User.PLAN_PREMIUM
+            if not is_premium and ad_freq > 0 and unwrapped_count % ad_freq == 0:
                 # Pick a random active ad
                 active_ads = AudioAd.objects.filter(is_active=True)
                 if active_ads.exists():
@@ -2284,11 +2286,14 @@ class StreamShortRedirectView(APIView):
                     unwrapped_at__gte=cutoff_time
                 ).count()
 
-                # Consider ad system: if ad should be shown now, attach ad info to new StreamAccess and return ad response
+                # Use ad frequency from configuration
                 config = PlayConfiguration.objects.last()
                 ad_freq = config.ad_frequency if config else 15
 
-                if ad_freq > 0 and unwrapped_count % ad_freq == 0:
+                # ONLY show ads for FREE users
+                is_premium = request.user.plan == User.PLAN_PREMIUM
+
+                if not is_premium and ad_freq > 0 and unwrapped_count % ad_freq == 0:
                     active_ads = AudioAd.objects.filter(is_active=True)
                     if active_ads.exists():
                         ad = random.choice(active_ads)
@@ -2343,7 +2348,9 @@ class StreamShortRedirectView(APIView):
             config = PlayConfiguration.objects.last()
             ad_freq = config.ad_frequency if config else 15
             
-            if ad_freq > 0 and unwrapped_count % ad_freq == 0:
+            # ONLY show ads for FREE users
+            is_premium = request.user.plan == User.PLAN_PREMIUM
+            if not is_premium and ad_freq > 0 and unwrapped_count % ad_freq == 0:
                 # Pick a random active ad
                 active_ads = AudioAd.objects.filter(is_active=True)
                 if active_ads.exists():

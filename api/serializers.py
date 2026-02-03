@@ -1018,16 +1018,6 @@ class SongSerializer(serializers.ModelSerializer):
             if not unique_otplay_id:
                 unique_otplay_id = uuid4().hex
 
-            # Check for ad frequency for free users
-            if request.user.plan != User.PLAN_PREMIUM:
-                config = PlayConfiguration.objects.last()
-                if config and config.ad_frequency > 0:
-                    total_requests = StreamAccess.objects.filter(user=request.user).count()
-                    if (total_requests + 1) % config.ad_frequency == 0:
-                        # Return ad URL instead of song wrapper
-                        from django.conf import settings
-                        return getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
-
             # Create StreamAccess record
             StreamAccess.objects.create(
                 user=request.user,
@@ -1341,7 +1331,7 @@ class PlaylistForEventSerializer(serializers.ModelSerializer):
 
 
 class SongStreamSerializer(serializers.ModelSerializer):
-    """Serializer for songs with wrapper stream URLs instead of direct URLs"""
+    """Serializer for songs with wrapper stream URLs instead of direct URLs representation"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
@@ -1402,16 +1392,6 @@ class SongStreamSerializer(serializers.ModelSerializer):
                     break
             if not unique_otplay_id:
                 unique_otplay_id = uuid4().hex
-
-            # Check for ad frequency for free users
-            if request.user.plan != User.PLAN_PREMIUM:
-                config = PlayConfiguration.objects.last()
-                if config and config.ad_frequency > 0:
-                    total_requests = StreamAccess.objects.filter(user=request.user).count()
-                    if (total_requests + 1) % config.ad_frequency == 0:
-                        # Return ad URL instead of song wrapper
-                        from django.conf import settings
-                        return getattr(settings, 'AD_URL', 'https://cdn.sedabox.com/ads/default-ad.mp3')
 
             # Create StreamAccess record
             StreamAccess.objects.create(
