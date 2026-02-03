@@ -744,6 +744,10 @@ class AlbumSerializer(serializers.ModelSerializer):
     genre_ids = serializers.SerializerMethodField()
     sub_genre_ids = serializers.SerializerMethodField()
     mood_ids = serializers.SerializerMethodField()
+    # Include songs in album detail and aggregated genres/moods from songs
+    songs = serializers.SerializerMethodField()
+    song_genre_names = serializers.SerializerMethodField()
+    song_mood_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Album
@@ -753,6 +757,9 @@ class AlbumSerializer(serializers.ModelSerializer):
             'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write',
             'genre_ids', 'sub_genre_ids', 'mood_ids'
         ]
+        # expose songs and aggregated song-level genres/moods for detail views
+        # appended at the end to avoid breaking clients that depend on field order
+        fields += ['songs', 'song_genre_names', 'song_mood_names']
         read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
     def get_likes_count(self, obj):
@@ -771,6 +778,50 @@ class AlbumSerializer(serializers.ModelSerializer):
 
     def get_mood_ids(self, obj):
         return [mood.name for mood in obj.moods.all()]
+
+    def get_songs(self, obj):
+        try:
+            # include only published songs related to this album
+            qs = obj.songs.all().select_related('artist', 'album')
+            # Use SongStreamSerializer so stream URLs are wrapper links (consistent with other detail views)
+            try:
+                serializer_cls = globals().get('SongStreamSerializer')
+                if serializer_cls:
+                    return serializer_cls(qs, many=True, context=self.context).data
+            except Exception:
+                pass
+            # fallback minimal representation
+            return [
+                {
+                    'id': s.id,
+                    'title': s.title,
+                    'artist_id': getattr(s.artist, 'id', None),
+                    'artist_name': getattr(s.artist, 'name', None),
+                }
+                for s in qs
+            ]
+        except Exception:
+            return []
+
+    def get_song_genre_names(self, obj):
+        try:
+            names = set()
+            for s in obj.songs.prefetch_related('genres').all():
+                for g in s.genres.all():
+                    names.add(g.name)
+            return list(names)
+        except Exception:
+            return []
+
+    def get_song_mood_names(self, obj):
+        try:
+            names = set()
+            for s in obj.songs.prefetch_related('moods').all():
+                for m in s.moods.all():
+                    names.add(m.name)
+            return list(names)
+        except Exception:
+            return []
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
