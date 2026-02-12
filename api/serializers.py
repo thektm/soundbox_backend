@@ -1760,7 +1760,7 @@ class SearchResultSerializer(serializers.Serializer):
         if not isinstance(obj, Artist): return None
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
+            return request.user.followings.filter(id=obj.id).exists()
         return False
 
     def get_is_liked(self, obj):
@@ -1819,6 +1819,75 @@ class EventPlaylistSerializer(serializers.ModelSerializer):
     class Meta:
         model = EventPlaylist
         fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+
+
+class PlaylistCoverSerializer(serializers.ModelSerializer):
+    """Lightweight playlist serializer used in EventPlaylist list views.
+    Uses the first song's cover image as the playlist cover when available.
+    """
+    cover_image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Playlist
+        fields = ['id', 'title', 'description', 'cover_image']
+        read_only_fields = fields
+
+    def get_cover_image(self, obj):
+        try:
+            # prefer an explicit ordering if present
+            order = getattr(obj, 'song_order', None)
+        except Exception:
+            order = None
+
+        try:
+            if order:
+                first_id = order[0] if len(order) else None
+                if first_id:
+                    first_song = next((s for s in obj.songs.all() if s.id == first_id), None)
+                    if first_song and getattr(first_song, 'cover_image', None):
+                        return first_song.cover_image
+
+            first_song = obj.songs.all().first()
+            if first_song and getattr(first_song, 'cover_image', None):
+                return first_song.cover_image
+        except Exception:
+            pass
+
+        # fallback to playlist cover field if present
+        return getattr(obj, 'cover_image', None)
+
+
+class EventPlaylistListSerializer(serializers.ModelSerializer):
+    """Serializer for listing EventPlaylists with lightweight playlist covers."""
+    playlists = PlaylistCoverSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = EventPlaylist
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+        read_only_fields = fields
+
+
+class PlaylistDetailForEventSerializer(serializers.ModelSerializer):
+    """Playlist serializer for EventPlaylist detail — uses SongSummarySerializer for songs."""
+    genres = SlimGenreSerializer(many=True, read_only=True)
+    moods = SlimMoodSerializer(many=True, read_only=True)
+    tags = SlimTagSerializer(many=True, read_only=True)
+    songs = SongSummarySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Playlist
+        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'genres', 'moods', 'tags', 'songs']
+        read_only_fields = fields
+
+
+class EventPlaylistDetailSerializer(serializers.ModelSerializer):
+    """Detailed EventPlaylist serializer returning playlists with summarized songs."""
+    playlists = PlaylistDetailForEventSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = EventPlaylist
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+        read_only_fields = fields
 
 
 class SearchSectionSerializer(serializers.ModelSerializer):

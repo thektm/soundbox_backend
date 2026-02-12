@@ -71,6 +71,7 @@ from .views import (
     PlaylistSaveToggleView,
     SearchView,
     EventPlaylistView,
+    EventPlaylistDetailView,
     SearchSectionListView,
     SearchSectionDetailView,
     PlaylistLikeView,
@@ -241,6 +242,7 @@ urlpatterns = [
     
     # --- Search Page Endpoints ---
     path('search/event-playlists/', EventPlaylistView.as_view(), name='event_playlist_list'),
+    path('search/event-playlists/<int:pk>/', EventPlaylistDetailView.as_view(), name='event_playlist_detail'),
     path('search/sections/', SearchSectionListView.as_view(), name='search_section_list'),
     path('search/sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
     path('search/', SearchView.as_view(), name='search'),

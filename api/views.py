@@ -4165,19 +4165,44 @@ class EventPlaylistView(APIView):
         responses={200: EventPlaylistSerializer(many=True)}
     )
     def get(self, request):
+        # list view: return event playlists with lightweight playlist covers
         queryset = EventPlaylist.objects.all().prefetch_related(
-            'playlists', 
+            'playlists',
             'playlists__songs',
-            'playlists__songs__artist',
-            'playlists__genres',
-            'playlists__moods'
         )
-        
+
         time_of_day = request.query_params.get('time_of_day')
         if time_of_day:
             queryset = queryset.filter(time_of_day=time_of_day)
-            
-        serializer = EventPlaylistSerializer(queryset, many=True, context={'request': request})
+
+        from .serializers import EventPlaylistListSerializer
+        serializer = EventPlaylistListSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
+
+
+@extend_schema(tags=['Search Page Endpoints اندپوینت های صفحه جستجو'])
+class EventPlaylistDetailView(APIView):
+    """Return a single EventPlaylist with playlists and summarized songs (SongSummarySerializer)."""
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(
+        summary="جزئیات پلی‌لیست مناسبتی",
+        description="دریافت جزئیات یک گروه پلی‌لیست مناسبتی و لیست آهنگ‌ها (خلاصه شده).",
+        responses={200: 'EventPlaylistDetailSerializer'}
+    )
+    def get(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        queryset = EventPlaylist.objects.all().prefetch_related(
+            'playlists',
+            'playlists__songs',
+            'playlists__genres',
+            'playlists__moods',
+            'playlists__tags',
+        )
+        obj = get_object_or_404(queryset, pk=pk)
+
+        from .serializers import EventPlaylistDetailSerializer
+        serializer = EventPlaylistDetailSerializer(obj, context={'request': request})
         return Response(serializer.data)
 
 
