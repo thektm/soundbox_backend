@@ -1891,8 +1891,10 @@ class EventPlaylistDetailSerializer(serializers.ModelSerializer):
 
 
 class SearchSectionSerializer(serializers.ModelSerializer):
-    """Serializer for SearchSection model"""
-    songs = SongSerializer(many=True, read_only=True)
+    """Serializer for SearchSection model
+    Use `SongSummarySerializer` for song-type sections to keep responses lightweight.
+    """
+    songs = serializers.SerializerMethodField()
     albums = AlbumSerializer(many=True, read_only=True)
     playlists = PlaylistSerializer(many=True, read_only=True)
     
@@ -1919,6 +1921,19 @@ class SearchSectionSerializer(serializers.ModelSerializer):
             'created_by_name', 'updated_by_name'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'updated_by']
+
+    def get_songs(self, obj):
+        try:
+            t = (obj.type or '').lower()
+        except Exception:
+            t = ''
+
+        # If this section represents songs, use the lightweight SongSummarySerializer
+        if 'song' in t:
+            return SongSummarySerializer(obj.songs.all(), many=True, context=self.context).data
+
+        # otherwise return full SongSerializer (fallback)
+        return SongSerializer(obj.songs.all(), many=True, context=self.context).data
 
 
 class SessionSerializer(serializers.ModelSerializer):
