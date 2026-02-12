@@ -4128,6 +4128,9 @@ class SearchView(APIView):
                 Q(description__icontains=q) |
                 Q(artist__name__icontains=q)
             )
+        # Always exclude albums explicitly named "single" (case-insensitive)
+        # and the Persian equivalent "سینگل" from any search results.
+        qs = qs.exclude(title__iexact='single').exclude(title__iexact='سینگل')
         return qs.order_by('-release_date')
 
     def _search_playlists(self, q, moods=None):
