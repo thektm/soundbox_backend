@@ -1760,7 +1760,17 @@ class SearchResultSerializer(serializers.Serializer):
         if not isinstance(obj, Artist): return None
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return request.user.followings.filter(id=obj.id).exists()
+            try:
+                # Check Follow table: user following artist
+                if Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists():
+                    return True
+                # If the requester has an artist profile, check artist->artist follows
+                artist_profile = getattr(request.user, 'artist_profile', None)
+                if artist_profile and Follow.objects.filter(follower_artist=artist_profile, followed_artist=obj).exists():
+                    return True
+                return False
+            except Exception:
+                return False
         return False
 
     def get_is_liked(self, obj):
