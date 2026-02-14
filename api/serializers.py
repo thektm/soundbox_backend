@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest, Report, Notification, AudioAd
+    DepositRequest, Report, Notification, AudioAd, UserHistory
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -445,6 +445,28 @@ class UserSerializer(serializers.ModelSerializer):
             'page': page,
             'has_next': total > offset + page_size
         }
+
+
+class UserHistorySerializer(serializers.ModelSerializer):
+    """Serializer for user history items with flattened content"""
+    type = serializers.CharField(source='content_type')
+    item = serializers.SerializerMethodField()
+
+    class Meta:
+        model = UserHistory
+        fields = ['id', 'type', 'item', 'updated_at']
+
+    def get_item(self, obj):
+        request = self.context.get('request')
+        if obj.content_type == UserHistory.TYPE_SONG and obj.song:
+            return SongSummarySerializer(obj.song, context={'request': request}).data
+        elif obj.content_type == UserHistory.TYPE_ALBUM and obj.album:
+            return AlbumSummarySerializer(obj.album, context={'request': request}).data
+        elif obj.content_type == UserHistory.TYPE_PLAYLIST and obj.playlist:
+            return PlaylistSummarySerializer(obj.playlist, context={'request': request}).data
+        elif obj.content_type == UserHistory.TYPE_ARTIST and obj.artist:
+            return ArtistSummarySerializer(obj.artist, context={'request': request}).data
+        return None
 
 
 class RegisterSerializer(serializers.ModelSerializer):

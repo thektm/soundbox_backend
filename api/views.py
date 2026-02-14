@@ -48,6 +48,7 @@ from .serializers import (
     AlbumSummarySerializer,
     PlaylistSummarySerializer,
     ArtistSocialAccountSerializer,
+    UserHistorySerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -81,6 +82,13 @@ from django.urls import reverse
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 from collections import Counter
+
+
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 
 # Filename helpers
@@ -589,6 +597,33 @@ class MyLibraryView(APIView):
         })
 
 
+@extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
+class UserHistoryView(generics.ListAPIView):
+    """
+    Returns the user's activity history (songs, albums, playlists, artists).
+    Similar to Spotify's library history.
+    """
+    serializer_class = UserHistorySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="تاریخچه فعالیت‌های کاربر",
+        description="دریافت لیست فعالیت‌های اخیر کاربر شامل آهنگ‌های پخش شده، آلبوم‌ها، هنرمندان و پلی‌لیست‌های مشاهده شده. قابلیت فیلتر بر اساس نوع (song, album, playlist, artist) را دارد.",
+        parameters=[
+            OpenApiParameter("type", OpenApiTypes.STR, description="فیلتر بر اساس نوع محتوا (song, album, playlist, artist)"),
+        ],
+        responses={200: UserHistorySerializer(many=True)}
+    )
+    def get_queryset(self):
+        queryset = UserHistory.objects.filter(user=self.request.user).order_by('-updated_at')
+        content_type = self.request.query_params.get('type')
+        if content_type:
+            if content_type in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST]:
+                queryset = queryset.filter(content_type=content_type)
+        return queryset
+
+
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class R2UploadView(APIView):
     """Upload a file to an S3-compatible R2 bucket and return a CDN URL."""
@@ -1079,6 +1114,15 @@ class ArtistDetailView(APIView):
             })
 
         # Default: Return full detail view
+        # Record history
+        if request.user.is_authenticated:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_ARTIST,
+                artist=artist,
+                defaults={'updated_at': timezone.now()}
+            )
+
         # Basic artist data
         artist_data = ArtistSerializer(artist, context={'request': request}).data
         
@@ -2154,6 +2198,14 @@ class UnwrapStreamView(APIView):
     def _get_stream_response(self, request, stream_access, unwrapped_count):
         """Helper to generate the final stream response with quality selection"""
         song = stream_access.song
+
+        # Record history
+        UserHistory.objects.update_or_create(
+            user=request.user,
+            content_type=UserHistory.TYPE_SONG,
+            song=song,
+            defaults={'updated_at': timezone.now()}
+        )
         
         # Quality selection: Default to low (128kbps) unless user is premium and chose high
         quality = request.user.settings.get('stream_quality', 'low')
@@ -3321,11 +3373,6 @@ class DiscoveriesView(APIView):
             'results': serializer.data
         })
 
-
-class StandardResultsSetPagination(PageNumberPagination):
-    page_size = 20
-    page_size_query_param = 'page_size'
-    max_page_size = 100
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
