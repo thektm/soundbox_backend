@@ -47,6 +47,7 @@ from .serializers import (
     ArtistSummarySerializer,
     AlbumSummarySerializer,
     PlaylistSummarySerializer,
+    SimplePlaylistSerializer,
     ArtistSocialAccountSerializer,
     UserHistorySerializer,
 )
@@ -577,13 +578,13 @@ class MyLibraryView(APIView):
             }
             
             if entry.content_type == UserHistory.TYPE_SONG and entry.song:
-                data['item'] = SongStreamSerializer(entry.song, context={'request': request}).data
+                data['item'] = SongSummarySerializer(entry.song, context={'request': request}).data
             elif entry.content_type == UserHistory.TYPE_ALBUM and entry.album:
-                data['item'] = AlbumSerializer(entry.album, context={'request': request}).data
+                data['item'] = AlbumSummarySerializer(entry.album, context={'request': request}).data
             elif entry.content_type == UserHistory.TYPE_PLAYLIST and entry.playlist:
-                data['item'] = PlaylistSerializer(entry.playlist, context={'request': request}).data
+                data['item'] = SimplePlaylistSerializer(entry.playlist, context={'request': request}).data
             elif entry.content_type == UserHistory.TYPE_ARTIST and entry.artist:
-                data['item'] = ArtistSerializer(entry.artist, context={'request': request}).data
+                data['item'] = ArtistSummarySerializer(entry.artist, context={'request': request}).data
             else:
                 continue
                 

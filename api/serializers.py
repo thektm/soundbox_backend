@@ -253,6 +253,58 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
         return False
 
 
+class SimplePlaylistSerializer(serializers.ModelSerializer):
+    """Summary serializer for normal Playlist model used in history/library"""
+    songs_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
+    top_three_song_covers = serializers.SerializerMethodField()
+    genre_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Playlist
+        fields = [
+            'id', 'title', 'description', 'cover_image', 
+            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 'mood_names'
+        ]
+
+    def get_genre_names(self, obj):
+        return [g.name for g in obj.genres.all()]
+
+    def get_mood_names(self, obj):
+        return [m.name for m in obj.moods.all()]
+
+    def get_top_three_song_covers(self, obj):
+        try:
+            songs = list(obj.songs.all()[:3])
+            covers = []
+            for s in songs:
+                cover = s.cover_image or (s.album and s.album.cover_image)
+                if cover:
+                    covers.append(cover)
+            return covers
+        except Exception:
+            return []
+
+    def get_songs_count(self, obj):
+        return obj.songs.count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.liked_by.filter(id=request.user.id).exists()
+        return False
+
+    def get_cover_image(self, obj):
+        if obj.cover_image:
+            return obj.cover_image
+        first_song = obj.songs.first()
+        if first_song:
+            return first_song.cover_image
+        return None
+
+
 class FollowableEntitySerializer(serializers.Serializer):
     """Unified serializer for both User and Artist in follow lists"""
     id = serializers.IntegerField()
@@ -463,7 +515,7 @@ class UserHistorySerializer(serializers.ModelSerializer):
         elif obj.content_type == UserHistory.TYPE_ALBUM and obj.album:
             return AlbumSummarySerializer(obj.album, context={'request': request}).data
         elif obj.content_type == UserHistory.TYPE_PLAYLIST and obj.playlist:
-            return PlaylistSummarySerializer(obj.playlist, context={'request': request}).data
+            return SimplePlaylistSerializer(obj.playlist, context={'request': request}).data
         elif obj.content_type == UserHistory.TYPE_ARTIST and obj.artist:
             return ArtistSummarySerializer(obj.artist, context={'request': request}).data
         return None
