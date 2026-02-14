@@ -625,6 +625,64 @@ class UserHistoryView(generics.ListAPIView):
         return queryset
 
 
+@extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
+class UserHistorySearchView(generics.ListAPIView):
+    """
+    Search within the authenticated user's history.
+    Supports filters: `q` (text search), `type` (song|album|playlist|artist), `date_from`, `date_to`.
+    """
+    serializer_class = UserHistorySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="جستجو در تاریخچه کاربر",
+        description="جستجو و فیلتر در تاریخچه فعالیت‌های کاربر (آهنگ، آلبوم، پلی‌لیست، هنرمند).",
+        parameters=[
+            OpenApiParameter('q', OpenApiTypes.STR, description='Query text to search titles/names'),
+            OpenApiParameter('type', OpenApiTypes.STR, description='Filter by content type (song, album, playlist, artist)'),
+            OpenApiParameter('date_from', OpenApiTypes.DATE, description='Start date (YYYY-MM-DD)'),
+            OpenApiParameter('date_to', OpenApiTypes.DATE, description='End date (YYYY-MM-DD)'),
+            OpenApiParameter('page', OpenApiTypes.INT, description='Page number'),
+            OpenApiParameter('page_size', OpenApiTypes.INT, description='Page size')
+        ],
+        responses={200: UserHistorySerializer(many=True)}
+    )
+    def get_queryset(self):
+        user = self.request.user
+        qs = UserHistory.objects.filter(user=user).order_by('-updated_at')
+
+        # type filter (song/album/playlist/artist)
+        content_type = self.request.query_params.get('type')
+        if content_type and content_type in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST]:
+            qs = qs.filter(content_type=content_type)
+
+        # date range filters
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+        try:
+            if date_from:
+                qs = qs.filter(updated_at__date__gte=date_from)
+            if date_to:
+                qs = qs.filter(updated_at__date__lte=date_to)
+        except Exception:
+            pass
+
+        # text search across related titles/names
+        q = self.request.query_params.get('q')
+        if q:
+            from django.db.models import Q as DJQ
+            text_q = DJQ()
+            # add clauses for each relation
+            text_q |= DJQ(song__title__icontains=q)
+            text_q |= DJQ(album__title__icontains=q)
+            text_q |= DJQ(playlist__title__icontains=q)
+            text_q |= DJQ(artist__name__icontains=q)
+            qs = qs.filter(text_q)
+
+        return qs
+
+
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class R2UploadView(APIView):
     """Upload a file to an S3-compatible R2 bucket and return a CDN URL."""
