@@ -668,17 +668,34 @@ class UserHistorySearchView(generics.ListAPIView):
         except Exception:
             pass
 
-        # text search across related titles/names
+        # text search across related titles/names (broadened to include
+        # artist names on songs/albums/playlists and playlist song matches)
         q = self.request.query_params.get('q')
         if q:
             from django.db.models import Q as DJQ
             text_q = DJQ()
-            # add clauses for each relation
+            # song-related matches (title and song's artist)
             text_q |= DJQ(song__title__icontains=q)
+            text_q |= DJQ(song__artist__name__icontains=q)
+            text_q |= DJQ(song__artist__artistic_name__icontains=q)
+
+            # album-related matches (title and album's artist)
             text_q |= DJQ(album__title__icontains=q)
+            text_q |= DJQ(album__artist__name__icontains=q)
+            text_q |= DJQ(album__artist__artistic_name__icontains=q)
+
+            # playlist-related matches (playlist title and its songs / their artists)
             text_q |= DJQ(playlist__title__icontains=q)
+            text_q |= DJQ(playlist__songs__title__icontains=q)
+            text_q |= DJQ(playlist__songs__artist__name__icontains=q)
+            text_q |= DJQ(playlist__songs__artist__artistic_name__icontains=q)
+
+            # artist-related matches (artist name / stage name)
             text_q |= DJQ(artist__name__icontains=q)
-            qs = qs.filter(text_q)
+            text_q |= DJQ(artist__artistic_name__icontains=q)
+
+            # apply and ensure duplicates from joins are removed
+            qs = qs.filter(text_q).distinct()
 
         return qs
 
