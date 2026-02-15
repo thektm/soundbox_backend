@@ -1521,18 +1521,19 @@ class PlaylistSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'cover_image', 'created_at', 'created_by',
             'genres', 'moods', 'tags', 'songs',
-            'liked_count',
+            'likes_count', 'is_liked',
             'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
         ]
-        read_only_fields = ['id', 'created_at', 'liked_count']
+        read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
-    liked_count = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    is_liked = serializers.SerializerMethodField()
 
-    def get_liked_count(self, obj):
+    def get_likes_count(self, obj):
         # Prefer annotated value when available to avoid extra query
-        if hasattr(obj, 'liked_count'):
+        if hasattr(obj, 'likes_count'):
             try:
-                return int(obj.liked_count or 0)
+                return int(obj.likes_count or 0)
             except Exception:
                 return 0
         # Fallback to counting M2M relation
@@ -1541,6 +1542,19 @@ class PlaylistSerializer(serializers.ModelSerializer):
         except Exception:
             from .models import PlaylistLike
             return PlaylistLike.objects.filter(playlist=obj).count()
+
+    def get_is_liked(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            try:
+                # Use prefetched relation when available
+                if hasattr(obj, '_prefetched_objects_cache') and 'liked_by' in obj._prefetched_objects_cache:
+                    return any(u.id == request.user.id for u in obj.liked_by.all())
+                return obj.liked_by.filter(id=request.user.id).exists()
+            except Exception:
+                from .models import PlaylistLike
+                return PlaylistLike.objects.filter(user=request.user, playlist=obj).exists()
+        return False
 
 
 class PlaylistForEventSerializer(serializers.ModelSerializer):

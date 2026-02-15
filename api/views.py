@@ -1034,7 +1034,7 @@ class PlaylistDetailView(APIView):
 
     def get_object(self, pk):
         try:
-            return Playlist.objects.annotate(liked_count=Count('liked_by')).get(pk=pk)
+            return Playlist.objects.annotate(likes_count=Count('liked_by')).get(pk=pk)
         except Playlist.DoesNotExist:
             return None
 
