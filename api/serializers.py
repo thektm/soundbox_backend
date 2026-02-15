@@ -186,12 +186,14 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
     top_three_song_covers = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='recommended')
 
     class Meta:
         model = RecommendedPlaylist
         fields = [
             'id', 'unique_id', 'title', 'description', 'cover_image', 
-            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 'mood_names'
+            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 
+            'mood_names', 'type'
         ]
 
     def get_genre_names(self, obj):
@@ -264,12 +266,14 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
     top_three_song_covers = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='normal-playlist')
 
     class Meta:
         model = Playlist
         fields = [
             'id', 'title', 'description', 'cover_image', 
-            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 'mood_names'
+            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 
+            'mood_names', 'type'
         ]
 
     def get_genre_names(self, obj):
@@ -1635,6 +1639,8 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
     songs_count = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    top_three_song_covers = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='user-playlist')
     song_ids = serializers.PrimaryKeyRelatedField(
         queryset=Song.objects.all(),
         many=True,
@@ -1646,10 +1652,11 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
         fields = [
             'id', 'user', 'user_phone', 'title', 'public', 'songs_count',
-            'likes_count', 'is_liked', 'song_ids', 'created_at', 'updated_at'
+            'likes_count', 'is_liked', 'song_ids', 'top_three_song_covers', 
+            'type', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'user_phone', 'songs_count', 'likes_count', 
-                           'is_liked', 'created_at', 'updated_at']
+                           'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type']
     
     def get_songs_count(self, obj):
         return obj.songs.count()
@@ -1662,6 +1669,19 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.liked_by.filter(id=request.user.id).exists()
         return False
+
+    def get_top_three_song_covers(self, obj):
+        try:
+            songs = list(obj.songs.all()[:3])
+            covers = []
+            for s in songs:
+                # Direct cover or from album
+                cover = s.cover_image or (s.album.cover_image if s.album else None)
+                if cover:
+                    covers.append(cover)
+            return covers
+        except Exception:
+            return []
 
 
 class UserPlaylistCreateSerializer(serializers.ModelSerializer):
@@ -1708,6 +1728,7 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='recommended')
     
     class Meta:
         model = RecommendedPlaylist
@@ -1715,7 +1736,7 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'covers', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
             'views', 'relevance_score', 'match_percentage', 'created_at',
-            'genre_names', 'mood_names'
+            'genre_names', 'mood_names', 'type'
         ]
         read_only_fields = fields
 

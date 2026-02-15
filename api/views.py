@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
 import re
+import uuid
 from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
@@ -466,24 +467,52 @@ class LikedAlbumsView(APIView):
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class LikedPlaylistsView(APIView):
-    """List of playlists liked by the user, paginated and sorted by date"""
+    """List of playlists liked by the user (Admin, User-created, and Recommended), paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         summary="لیست پلی‌لیست‌های پسندیده شده",
-        description="دریافت لیست پلی‌لیست‌هایی که کاربر لایک کرده است (به ترتیب زمان).",
-        responses={200: LikedPlaylistSerializer(many=True)}
+        description="دریافت لیست پلی‌لیست‌هایی که کاربر لایک کرده است (شامل سیستمی، کاربری و پیشنهادی).",
+        responses={200: SimplePlaylistSerializer(many=True)}
     )
     def get(self, request):
         user = request.user
-        qs = PlaylistLike.objects.filter(user=user).order_by('-created_at')
+        
+        # 1. Admin/System Playlists (via PlaylistLike)
+        liked_admin = PlaylistLike.objects.filter(user=user).select_related('playlist').prefetch_related(
+            'playlist__songs', 'playlist__genres', 'playlist__moods'
+        )
+        
+        # 2. User Playlists (Direct M2M)
+        liked_user = UserPlaylist.objects.filter(liked_by=user).prefetch_related('songs')
+        
+        # 3. Recommended Playlists (Direct M2M)
+        liked_rec = RecommendedPlaylist.objects.filter(liked_by=user).prefetch_related('songs')
+        
+        results = []
+        
+        for item in liked_admin:
+            data = SimplePlaylistSerializer(item.playlist, context={'request': request}).data
+            data['liked_at'] = item.created_at
+            results.append(data)
+            
+        for item in liked_user:
+            data = UserPlaylistSerializer(item, context={'request': request}).data
+            data['liked_at'] = item.created_at # Fallback for sorting
+            results.append(data)
+            
+        for item in liked_rec:
+            data = PlaylistSummarySerializer(item, context={'request': request}).data
+            data['liked_at'] = item.created_at # Fallback for sorting
+            results.append(data)
+            
+        # Sort combined results by date descending
+        results.sort(key=lambda x: x.get('liked_at', timezone.now()), reverse=True)
         
         paginator = PageNumberPagination()
         paginator.page_size = 10
-        result_page = paginator.paginate_queryset(qs, request)
-        serializer = LikedPlaylistSerializer(result_page, many=True, context={'request': request})
-        
-        return paginator.get_paginated_response(serializer.data)
+        result_page = paginator.paginate_queryset(results, request)
+        return paginator.get_paginated_response(result_page)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
@@ -1130,13 +1159,13 @@ class LikedAlbumsSearchView(APIView):
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class LikedPlaylistsSearchView(APIView):
-    """Search liked playlists with flexible matching (partial, phrase, multi-token)."""
+    """Search liked playlists (Admin, User, Recommended) with flexible matching."""
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         summary="جستجوی پلی‌لیست‌های لایک‌شده",
         parameters=[OpenApiParameter('q', OpenApiTypes.STR, description='Search query (required)')],
-        responses={200: LikedPlaylistSerializer(many=True)}
+        responses={200: SimplePlaylistSerializer(many=True)}
     )
     def get(self, request):
         query = request.query_params.get('q')
@@ -1144,31 +1173,51 @@ class LikedPlaylistsSearchView(APIView):
             return Response({'error': 'q parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         parts = [m[0] or m[1] for m in re.findall(r'"([^"]+)"|(\S+)', query)]
+        user = request.user
 
-        qs = PlaylistLike.objects.filter(user=request.user).select_related('playlist').prefetch_related('playlist__tags', 'playlist__genres', 'playlist__moods', 'playlist__songs__artist')
-
+        # Fetch and filter each type
+        # 1. Admin Playlists (via PlaylistLike)
+        liked_admin_ids = PlaylistLike.objects.filter(user=user).values_list('playlist_id', flat=True)
+        p_qs = Playlist.objects.filter(id__in=liked_admin_ids).distinct()
         for token in parts:
             token = token.strip()
-            if not token:
-                continue
-            token_q = (
-                Q(playlist__title__icontains=token) |
-                Q(playlist__description__icontains=token) |
-                Q(playlist__tags__name__icontains=token) |
-                Q(playlist__genres__name__icontains=token) |
-                Q(playlist__moods__name__icontains=token) |
-                Q(playlist__songs__title__icontains=token) |
-                Q(playlist__songs__artist__name__icontains=token)
-            )
-            qs = qs.filter(token_q)
+            if not token: continue
+            q = Q(title__icontains=token) | Q(description__icontains=token) | Q(songs__title__icontains=token) | Q(songs__artist__name__icontains=token)
+            p_qs = p_qs.filter(q)
+        
+        # 2. User Playlists
+        up_qs = UserPlaylist.objects.filter(liked_by=user).distinct()
+        for token in parts:
+            token = token.strip()
+            if not token: continue
+            q = Q(title__icontains=token) | Q(songs__title__icontains=token) | Q(songs__artist__name__icontains=token)
+            up_qs = up_qs.filter(q)
+            
+        # 3. Recommended Playlists
+        rp_qs = RecommendedPlaylist.objects.filter(liked_by=user).distinct()
+        for token in parts:
+            token = token.strip()
+            if not token: continue
+            q = Q(title__icontains=token) | Q(description__icontains=token) | Q(songs__title__icontains=token) | Q(songs__artist__name__icontains=token)
+            rp_qs = rp_qs.filter(q)
 
-        qs = qs.order_by('-created_at').distinct()
-
+        # Collect and serialize
+        results = []
+        for p in p_qs:
+            results.append(SimplePlaylistSerializer(p, context={'request': request}).data)
+        for up in up_qs:
+            results.append(UserPlaylistSerializer(up, context={'request': request}).data)
+        for rp in rp_qs:
+            results.append(PlaylistSummarySerializer(rp, context={'request': request}).data)
+            
+        # Since liked_at is not easily searchable across combined results without complex SQL, 
+        # we'll sort results by title or keep them grouped. Sorting by title for consistency.
+        results.sort(key=lambda x: x.get('title', '').lower())
+        
         paginator = PageNumberPagination()
         paginator.page_size = 10
-        result_page = paginator.paginate_queryset(qs, request)
-        serializer = LikedPlaylistSerializer(result_page, many=True, context={'request': request})
-        return paginator.get_paginated_response(serializer.data)
+        result_page = paginator.paginate_queryset(results, request)
+        return paginator.get_paginated_response(result_page)
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
@@ -4176,13 +4225,25 @@ class PlaylistRecommendationLikeView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        if playlist.liked_by.filter(id=request.user.id).exists():
+        user = request.user
+        if playlist.liked_by.filter(id=user.id).exists():
             # Unlike
-            playlist.liked_by.remove(request.user)
+            playlist.liked_by.remove(user)
             return Response({'status': 'unliked', 'likes_count': playlist.liked_by.count()})
         else:
             # Like
-            playlist.liked_by.add(request.user)
+            playlist.liked_by.add(user)
+            # If it's a dynamic slot playlist, freeze it by changing unique_id
+            if playlist.unique_id.startswith('smart_rec_'):
+                new_id = f"liked_rec_{user.id}_{uuid.uuid4().hex[:10]}"
+                playlist.unique_id = new_id
+                playlist.save()
+                return Response({
+                    'status': 'liked', 
+                    'likes_count': playlist.liked_by.count(),
+                    'new_unique_id': new_id
+                })
+            
             return Response({'status': 'liked', 'likes_count': playlist.liked_by.count()})
 
 
