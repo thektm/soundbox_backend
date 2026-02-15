@@ -423,10 +423,20 @@ class UserSerializer(serializers.ModelSerializer):
         has_next = total > offset + page_size
         next_url = None
         if request and has_next:
-            params = {k: v for k, v in request.query_params.items()}
-            params['f_page'] = page + 1
-            params['f_page_size'] = page_size
-            next_url = request.build_absolute_uri('?' + urlencode(params))
+            params = {k: str(v) for k, v in request.query_params.items()}
+            params['f_page'] = str(page + 1)
+            params['f_page_size'] = str(page_size)
+            qs = urlencode(params)
+            try:
+                next_url = request.build_absolute_uri('?' + qs)
+            except Exception:
+                try:
+                    scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
+                    host = request.get_host()
+                    path = request.path
+                    next_url = f"{scheme}://{host}{path}?{qs}"
+                except Exception:
+                    next_url = None
 
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -452,10 +462,20 @@ class UserSerializer(serializers.ModelSerializer):
         has_next = total > offset + page_size
         next_url = None
         if request and has_next:
-            params = {k: v for k, v in request.query_params.items()}
-            params['fg_page'] = page + 1
-            params['fg_page_size'] = page_size
-            next_url = request.build_absolute_uri('?' + urlencode(params))
+            params = {k: str(v) for k, v in request.query_params.items()}
+            params['fg_page'] = str(page + 1)
+            params['fg_page_size'] = str(page_size)
+            qs = urlencode(params)
+            try:
+                next_url = request.build_absolute_uri('?' + qs)
+            except Exception:
+                try:
+                    scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
+                    host = request.get_host()
+                    path = request.path
+                    next_url = f"{scheme}://{host}{path}?{qs}"
+                except Exception:
+                    next_url = None
 
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -510,10 +530,20 @@ class UserSerializer(serializers.ModelSerializer):
         has_next = total > offset + page_size
         next_url = None
         if request and has_next:
-            params = {k: v for k, v in request.query_params.items()}
-            params['rp_page'] = page + 1
-            params['rp_page_size'] = page_size
-            next_url = request.build_absolute_uri('?' + urlencode(params))
+            params = {k: str(v) for k, v in request.query_params.items()}
+            params['rp_page'] = str(page + 1)
+            params['rp_page_size'] = str(page_size)
+            qs = urlencode(params)
+            try:
+                next_url = request.build_absolute_uri('?' + qs)
+            except Exception:
+                try:
+                    scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
+                    host = request.get_host()
+                    path = request.path
+                    next_url = f"{scheme}://{host}{path}?{qs}"
+                except Exception:
+                    next_url = None
 
         return {
             'items': SongStreamSerializer(songs, many=True, context=self.context).data,
