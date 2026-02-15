@@ -400,7 +400,7 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id', 'is_active', 'is_staff', 'date_joined', 
             'followers_count', 'following_count', 'user_playlists_count',
-            'notification_setting', 'followers', 'following'
+            'notification_setting', 'followers', 'following', 'plan'
         ]
 
     def get_followers_count(self, obj):

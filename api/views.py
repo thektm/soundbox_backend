@@ -1033,6 +1033,61 @@ class PlaylistDetailView(APIView):
 
    
 
+
+        @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
+        class LikedSongsSearchView(APIView):
+            """Search liked songs with flexible matching (partial, phrase, multi-token).
+
+            Behavior:
+            - `q` parameter is required.
+            - Quoted phrases are treated as single tokens (exact substring match).
+            - Unquoted words are split and all tokens must match (AND) across any searchable field.
+            - Searchable fields: song title, artist name, album title, tag name, lyrics, description.
+            - Uses case-insensitive substring matching (`icontains`).
+            """
+            permission_classes = [IsAuthenticated]
+
+            @extend_schema(
+                summary="جستجوی آهنگ‌های لایک‌شده",
+                description="جستجوی انعطاف‌پذیر در میان آهنگ‌های لایک‌شده کاربر.",
+                parameters=[
+                    OpenApiParameter('q', OpenApiTypes.STR, description='Search query (required)')
+                ],
+                responses={200: LikedSongSerializer(many=True)}
+            )
+            def get(self, request):
+                query = request.query_params.get('q')
+                if not query:
+                    return Response({'error': 'q parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+                # split into tokens, keeping quoted phrases together
+                parts = [m[0] or m[1] for m in re.findall(r'"([^"]+)"|(\S+)', query)]
+
+                qs = SongLike.objects.filter(user=request.user).select_related('song__artist', 'song__album').prefetch_related('song__tags')
+
+                for token in parts:
+                    token = token.strip()
+                    if not token:
+                        continue
+                    token_q = (
+                        Q(song__title__icontains=token) |
+                        Q(song__artist__name__icontains=token) |
+                        Q(song__album__title__icontains=token) |
+                        Q(song__tags__name__icontains=token) |
+                        Q(song__lyrics__icontains=token) |
+                        Q(song__description__icontains=token)
+                    )
+                    qs = qs.filter(token_q)
+
+                qs = qs.order_by('-created_at').distinct()
+
+                paginator = PageNumberPagination()
+                paginator.page_size = 10
+                result_page = paginator.paginate_queryset(qs, request)
+                serializer = LikedSongSerializer(result_page, many=True, context={'request': request})
+
+                return paginator.get_paginated_response(serializer.data)
+
    
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlaylistLikeView(APIView):
