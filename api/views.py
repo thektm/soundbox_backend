@@ -1251,11 +1251,10 @@ class PlaylistLikeView(APIView):
             liked = False
         else:
             PlaylistLike.objects.create(user=user, playlist=playlist)
-            liked = True
-        from .models import PlaylistLike
-        return Response({
+                liked = True
+            return Response({
             "liked": liked,
-            "likes_count": PlaylistLike.objects.filter(playlist=playlist).count()
+                "likes_count": PlaylistLike.objects.filter(playlist=playlist).count()
         })
 
 
