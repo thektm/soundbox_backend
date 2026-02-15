@@ -308,23 +308,7 @@ class AuthVerifyView(APIView):
         summary="تایید شماره موبایل",
         description="تایید حساب کاربری با استفاده از کد ارسال شده به شماره موبایل.",
         request=VerifySerializer,
-        responses={
-            200: inline_serializer(
-                name='AuthVerifyResponse',
-                fields={
-                    'accessToken': serializers.CharField(),
-                    'refreshToken': serializers.CharField(),
-                    'user': inline_serializer(
-                        name='AuthUserResponse',
-                        fields={
-                            'id': serializers.IntegerField(),
-                            'phone': serializers.CharField(),
-                            'is_verified': serializers.BooleanField(),
-                        }
-                    )
-                }
-            )
-        }
+        responses={200: __import__('api.serializers', fromlist=['']).UserSerializer}
     )
     def post(self, request):
         serializer = VerifySerializer(data=request.data)
@@ -363,7 +347,9 @@ class AuthVerifyView(APIView):
                 user.set_artist_password(artist_password)
         user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])
         tokens = issue_tokens_for_user(user, request)
-        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
+        from .serializers import UserSerializer
+        user_data = UserSerializer(user, context={'request': request}).data
+        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': user_data})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
@@ -374,23 +360,7 @@ class LoginPasswordView(APIView):
         summary="ورود با رمز عبور",
         description="ورود به حساب کاربری با استفاده از شماره موبایل و رمز عبور (معمولی یا هنرمند).",
         request=LoginPasswordSerializer,
-        responses={
-            200: inline_serializer(
-                name='LoginPasswordResponse',
-                fields={
-                    'accessToken': serializers.CharField(),
-                    'refreshToken': serializers.CharField(),
-                    'user': inline_serializer(
-                        name='LoginUserResponse',
-                        fields={
-                            'id': serializers.IntegerField(),
-                            'phone': serializers.CharField(),
-                            'is_verified': serializers.BooleanField(),
-                        }
-                    )
-                }
-            )
-        }
+        responses={200: __import__('api.serializers', fromlist=['']).UserSerializer}
     )
     def post(self, request):
         serializer = LoginPasswordSerializer(data=request.data)
@@ -425,7 +395,9 @@ class LoginPasswordView(APIView):
         user.last_login_at = timezone.now()
         user.save(update_fields=['failed_login_attempts', 'locked_until', 'last_login_at'])
         tokens = issue_tokens_for_user(user, request)
-        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
+        from .serializers import UserSerializer
+        user_data = UserSerializer(user, context={'request': request}).data
+        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': user_data})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
@@ -475,23 +447,7 @@ class LoginOtpVerifyView(APIView):
         summary="ورود با کد تایید (OTP)",
         description="تایید کد یکبار مصرف و دریافت توکن‌های دسترسی.",
         request=LoginOtpVerifySerializer,
-        responses={
-            200: inline_serializer(
-                name='LoginOtpVerifyResponse',
-                fields={
-                    'accessToken': serializers.CharField(),
-                    'refreshToken': serializers.CharField(),
-                    'user': inline_serializer(
-                        name='LoginOtpUserResponse',
-                        fields={
-                            'id': serializers.IntegerField(),
-                            'phone': serializers.CharField(),
-                            'is_verified': serializers.BooleanField(),
-                        }
-                    )
-                }
-            )
-        }
+        responses={200: __import__('api.serializers', fromlist=['']).UserSerializer}
     )
     def post(self, request):
         serializer = LoginOtpVerifySerializer(data=request.data)
@@ -522,7 +478,9 @@ class LoginOtpVerifyView(APIView):
             user.is_verified = True
             user.save(update_fields=['is_verified'])
         tokens = issue_tokens_for_user(user, request)
-        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': {'id': user.id, 'phone': user.phone_number, 'is_verified': user.is_verified}})
+        from .serializers import UserSerializer
+        user_data = UserSerializer(user, context={'request': request}).data
+        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': user_data})
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
