@@ -1521,9 +1521,26 @@ class PlaylistSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'cover_image', 'created_at', 'created_by',
             'genres', 'moods', 'tags', 'songs',
+            'liked_count',
             'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'created_at', 'liked_count']
+
+    liked_count = serializers.SerializerMethodField()
+
+    def get_liked_count(self, obj):
+        # Prefer annotated value when available to avoid extra query
+        if hasattr(obj, 'liked_count'):
+            try:
+                return int(obj.liked_count or 0)
+            except Exception:
+                return 0
+        # Fallback to counting M2M relation
+        try:
+            return obj.liked_by.count()
+        except Exception:
+            from .models import PlaylistLike
+            return PlaylistLike.objects.filter(playlist=obj).count()
 
 
 class PlaylistForEventSerializer(serializers.ModelSerializer):
