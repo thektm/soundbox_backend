@@ -300,7 +300,16 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
     def get_is_liked(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.liked_by.filter(id=request.user.id).exists()
+            try:
+                # Prefer direct M2M when available
+                if hasattr(obj, '_prefetched_objects_cache') and 'liked_by' in obj._prefetched_objects_cache:
+                    return obj.liked_by.filter(id=request.user.id).exists()
+                # Fallback to PlaylistLike table which is authoritative for admin/system playlists
+                from .models import PlaylistLike
+                return PlaylistLike.objects.filter(user=request.user, playlist=obj).exists()
+            except Exception:
+                from .models import PlaylistLike
+                return PlaylistLike.objects.filter(user=request.user, playlist=obj).exists()
         return False
 
     def get_cover_image(self, obj):
