@@ -1027,68 +1027,150 @@ class PlaylistDetailView(APIView):
                 playlist=playlist,
                 defaults={'updated_at': timezone.now()}
             )
-            
         serializer = PlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
 
-   
 
+@extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
+class LikedSongsSearchView(APIView):
+    """Search liked songs with flexible matching (partial, phrase, multi-token).
 
-        @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
-        class LikedSongsSearchView(APIView):
-            """Search liked songs with flexible matching (partial, phrase, multi-token).
+    Behavior:
+    - `q` parameter is required.
+    - Quoted phrases are treated as single tokens (exact substring match).
+    - Unquoted words are split and all tokens must match (AND) across any searchable field.
+    - Searchable fields: song title, artist name, album title, tag name, lyrics, description.
+    - Uses case-insensitive substring matching (`icontains`).
+    """
+    permission_classes = [IsAuthenticated]
 
-            Behavior:
-            - `q` parameter is required.
-            - Quoted phrases are treated as single tokens (exact substring match).
-            - Unquoted words are split and all tokens must match (AND) across any searchable field.
-            - Searchable fields: song title, artist name, album title, tag name, lyrics, description.
-            - Uses case-insensitive substring matching (`icontains`).
-            """
-            permission_classes = [IsAuthenticated]
+    @extend_schema(
+        summary="جستجوی آهنگ‌های لایک‌شده",
+        description="جستجوی انعطاف‌پذیر در میان آهنگ‌های لایک‌شده کاربر.",
+        parameters=[
+            OpenApiParameter('q', OpenApiTypes.STR, description='Search query (required)')
+        ],
+        responses={200: LikedSongSerializer(many=True)}
+    )
+    def get(self, request):
+        query = request.query_params.get('q')
+        if not query:
+            return Response({'error': 'q parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-            @extend_schema(
-                summary="جستجوی آهنگ‌های لایک‌شده",
-                description="جستجوی انعطاف‌پذیر در میان آهنگ‌های لایک‌شده کاربر.",
-                parameters=[
-                    OpenApiParameter('q', OpenApiTypes.STR, description='Search query (required)')
-                ],
-                responses={200: LikedSongSerializer(many=True)}
+        # split into tokens, keeping quoted phrases together
+        parts = [m[0] or m[1] for m in re.findall(r'"([^"]+)"|(\S+)', query)]
+
+        qs = SongLike.objects.filter(user=request.user).select_related('song__artist', 'song__album').prefetch_related('song__tags')
+
+        for token in parts:
+            token = token.strip()
+            if not token:
+                continue
+            token_q = (
+                Q(song__title__icontains=token) |
+                Q(song__artist__name__icontains=token) |
+                Q(song__album__title__icontains=token) |
+                Q(song__tags__name__icontains=token) |
+                Q(song__lyrics__icontains=token) |
+                Q(song__description__icontains=token)
             )
-            def get(self, request):
-                query = request.query_params.get('q')
-                if not query:
-                    return Response({'error': 'q parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(token_q)
 
-                # split into tokens, keeping quoted phrases together
-                parts = [m[0] or m[1] for m in re.findall(r'"([^"]+)"|(\S+)', query)]
+        qs = qs.order_by('-created_at').distinct()
 
-                qs = SongLike.objects.filter(user=request.user).select_related('song__artist', 'song__album').prefetch_related('song__tags')
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = LikedSongSerializer(result_page, many=True, context={'request': request})
 
-                for token in parts:
-                    token = token.strip()
-                    if not token:
-                        continue
-                    token_q = (
-                        Q(song__title__icontains=token) |
-                        Q(song__artist__name__icontains=token) |
-                        Q(song__album__title__icontains=token) |
-                        Q(song__tags__name__icontains=token) |
-                        Q(song__lyrics__icontains=token) |
-                        Q(song__description__icontains=token)
-                    )
-                    qs = qs.filter(token_q)
+        return paginator.get_paginated_response(serializer.data)
 
-                qs = qs.order_by('-created_at').distinct()
 
-                paginator = PageNumberPagination()
-                paginator.page_size = 10
-                result_page = paginator.paginate_queryset(qs, request)
-                serializer = LikedSongSerializer(result_page, many=True, context={'request': request})
+@extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
+class LikedAlbumsSearchView(APIView):
+    """Search liked albums with flexible matching (partial, phrase, multi-token)."""
+    permission_classes = [IsAuthenticated]
 
-                return paginator.get_paginated_response(serializer.data)
+    @extend_schema(
+        summary="جستجوی آلبوم‌های لایک‌شده",
+        parameters=[OpenApiParameter('q', OpenApiTypes.STR, description='Search query (required)')],
+        responses={200: LikedAlbumSerializer(many=True)}
+    )
+    def get(self, request):
+        query = request.query_params.get('q')
+        if not query:
+            return Response({'error': 'q parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-   
+        parts = [m[0] or m[1] for m in re.findall(r'"([^"]+)"|(\S+)', query)]
+
+        qs = AlbumLike.objects.filter(user=request.user).select_related('album__artist').prefetch_related('album__genres', 'album__sub_genres', 'album__moods')
+
+        for token in parts:
+            token = token.strip()
+            if not token:
+                continue
+            token_q = (
+                Q(album__title__icontains=token) |
+                Q(album__artist__name__icontains=token) |
+                Q(album__description__icontains=token) |
+                Q(album__genres__name__icontains=token) |
+                Q(album__sub_genres__name__icontains=token) |
+                Q(album__moods__name__icontains=token)
+            )
+            qs = qs.filter(token_q)
+
+        qs = qs.order_by('-created_at').distinct()
+
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = LikedAlbumSerializer(result_page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+@extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
+class LikedPlaylistsSearchView(APIView):
+    """Search liked playlists with flexible matching (partial, phrase, multi-token)."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="جستجوی پلی‌لیست‌های لایک‌شده",
+        parameters=[OpenApiParameter('q', OpenApiTypes.STR, description='Search query (required)')],
+        responses={200: LikedPlaylistSerializer(many=True)}
+    )
+    def get(self, request):
+        query = request.query_params.get('q')
+        if not query:
+            return Response({'error': 'q parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        parts = [m[0] or m[1] for m in re.findall(r'"([^"]+)"|(\S+)', query)]
+
+        qs = PlaylistLike.objects.filter(user=request.user).select_related('playlist').prefetch_related('playlist__tags', 'playlist__genres', 'playlist__moods', 'playlist__songs__artist')
+
+        for token in parts:
+            token = token.strip()
+            if not token:
+                continue
+            token_q = (
+                Q(playlist__title__icontains=token) |
+                Q(playlist__description__icontains=token) |
+                Q(playlist__tags__name__icontains=token) |
+                Q(playlist__genres__name__icontains=token) |
+                Q(playlist__moods__name__icontains=token) |
+                Q(playlist__songs__title__icontains=token) |
+                Q(playlist__songs__artist__name__icontains=token)
+            )
+            qs = qs.filter(token_q)
+
+        qs = qs.order_by('-created_at').distinct()
+
+        paginator = PageNumberPagination()
+        paginator.page_size = 10
+        result_page = paginator.paginate_queryset(qs, request)
+        serializer = LikedPlaylistSerializer(result_page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+
+
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlaylistLikeView(APIView):
     """Like or unlike a playlist (Admin/System/Audience)"""
