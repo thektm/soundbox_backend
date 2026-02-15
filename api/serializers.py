@@ -9,6 +9,8 @@ from .models import (
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from urllib.parse import urlencode
+from django.urls import reverse
+from django.conf import settings
 
 
 class SongSummarySerializer(serializers.ModelSerializer):
@@ -423,20 +425,29 @@ class UserSerializer(serializers.ModelSerializer):
         has_next = total > offset + page_size
         next_url = None
         if request and has_next:
+            # prefer stable named route for profile lists
+            try:
+                base = reverse('user_profile')
+            except Exception:
+                base = request.path
             params = {k: str(v) for k, v in request.query_params.items()}
             params['f_page'] = str(page + 1)
             params['f_page_size'] = str(page_size)
             qs = urlencode(params)
             try:
-                next_url = request.build_absolute_uri('?' + qs)
+                next_url = request.build_absolute_uri(base + '?' + qs)
             except Exception:
-                try:
-                    scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
-                    host = request.get_host()
-                    path = request.path
-                    next_url = f"{scheme}://{host}{path}?{qs}"
-                except Exception:
-                    next_url = None
+                # fallback to settings if available
+                site = getattr(settings, 'SITE_URL', None)
+                if site:
+                    next_url = site.rstrip('/') + base + '?' + qs
+                else:
+                    try:
+                        scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
+                        host = request.get_host()
+                        next_url = f"{scheme}://{host}{base}?{qs}"
+                    except Exception:
+                        next_url = None
 
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -462,20 +473,27 @@ class UserSerializer(serializers.ModelSerializer):
         has_next = total > offset + page_size
         next_url = None
         if request and has_next:
+            try:
+                base = reverse('user_profile')
+            except Exception:
+                base = request.path
             params = {k: str(v) for k, v in request.query_params.items()}
             params['fg_page'] = str(page + 1)
             params['fg_page_size'] = str(page_size)
             qs = urlencode(params)
             try:
-                next_url = request.build_absolute_uri('?' + qs)
+                next_url = request.build_absolute_uri(base + '?' + qs)
             except Exception:
-                try:
-                    scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
-                    host = request.get_host()
-                    path = request.path
-                    next_url = f"{scheme}://{host}{path}?{qs}"
-                except Exception:
-                    next_url = None
+                site = getattr(settings, 'SITE_URL', None)
+                if site:
+                    next_url = site.rstrip('/') + base + '?' + qs
+                else:
+                    try:
+                        scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
+                        host = request.get_host()
+                        next_url = f"{scheme}://{host}{base}?{qs}"
+                    except Exception:
+                        next_url = None
 
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -530,20 +548,27 @@ class UserSerializer(serializers.ModelSerializer):
         has_next = total > offset + page_size
         next_url = None
         if request and has_next:
+            try:
+                base = reverse('user_history_list')
+            except Exception:
+                base = request.path
             params = {k: str(v) for k, v in request.query_params.items()}
             params['rp_page'] = str(page + 1)
             params['rp_page_size'] = str(page_size)
             qs = urlencode(params)
             try:
-                next_url = request.build_absolute_uri('?' + qs)
+                next_url = request.build_absolute_uri(base + '?' + qs)
             except Exception:
-                try:
-                    scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
-                    host = request.get_host()
-                    path = request.path
-                    next_url = f"{scheme}://{host}{path}?{qs}"
-                except Exception:
-                    next_url = None
+                site = getattr(settings, 'SITE_URL', None)
+                if site:
+                    next_url = site.rstrip('/') + base + '?' + qs
+                else:
+                    try:
+                        scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
+                        host = request.get_host()
+                        next_url = f"{scheme}://{host}{base}?{qs}"
+                    except Exception:
+                        next_url = None
 
         return {
             'items': SongStreamSerializer(songs, many=True, context=self.context).data,
