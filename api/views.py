@@ -1034,7 +1034,7 @@ class PlaylistDetailView(APIView):
 
     def get_object(self, pk):
         try:
-            return Playlist.objects.annotate(likes_count=Count('liked_by')).get(pk=pk)
+            return Playlist.objects.get(pk=pk)
         except Playlist.DoesNotExist:
             return None
 
@@ -1252,10 +1252,10 @@ class PlaylistLikeView(APIView):
         else:
             PlaylistLike.objects.create(user=user, playlist=playlist)
             liked = True
-            
+        from .models import PlaylistLike
         return Response({
             "liked": liked,
-            "likes_count": playlist.liked_by.count()
+            "likes_count": PlaylistLike.objects.filter(playlist=playlist).count()
         })
 
 
@@ -1410,10 +1410,13 @@ class ArtistDetailView(APIView):
         # Admin playlists
         admin_playlists = Playlist.objects.filter(songs__artist=artist, created_by=Playlist.CREATED_BY_ADMIN).distinct()
         # System/Audience playlists with likes
+        # Playlists that have PlaylistLike records
+        liked_playlist_ids = PlaylistLike.objects.values_list('playlist_id', flat=True).distinct()
         other_playlists = Playlist.objects.filter(
             songs__artist=artist,
-            created_by__in=[Playlist.CREATED_BY_SYSTEM, Playlist.CREATED_BY_AUDIENCE]
-        ).annotate(likes_count=Count('liked_by')).filter(likes_count__gt=0).distinct()
+            created_by__in=[Playlist.CREATED_BY_SYSTEM, Playlist.CREATED_BY_AUDIENCE],
+            id__in=liked_playlist_ids
+        ).distinct()
         # Public UserPlaylists with likes
         user_playlists = UserPlaylist.objects.filter(songs__artist=artist, public=True).annotate(likes_count=Count('liked_by')).filter(likes_count__gt=0).distinct()
         
@@ -4233,10 +4236,14 @@ class PlaylistRecommendationLikeView(APIView):
         is_liked = playlist.liked_by.filter(id=user.id).exists()
         
         if is_liked:
-            # Unlike: Just remove from this record
+            # Unlike: remove PlaylistLike if present, otherwise fall back to M2M
+            from .models import PlaylistLike
+            pl_like_qs = PlaylistLike.objects.filter(user=user, playlist_id=playlist.id)
+            if pl_like_qs.exists():
+                pl_like_qs.delete()
+                return Response({'status': 'unliked', 'likes_count': PlaylistLike.objects.filter(playlist=playlist).count()})
+            # fallback for RecommendedPlaylist M2M
             playlist.liked_by.remove(user)
-            # If it's a frozen/copied record and no one else likes it, we might want to delete it, 
-            # but usually just keep it or let it be orphaned.
             return Response({'status': 'unliked', 'likes_count': playlist.liked_by.count()})
         else:
             # Like
@@ -4261,13 +4268,12 @@ class PlaylistRecommendationLikeView(APIView):
                 # Copy songs (ManyToMany needs to be set after creation)
                 frozen_playlist.songs.set(playlist.songs.all())
                 
-                # Add the user to liked_by of the NEW record
+                # Add the user to liked_by of the NEW record (RecommendedPlaylist uses M2M)
                 frozen_playlist.liked_by.add(user)
-                
-                # Also add the user to the original dynamic record's liked_by 
-                # (so the UI shows it as liked immediately in the home slot)
+
+                # Also add the user to the original dynamic record's liked_by
                 playlist.liked_by.add(user)
-                
+
                 return Response({
                     'status': 'liked',
                     'likes_count': frozen_playlist.liked_by.count(),

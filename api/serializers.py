@@ -1536,24 +1536,15 @@ class PlaylistSerializer(serializers.ModelSerializer):
                 return int(obj.likes_count or 0)
             except Exception:
                 return 0
-        # Fallback to counting M2M relation
-        try:
-            return obj.liked_by.count()
-        except Exception:
-            from .models import PlaylistLike
-            return PlaylistLike.objects.filter(playlist=obj).count()
+        # Use PlaylistLike table as the source of truth for Playlist likes
+        from .models import PlaylistLike
+        return PlaylistLike.objects.filter(playlist=obj).count()
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            try:
-                # Use prefetched relation when available
-                if hasattr(obj, '_prefetched_objects_cache') and 'liked_by' in obj._prefetched_objects_cache:
-                    return any(u.id == request.user.id for u in obj.liked_by.all())
-                return obj.liked_by.filter(id=request.user.id).exists()
-            except Exception:
-                from .models import PlaylistLike
-                return PlaylistLike.objects.filter(user=request.user, playlist=obj).exists()
+            from .models import PlaylistLike
+            return PlaylistLike.objects.filter(user=request.user, playlist=obj).exists()
         return False
 
 
