@@ -3066,11 +3066,19 @@ class UserPlaylistAddSongView(APIView):
         
         try:
             song = Song.objects.get(id=song_id)
-            playlist.songs.add(song)
-            serializer = UserPlaylistSerializer(playlist, context={'request': request})
-            return Response(serializer.data)
         except Song.DoesNotExist:
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # If the song is already present in the playlist return a specific code
+        if playlist.songs.filter(id=song.id).exists():
+            return Response(
+                {'error': 'Song already in playlist', 'code': 'song_already_in_playlist'},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        playlist.songs.add(song)
+        serializer = UserPlaylistSerializer(playlist, context={'request': request})
+        return Response(serializer.data)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
