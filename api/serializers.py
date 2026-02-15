@@ -1678,16 +1678,18 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
         source='songs',
         required=False
     )
+    # Include lightweight song summaries when returning playlist detail
+    songs = SongSummarySerializer(many=True, read_only=True)
     
     class Meta:
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
         fields = [
             'id', 'user', 'user_phone', 'title', 'public', 'songs_count',
-            'likes_count', 'is_liked', 'song_ids', 'top_three_song_covers', 
+            'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 
             'type', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'user_phone', 'songs_count', 'likes_count', 
-                           'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type']
+                           'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type', 'songs']
     
     def get_songs_count(self, obj):
         return obj.songs.count()
