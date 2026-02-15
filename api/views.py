@@ -4148,6 +4148,8 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 }
             )
             playlist.songs.set(config['songs'])
+            # Ensure the dynamic slot starts fresh (unliked)
+            playlist.liked_by.clear()
             final_playlists.append(playlist)
             
         serializer = self.get_serializer(final_playlists, many=True)
@@ -4226,25 +4228,56 @@ class PlaylistRecommendationLikeView(APIView):
             )
         
         user = request.user
-        if playlist.liked_by.filter(id=user.id).exists():
-            # Unlike
+        
+        # Check if already liked
+        is_liked = playlist.liked_by.filter(id=user.id).exists()
+        
+        if is_liked:
+            # Unlike: Just remove from this record
             playlist.liked_by.remove(user)
+            # If it's a frozen/copied record and no one else likes it, we might want to delete it, 
+            # but usually just keep it or let it be orphaned.
             return Response({'status': 'unliked', 'likes_count': playlist.liked_by.count()})
         else:
             # Like
-            playlist.liked_by.add(user)
-            # If it's a dynamic slot playlist, freeze it by changing unique_id
-            if playlist.unique_id.startswith('smart_rec_'):
+            if unique_id.startswith('smart_rec_'):
+                # Freeze: Create a brand new persistent record for the user
                 new_id = f"liked_rec_{user.id}_{uuid.uuid4().hex[:10]}"
-                playlist.unique_id = new_id
-                playlist.save()
+                
+                # Create the copy
+                frozen_playlist = RecommendedPlaylist.objects.create(
+                    unique_id=new_id,
+                    user=user,
+                    playlist_ref=playlist.playlist_ref,
+                    title=playlist.title,
+                    description=playlist.description,
+                    playlist_type=playlist.playlist_type,
+                    song_order=playlist.song_order,
+                    relevance_score=playlist.relevance_score,
+                    match_percentage=playlist.match_percentage,
+                    expires_at=None # Persistent
+                )
+                
+                # Copy songs (ManyToMany needs to be set after creation)
+                frozen_playlist.songs.set(playlist.songs.all())
+                
+                # Add the user to liked_by of the NEW record
+                frozen_playlist.liked_by.add(user)
+                
+                # Also add the user to the original dynamic record's liked_by 
+                # (so the UI shows it as liked immediately in the home slot)
+                playlist.liked_by.add(user)
+                
                 return Response({
-                    'status': 'liked', 
-                    'likes_count': playlist.liked_by.count(),
-                    'new_unique_id': new_id
+                    'status': 'liked',
+                    'likes_count': frozen_playlist.liked_by.count(),
+                    'new_unique_id': new_id,
+                    'is_frozen': True
                 })
-            
-            return Response({'status': 'liked', 'likes_count': playlist.liked_by.count()})
+            else:
+                # Direct like for already persistent or other types
+                playlist.liked_by.add(user)
+                return Response({'status': 'liked', 'likes_count': playlist.liked_by.count()})
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
