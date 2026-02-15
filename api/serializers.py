@@ -8,6 +8,7 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from urllib.parse import urlencode
 
 
 class SongSummarySerializer(serializers.ModelSerializer):
@@ -419,12 +420,20 @@ class UserSerializer(serializers.ModelSerializer):
         qs = Follow.objects.filter(followed_user=obj).order_by('-created_at')
         total = qs.count()
         items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
-        
+        has_next = total > offset + page_size
+        next_url = None
+        if request and has_next:
+            params = {k: v for k, v in request.query_params.items()}
+            params['f_page'] = page + 1
+            params['f_page_size'] = page_size
+            next_url = request.build_absolute_uri('?' + urlencode(params))
+
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
             'total': total,
             'page': page,
-            'has_next': total > offset + page_size
+            'has_next': has_next,
+            'next': next_url,
         }
 
     def get_following(self, obj):
@@ -440,12 +449,20 @@ class UserSerializer(serializers.ModelSerializer):
         qs = Follow.objects.filter(follower_user=obj).order_by('-created_at')
         total = qs.count()
         items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
-        
+        has_next = total > offset + page_size
+        next_url = None
+        if request and has_next:
+            params = {k: v for k, v in request.query_params.items()}
+            params['fg_page'] = page + 1
+            params['fg_page_size'] = page_size
+            next_url = request.build_absolute_uri('?' + urlencode(params))
+
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
             'total': total,
             'page': page,
-            'has_next': total > offset + page_size
+            'has_next': has_next,
+            'next': next_url,
         }
 
     def validate_stream_quality(self, value):
@@ -490,12 +507,20 @@ class UserSerializer(serializers.ModelSerializer):
         
         total = qs.count()
         songs = qs[offset:offset + page_size]
-        
+        has_next = total > offset + page_size
+        next_url = None
+        if request and has_next:
+            params = {k: v for k, v in request.query_params.items()}
+            params['rp_page'] = page + 1
+            params['rp_page_size'] = page_size
+            next_url = request.build_absolute_uri('?' + urlencode(params))
+
         return {
             'items': SongStreamSerializer(songs, many=True, context=self.context).data,
             'total': total,
             'page': page,
-            'has_next': total > offset + page_size
+            'has_next': has_next,
+            'next': next_url,
         }
 
 
