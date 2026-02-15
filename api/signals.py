@@ -1,0 +1,104 @@
+from django.db.models.signals import post_save, m2m_changed, pre_save
+from django.dispatch import receiver
+from .models import User, Song, Album, Follow, UserPlaylist, Notification, NotificationSetting
+
+@receiver(post_save, sender=User)
+def create_user_notification_settings(sender, instance, created, **kwargs):
+    """Automatically create notification settings for new users."""
+    if created:
+        NotificationSetting.objects.get_or_create(user=instance)
+
+@receiver(post_save, sender=Follow)
+def notify_new_follower(sender, instance, created, **kwargs):
+    """Notify a user when someone starts following them."""
+    if created and instance.followed_user:
+        user = instance.followed_user
+        try:
+            # Refresh from DB to ensure setting exists
+            setting, _ = NotificationSetting.objects.get_or_create(user=user)
+            if setting.new_follower:
+                follower_name = "Someone"
+                if instance.follower_user:
+                    follower_name = instance.follower_user.phone_number
+                elif instance.follower_artist:
+                    follower_name = instance.follower_artist.name
+                
+                Notification.objects.create(
+                    user=user,
+                    text=f"{follower_name} started following you."
+                )
+        except Exception:
+            pass
+
+@receiver(m2m_changed, sender=UserPlaylist.liked_by.through)
+def notify_playlist_like(sender, instance, action, pk_set, **kwargs):
+    """Notify playlist owner when someone likes their playlist."""
+    if action == "post_add":
+        owner = instance.user
+        try:
+            setting, _ = NotificationSetting.objects.get_or_create(user=owner)
+            if setting.new_likes:
+                for pk in pk_set:
+                    if pk != owner.id:
+                        liker = User.objects.get(pk=pk)
+                        Notification.objects.create(
+                            user=owner,
+                            text=f"{liker.phone_number} liked your playlist '{instance.title}'."
+                        )
+        except Exception:
+            pass
+
+@receiver(pre_save, sender=Song)
+def capture_old_song_status(sender, instance, **kwargs):
+    """Capture the status of a song before saving to detect changes."""
+    if instance.pk:
+        try:
+            old_obj = Song.objects.get(pk=instance.pk)
+            instance._old_status = old_obj.status
+        except Song.DoesNotExist:
+            instance._old_status = None
+    else:
+        instance._old_status = None
+
+@receiver(post_save, sender=Song)
+def notify_new_song_published(sender, instance, created, **kwargs):
+    """Notify followers when a song is published."""
+    old_status = getattr(instance, '_old_status', None)
+    
+    # Trigger notification if status just changed to published (or created as published)
+    if instance.status == Song.STATUS_PUBLISHED and old_status != Song.STATUS_PUBLISHED:
+        artist = instance.artist
+        # Find all users following this artist
+        followers = Follow.objects.filter(followed_artist=artist).select_related('follower_user')
+        for follow in followers:
+            if follow.follower_user:
+                user = follow.follower_user
+                try:
+                    setting, _ = NotificationSetting.objects.get_or_create(user=user)
+                    if setting.new_song_followed_artists:
+                        Notification.objects.create(
+                            user=user,
+                            text=f"New song '{instance.title}' from {artist.name} is now out!"
+                        )
+                except Exception:
+                    pass
+
+@receiver(post_save, sender=Album)
+def notify_new_album_published(sender, instance, created, **kwargs):
+    """Notify followers when a new album is released."""
+    if created:
+        artist = instance.artist
+        # Find all users following this artist
+        followers = Follow.objects.filter(followed_artist=artist).select_related('follower_user')
+        for follow in followers:
+            if follow.follower_user:
+                user = follow.follower_user
+                try:
+                    setting, _ = NotificationSetting.objects.get_or_create(user=user)
+                    if setting.new_album_followed_artists:
+                        Notification.objects.create(
+                            user=user,
+                            text=f"New album '{instance.title}' from {artist.name} is now released!"
+                        )
+                except Exception:
+                    pass
