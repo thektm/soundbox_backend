@@ -6395,10 +6395,10 @@ class NotificationListView(generics.ListAPIView):
         
         if is_artist:
             if hasattr(user, 'artist_profile'):
-                return Notification.objects.filter(artist=user.artist_profile, read=False).order_by('-created_at')
+                return Notification.objects.filter(artist=user.artist_profile, has_read=False).order_by('-created_at')
             return Notification.objects.none()
 
-        return Notification.objects.filter(user=user, read=False).order_by('-created_at')
+        return Notification.objects.filter(user=user, has_read=False).order_by('-created_at')
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
