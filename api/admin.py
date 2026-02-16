@@ -8,6 +8,7 @@ from .models import (
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
     PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform
 )
+from .models import OtpCode
 from .models import ActivePlayback
 
 User = get_user_model()
@@ -112,6 +113,16 @@ class UserHistoryAdmin(admin.ModelAdmin):
 class NotificationSettingAdmin(admin.ModelAdmin):
     list_display = ('user', 'new_song_followed_artists', 'new_album_followed_artists', 'new_playlist', 'new_likes', 'new_follower', 'system_notifications')
     search_fields = ('user__phone_number',)
+
+
+@admin.register(OtpCode)
+class OtpCodeAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'purpose', 'expires_at', 'attempts', 'consumed', 'created_at')
+    list_filter = ('purpose', 'consumed', 'expires_at', 'created_at')
+    search_fields = ('user__phone_number',)
+    readonly_fields = ('created_at',)
+    raw_id_fields = ('user',)
+    ordering = ('-created_at',)
 
 
 @admin.register(Album)
