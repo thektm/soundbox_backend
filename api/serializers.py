@@ -2294,8 +2294,49 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class AudioAdSerializer(serializers.ModelSerializer):
+    audio_url = serializers.SerializerMethodField()
+    image_cover = serializers.SerializerMethodField()
+
     class Meta:
         model = AudioAd
         fields = ['id', 'title', 'audio_url', 'image_cover', 'navigate_link', 'duration', 'skippable_after']
+
+    def get_audio_url(self, obj):
+        if not obj.audio_url:
+            return None
+        if 'r2.cloudflarestorage.com' in obj.audio_url or 'r2.dev' in obj.audio_url:
+            # Extract key from URL
+            # Example: https://pub-xxx.r2.dev/ads/file.mp3 or our custom CDN
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            if obj.audio_url.startswith(cdn_base):
+                key = obj.audio_url.replace(cdn_base + '/', '')
+            else:
+                # Try to extract key from a standard R2 URL structure
+                # This logic is a bit fallback-ish
+                parts = obj.audio_url.split('/')
+                if len(parts) > 3:
+                    # simplistic: everything after domain
+                    key = '/'.join(parts[3:])
+                else:
+                    key = obj.audio_url
+            
+            signed = generate_signed_r2_url(key)
+            return signed if signed else obj.audio_url
+        return obj.audio_url
+
+    def get_image_cover(self, obj):
+        if not obj.image_cover:
+            return None
+        if 'r2.cloudflarestorage.com' in obj.image_cover or 'r2.dev' in obj.image_cover:
+            cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+            if obj.image_cover.startswith(cdn_base):
+                key = obj.image_cover.replace(cdn_base + '/', '')
+            else:
+                parts = obj.image_cover.split('/')
+                key = '/'.join(parts[3:]) if len(parts) > 3 else obj.image_cover
+            
+            signed = generate_signed_r2_url(key)
+            return signed if signed else obj.image_cover
+        return obj.image_cover
 
 
