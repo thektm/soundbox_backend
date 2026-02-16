@@ -2386,6 +2386,18 @@ class UnwrapStreamView(APIView):
         }
     )
     def get(self, request, token):
+        # 1. Global check for pending ads (enforce sequential viewing for FREE users)
+        # Check if user has any pending ads (required but not seen) from previous requests
+        pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
+        if pending_ad:
+            return Response({
+                'type': 'ad',
+                'ad': AudioAdSerializer(pending_ad.ad_object).data,
+                'submit_id': pending_ad.ad_submit_id,
+                'message': 'You must finish watching the previous advertisement',
+                'pending': True
+            })
+
         try:
             # Get the stream access record
             stream_access = StreamAccess.objects.select_related('song', 'user').get(
@@ -2400,17 +2412,6 @@ class UnwrapStreamView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Check if user has any pending ads (required but not seen) from previous requests
-            pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
-            if pending_ad:
-                return Response({
-                    'type': 'ad',
-                    'ad': AudioAdSerializer(pending_ad.ad_object).data,
-                    'submit_id': pending_ad.ad_submit_id,
-                    'message': 'You must finish watching the previous advertisement',
-                    'pending': True
-                })
-            
             # Mark as unwrapped (ONLY after passing pending ad check)
             stream_access.unwrapped = True
             stream_access.unwrapped_at = timezone.now()
@@ -2424,13 +2425,26 @@ class UnwrapStreamView(APIView):
                 unwrapped_at__gte=cutoff_time
             ).count()
             
+            # Calculate songs since last ad (ignoring the past)
+            last_ad_seen = StreamAccess.objects.filter(
+                user=request.user, 
+                ad_required=True, 
+                ad_seen=True
+            ).order_by('-unwrapped_at').first()
+            
+            since_query = Q(user=request.user, unwrapped=True)
+            if last_ad_seen:
+                since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
+            
+            unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
+
             # Use ad frequency from configuration
             config = PlayConfiguration.objects.last()
             ad_freq = config.ad_frequency if config else 15
             
             # ONLY show ads for FREE users
             is_premium = request.user.plan == User.PLAN_PREMIUM
-            if not is_premium and ad_freq > 0 and unwrapped_count % ad_freq == 0:
+            if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
                 # Pick a random active ad
                 active_ads = AudioAd.objects.filter(is_active=True)
                 if active_ads.exists():
@@ -2448,7 +2462,8 @@ class UnwrapStreamView(APIView):
                         'ad': AudioAdSerializer(ad).data,
                         'submit_id': submit_id,
                         'message': 'Please listen to this brief advertisement',
-                        'unwrap_count': unwrapped_count
+                        'unwrap_count': unwrapped_count,
+                        'since_last_ad': unwrapped_since_last_ad
                     })
             
             # No ad required, return stream response
@@ -2614,6 +2629,19 @@ class StreamShortRedirectView(APIView):
                     unwrapped_at__gte=cutoff_time
                 ).count()
 
+                # Calculate songs since last ad
+                last_ad_seen = StreamAccess.objects.filter(
+                    user=request.user, 
+                    ad_required=True, 
+                    ad_seen=True
+                ).order_by('-unwrapped_at').first()
+                
+                since_query = Q(user=request.user, unwrapped=True)
+                if last_ad_seen:
+                    since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
+                
+                unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
+
                 # Use ad frequency from configuration
                 config = PlayConfiguration.objects.last()
                 ad_freq = config.ad_frequency if config else 15
@@ -2621,7 +2649,7 @@ class StreamShortRedirectView(APIView):
                 # ONLY show ads for FREE users
                 is_premium = request.user.plan == User.PLAN_PREMIUM
 
-                if not is_premium and ad_freq > 0 and unwrapped_count % ad_freq == 0:
+                if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
                     active_ads = AudioAd.objects.filter(is_active=True)
                     if active_ads.exists():
                         ad = random.choice(active_ads)
@@ -2639,6 +2667,7 @@ class StreamShortRedirectView(APIView):
                             'submit_id': submit_id,
                             'message': 'Please listen to this brief advertisement',
                             'unwrap_count': unwrapped_count,
+                            'since_last_ad': unwrapped_since_last_ad,
                             'new_stream_url': new_url,
                         }, status=413)
 
@@ -2661,13 +2690,26 @@ class StreamShortRedirectView(APIView):
                 unwrapped_at__gte=cutoff_time
             ).count()
             
+            # Calculate songs since last ad
+            last_ad_seen = StreamAccess.objects.filter(
+                user=request.user, 
+                ad_required=True, 
+                ad_seen=True
+            ).order_by('-unwrapped_at').first()
+            
+            since_query = Q(user=request.user, unwrapped=True)
+            if last_ad_seen:
+                since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
+            
+            unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
+
             # Use ad frequency from configuration
             config = PlayConfiguration.objects.last()
             ad_freq = config.ad_frequency if config else 15
             
             # ONLY show ads for FREE users
             is_premium = request.user.plan == User.PLAN_PREMIUM
-            if not is_premium and ad_freq > 0 and unwrapped_count % ad_freq == 0:
+            if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
                 # Pick a random active ad
                 active_ads = AudioAd.objects.filter(is_active=True)
                 if active_ads.exists():
@@ -2685,7 +2727,8 @@ class StreamShortRedirectView(APIView):
                         'ad': AudioAdSerializer(ad).data,
                         'submit_id': submit_id,
                         'message': 'Please listen to this brief advertisement',
-                        'unwrap_count': unwrapped_count
+                        'unwrap_count': unwrapped_count,
+                        'since_last_ad': unwrapped_since_last_ad
                     })
             
             # No ad required, return stream response
