@@ -2411,7 +2411,7 @@ class UnwrapStreamView(APIView):
                     'pending': True
                 })
             
-            # Mark as unwrapped
+            # Mark as unwrapped (ONLY after passing pending ad check)
             stream_access.unwrapped = True
             stream_access.unwrapped_at = timezone.now()
             stream_access.save(update_fields=['unwrapped', 'unwrapped_at'])
@@ -2550,6 +2550,17 @@ class StreamShortRedirectView(APIView):
         }
     )
     def get(self, request, token):
+        # 1. Global check for pending ads (enforce sequential viewing for FREE users)
+        pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
+        if pending_ad:
+            return Response({
+                'type': 'ad',
+                'ad': AudioAdSerializer(pending_ad.ad_object).data,
+                'submit_id': pending_ad.ad_submit_id,
+                'message': 'You must finish watching the previous advertisement',
+                'pending': True
+            })
+
         try:
             # Get the stream access record
             stream_access = StreamAccess.objects.select_related('song', 'user').get(
@@ -2637,17 +2648,6 @@ class StreamShortRedirectView(APIView):
                     'new_stream_url': new_url
                 }, status=413)
 
-            # Check if user has any pending ads (required but not seen) from previous requests
-            pending_ad = StreamAccess.objects.filter(user=request.user, ad_required=True, ad_seen=False).first()
-            if pending_ad:
-                return Response({
-                    'type': 'ad',
-                    'ad': AudioAdSerializer(pending_ad.ad_object).data,
-                    'submit_id': pending_ad.ad_submit_id,
-                    'message': 'You must finish watching the previous advertisement',
-                    'pending': True
-                })
-            
             # Mark as unwrapped
             stream_access.unwrapped = True
             stream_access.unwrapped_at = timezone.now()
