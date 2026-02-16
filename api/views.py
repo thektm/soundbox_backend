@@ -6404,9 +6404,6 @@ class NotificationListView(generics.ListAPIView):
         queryset = self.get_queryset()
         notifications = list(queryset)
         
-        if not notifications:
-            return self.get_paginated_response([])
-
         # Grouping logic
         grouped = {} # (template, has_read) -> {sum, obj, uses_farsi, template}
         
