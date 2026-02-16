@@ -23,7 +23,7 @@ from .admin_serializers import (
     AdminEmployeeSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
-from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename
+from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url
 import os
 
 class AdminPagination(PageNumberPagination):
@@ -907,13 +907,21 @@ class AdminAudioAdListView(APIView):
     )
     def post(self, request):
         data = request.data.copy()
-        audio_file = request.FILES.get('audio_upload')
+        # Accept either `file` (flat form-data) or legacy `audio_upload` field
+        audio_file = request.FILES.get('file') or request.FILES.get('audio_upload')
+        presigned_url = None
         if audio_file:
             safe_title = "".join([c for c in data.get('title', 'audio_ad') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
             filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
             audio_url, _ = upload_file_to_r2(audio_file, folder='ads/audio', custom_filename=filename)
             data['audio_url'] = audio_url
-            
+
+            # generate a presigned (signed) URL for immediate use/testing
+            try:
+                presigned_url = generate_signed_r2_url(audio_url, expiration=3600)
+            except Exception:
+                presigned_url = None
+
             # Try to get duration if not provided
             if not data.get('duration'):
                 duration, _, _ = get_audio_info(audio_file)
@@ -930,7 +938,12 @@ class AdminAudioAdListView(APIView):
         serializer = AdminAudioAdSerializer(data=data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            response_data = serializer.data
+            # include uploaded URLs when available
+            if data.get('audio_url'):
+                response_data['original_url'] = data.get('audio_url')
+                response_data['presigned_url'] = presigned_url
+            return Response(response_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
