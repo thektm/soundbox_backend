@@ -117,10 +117,10 @@ class NotificationSettingAdmin(admin.ModelAdmin):
 
 @admin.register(OtpCode)
 class OtpCodeAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'purpose', 'expires_at', 'attempts', 'consumed', 'created_at')
+    list_display = ('id', 'user', 'purpose', 'code', 'expires_at', 'attempts', 'consumed', 'created_at')
     list_filter = ('purpose', 'consumed', 'expires_at', 'created_at')
-    search_fields = ('user__phone_number',)
-    readonly_fields = ('created_at',)
+    search_fields = ('user__phone_number', 'code')
+    readonly_fields = ('created_at', 'code', 'code_hash')
     raw_id_fields = ('user',)
     ordering = ('-created_at',)
 

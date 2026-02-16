@@ -204,7 +204,10 @@ class OtpCode(models.Model):
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='otp_codes')
+    # Store hashed code for verification
     code_hash = models.CharField(max_length=255)
+    # Optional plaintext code for admin/debugging purposes. Be cautious: this exposes sensitive data.
+    code = models.CharField(max_length=32, blank=True, null=True)
     purpose = models.CharField(max_length=50, choices=PURPOSE_CHOICES)
     expires_at = models.DateTimeField()
     attempts = models.IntegerField(default=0)

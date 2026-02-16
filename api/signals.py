@@ -17,7 +17,7 @@ def notify_new_follower(sender, instance, created, **kwargs):
             # Refresh from DB to ensure setting exists
             setting, _ = NotificationSetting.objects.get_or_create(user=user)
             if setting.new_follower:
-                follower_name = "Someone"
+                follower_name = "یک نفر"
                 if instance.follower_user:
                     follower_name = instance.follower_user.phone_number
                 elif instance.follower_artist:
@@ -25,7 +25,7 @@ def notify_new_follower(sender, instance, created, **kwargs):
                 
                 Notification.objects.create(
                     user=user,
-                    text=f"{follower_name} started following you."
+                    text=f"{follower_name} شروع به دنبال کردن شما کرد."
                 )
         except Exception:
             pass
@@ -43,7 +43,7 @@ def notify_playlist_like(sender, instance, action, pk_set, **kwargs):
                         liker = User.objects.get(pk=pk)
                         Notification.objects.create(
                             user=owner,
-                            text=f"{liker.phone_number} liked your playlist '{instance.title}'."
+                            text=f"{liker.phone_number} لیست پخش '{instance.title}' شما را لایک کرد."
                         )
         except Exception:
             pass
@@ -78,7 +78,7 @@ def notify_new_song_published(sender, instance, created, **kwargs):
                     if setting.new_song_followed_artists:
                         Notification.objects.create(
                             user=user,
-                            text=f"New song '{instance.title}' from {artist.name} is now out!"
+                            text=f"آهنگ جدید '{instance.title}' از {artist.name} منتشر شد!"
                         )
                 except Exception:
                     pass
@@ -98,7 +98,7 @@ def notify_new_album_published(sender, instance, created, **kwargs):
                     if setting.new_album_followed_artists:
                         Notification.objects.create(
                             user=user,
-                            text=f"New album '{instance.title}' from {artist.name} is now released!"
+                            text=f"آلبوم جدید '{instance.title}' از {artist.name} منتشر شد!"
                         )
                 except Exception:
                     pass

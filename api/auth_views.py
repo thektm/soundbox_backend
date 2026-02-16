@@ -160,7 +160,8 @@ def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5)
     otp = generate_otp(4)
     hashed = hash_code(otp)
     expires = timezone.now() + timedelta(minutes=minutes)
-    otp_obj = OtpCode.objects.create(user=user, code_hash=hashed, purpose=purpose, expires_at=expires)
+    # Persist both hashed and plaintext OTP. Plaintext is stored for admin visibility only.
+    otp_obj = OtpCode.objects.create(user=user, code_hash=hashed, code=otp, purpose=purpose, expires_at=expires)
     # send SMS and log result to help debugging in development
     sent = send_sms(phone, otp, purpose, minutes)
     logger = logging.getLogger(__name__)
