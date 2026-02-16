@@ -2395,7 +2395,8 @@ class UnwrapStreamView(APIView):
                 'ad': AudioAdSerializer(pending_ad.ad_object, context={'request': request}).data,
                 'submit_id': pending_ad.ad_submit_id,
                 'message': 'You must finish watching the previous advertisement',
-                'pending': True
+                'pending': True,
+                'ad_status': 'blocking_pending'
             })
 
         try:
@@ -2408,7 +2409,7 @@ class UnwrapStreamView(APIView):
             # Check if already unwrapped
             if stream_access.unwrapped:
                 return Response(
-                    {'error': 'This stream token has already been used'},
+                    {'error': 'This stream token has already been used', 'ad_status': 'already_unwrapped'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -2436,15 +2437,22 @@ class UnwrapStreamView(APIView):
             last_ad_seen = StreamAccess.objects.filter(
                 user=request.user, 
                 ad_required=True, 
-                ad_seen=True,
-                unwrapped_at__isnull=False
+                ad_seen=True
             ).order_by('-unwrapped_at').first()
             
             since_query = Q(user=request.user, unwrapped=True)
-            if last_ad_seen:
+            if last_ad_seen and last_ad_seen.unwrapped_at:
                 since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
             
             unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
+
+            # Ad decision status for response diagnostic
+            ad_status = {
+                'since_last_ad': unwrapped_since_last_ad,
+                'frequency': ad_freq,
+                'is_premium': is_premium,
+                'total_24h': unwrapped_count
+            }
 
             if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
                 # Pick a random active ad
@@ -2471,11 +2479,17 @@ class UnwrapStreamView(APIView):
                         'submit_id': submit_id,
                         'message': 'Please listen to this brief advertisement',
                         'unwrap_count': unwrapped_count,
-                        'since_last_ad': unwrapped_since_last_ad
+                        'since_last_ad': unwrapped_since_last_ad,
+                        'ad_status': ad_status
                     })
+                else:
+                    ad_status['error'] = 'No ads available in database'
             
             # No ad required, return stream response
-            return self._get_stream_response(request, stream_access, unwrapped_count)
+            res = self._get_stream_response(request, stream_access, unwrapped_count)
+            if hasattr(res, 'data') and isinstance(res.data, dict):
+                res.data['ad_status'] = ad_status
+            return res
             
         except StreamAccess.DoesNotExist:
             return Response(
@@ -2581,7 +2595,8 @@ class StreamShortRedirectView(APIView):
                 'ad': AudioAdSerializer(pending_ad.ad_object, context={'request': request}).data,
                 'submit_id': pending_ad.ad_submit_id,
                 'message': 'You must finish watching the previous advertisement',
-                'pending': True
+                'pending': True,
+                'ad_status': 'blocking_pending'
             })
 
         try:
@@ -2590,7 +2605,12 @@ class StreamShortRedirectView(APIView):
                 short_token=token,
                 user=request.user
             )
-            
+
+            # Use ad frequency from configuration
+            config = PlayConfiguration.objects.order_by('-updated_at').first()
+            ad_freq = config.ad_frequency if config else 15
+            is_premium = request.user.plan == User.PLAN_PREMIUM
+
             # Check if already unwrapped
             if stream_access.unwrapped:
                 # Generate a new short token for this user/song and return it
@@ -2641,22 +2661,23 @@ class StreamShortRedirectView(APIView):
                 last_ad_seen = StreamAccess.objects.filter(
                     user=request.user, 
                     ad_required=True, 
-                    ad_seen=True,
-                    unwrapped_at__isnull=False
+                    ad_seen=True
                 ).order_by('-unwrapped_at').first()
                 
                 since_query = Q(user=request.user, unwrapped=True)
-                if last_ad_seen:
+                if last_ad_seen and last_ad_seen.unwrapped_at:
                     since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
                 
                 unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
 
-                # Use ad frequency from configuration
-                config = PlayConfiguration.objects.order_by('-updated_at').first()
-                ad_freq = config.ad_frequency if config else 15
-
-                # ONLY show ads for FREE users
-                is_premium = request.user.plan == User.PLAN_PREMIUM
+                # Ad decision status for response diagnostic
+                ad_status = {
+                    'since_last_ad': unwrapped_since_last_ad,
+                    'frequency': ad_freq,
+                    'is_premium': is_premium,
+                    'total_24h': unwrapped_count,
+                    'is_already_unwrapped': True
+                }
 
                 if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
                     active_ads = AudioAd.objects.filter(is_active=True)
@@ -2681,12 +2702,14 @@ class StreamShortRedirectView(APIView):
                             'unwrap_count': unwrapped_count,
                             'since_last_ad': unwrapped_since_last_ad,
                             'new_stream_url': new_url,
+                            'ad_status': ad_status
                         }, status=413)
 
                 # Otherwise return error with new stream url and HTTP 413
                 return Response({
                     'error': 'This stream URL has already been used',
-                    'new_stream_url': new_url
+                    'new_stream_url': new_url,
+                    'ad_status': ad_status
                 }, status=413)
 
             # Mark as unwrapped
@@ -2706,22 +2729,23 @@ class StreamShortRedirectView(APIView):
             last_ad_seen = StreamAccess.objects.filter(
                 user=request.user, 
                 ad_required=True, 
-                ad_seen=True,
-                unwrapped_at__isnull=False
+                ad_seen=True
             ).order_by('-unwrapped_at').first()
             
             since_query = Q(user=request.user, unwrapped=True)
-            if last_ad_seen:
+            if last_ad_seen and last_ad_seen.unwrapped_at:
                 since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
             
             unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
 
-            # Use ad frequency from configuration
-            config = PlayConfiguration.objects.order_by('-updated_at').first()
-            ad_freq = config.ad_frequency if config else 15
-            
-            # ONLY show ads for FREE users
-            is_premium = request.user.plan == User.PLAN_PREMIUM
+            # Ad decision status for response diagnostic
+            ad_status = {
+                'since_last_ad': unwrapped_since_last_ad,
+                'frequency': ad_freq,
+                'is_premium': is_premium,
+                'total_24h': unwrapped_count
+            }
+
             if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
                 # Pick a random active ad
                 active_ads = AudioAd.objects.filter(is_active=True)
@@ -2746,11 +2770,17 @@ class StreamShortRedirectView(APIView):
                         'submit_id': submit_id,
                         'message': 'Please listen to this brief advertisement',
                         'unwrap_count': unwrapped_count,
-                        'since_last_ad': unwrapped_since_last_ad
+                        'since_last_ad': unwrapped_since_last_ad,
+                        'ad_status': ad_status
                     })
+                else:
+                    ad_status['error'] = 'No ads available in database'
             
             # No ad required, return stream response
-            return UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
+            response = UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
+            if hasattr(response, 'data') and isinstance(response.data, dict):
+                response.data['ad_status'] = ad_status
+            return response
             
         except StreamAccess.DoesNotExist:
             # Try to find a StreamAccess with this token regardless of user.
