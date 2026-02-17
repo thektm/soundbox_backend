@@ -49,14 +49,14 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(Artist)
 class ArtistAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'artistic_name', 'user', 'verified', 'city', 'email', 'id_number', 'created_at')
+    list_display = ('id', 'name', 'artistic_name', 'unique_id', 'user', 'verified', 'city', 'email', 'id_number', 'created_at')
     list_filter = ('verified', 'created_at', 'city')
-    search_fields = ('name', 'artistic_name', 'user__phone_number', 'email', 'id_number', 'city')
+    search_fields = ('name', 'artistic_name', 'unique_id', 'user__phone_number', 'email', 'id_number', 'city')
     readonly_fields = ('created_at',)
     inlines = [ArtistSocialAccountInline]
     fieldsets = (
         ('Basic Info', {
-            'fields': ('name', 'artistic_name', 'user', 'bio', 'verified', 'email', 'city', 'id_number', 'date_of_birth', 'address')
+            'fields': ('name', 'artistic_name', 'unique_id', 'user', 'bio', 'verified', 'email', 'city', 'id_number', 'date_of_birth', 'address')
         }),
         ('Media', {
             'fields': ('profile_image', 'banner_image')
