@@ -2869,6 +2869,37 @@ class AdSubmitView(APIView):
         }
     )
 
+    def post(self, request):
+        submit_id = request.data.get('submit_id')
+        if not submit_id:
+            return Response({'error': 'submit_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            stream_access = StreamAccess.objects.select_related('song', 'user').get(
+                ad_submit_id=submit_id, 
+                user=request.user
+            )
+            
+            if stream_access.ad_seen:
+                return Response({'error': 'Ad already submitted'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Mark ad as seen
+            stream_access.ad_seen = True
+            stream_access.save(update_fields=['ad_seen'])
+            
+            # Count unwrapped streams for this user (last 24 hours)
+            cutoff_time = timezone.now() - timedelta(hours=24)
+            unwrapped_count = StreamAccess.objects.filter(
+                user=request.user,
+                unwrapped=True,
+                unwrapped_at__gte=cutoff_time
+            ).count()
+            
+            # Return the final stream response
+            return UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
+
+        except StreamAccess.DoesNotExist:
+            return Response({'error': 'Invalid submit_id'}, status=status.HTTP_404_NOT_FOUND)
 
 
 @extend_schema(
@@ -2908,38 +2939,6 @@ class BannerAdView(APIView):
 
         serializer = BannerAdSerializer(ad, context={'request': request})
         return Response(serializer.data)
-    def post(self, request):
-        submit_id = request.data.get('submit_id')
-        if not submit_id:
-            return Response({'error': 'submit_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            stream_access = StreamAccess.objects.select_related('song', 'user').get(
-                ad_submit_id=submit_id, 
-                user=request.user
-            )
-            
-            if stream_access.ad_seen:
-                return Response({'error': 'Ad already submitted'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Mark ad as seen
-            stream_access.ad_seen = True
-            stream_access.save(update_fields=['ad_seen'])
-            
-            # Count unwrapped streams for this user (last 24 hours)
-            cutoff_time = timezone.now() - timedelta(hours=24)
-            unwrapped_count = StreamAccess.objects.filter(
-                user=request.user,
-                unwrapped=True,
-                unwrapped_at__gte=cutoff_time
-            ).count()
-            
-            # Return the final stream response
-            return UnwrapStreamView()._get_stream_response(request, stream_access, unwrapped_count)
-
-        except StreamAccess.DoesNotExist:
-            return Response({'error': 'Invalid submit_id'}, status=status.HTTP_404_NOT_FOUND)
-
 
 class StreamAccessView(APIView):
     """One-time access endpoint: redirects once to a presigned R2 URL and then becomes invalid."""
