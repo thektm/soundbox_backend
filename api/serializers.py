@@ -28,15 +28,6 @@ class SongSummarySerializer(serializers.ModelSerializer):
     sub_genre_names = serializers.SerializerMethodField()
     play_count = serializers.SerializerMethodField()
 
-
-
-class BannerAdSerializer(serializers.ModelSerializer):
-    """Public serializer for banner ads returned to audience clients."""
-    class Meta:
-        model = BannerAd
-        fields = ['id', 'title', 'image', 'navigate_link', 'view_count']
-        read_only_fields = ['id', 'image', 'view_count']
-
     class Meta:
         model = Song
         fields = [
@@ -93,6 +84,16 @@ class BannerAdSerializer(serializers.ModelSerializer):
             return (obj.plays or 0) + obj.play_counts.count()
         except Exception:
             return int(obj.plays or 0)
+
+
+
+class BannerAdSerializer(serializers.ModelSerializer):
+    """Public serializer for banner ads returned to audience clients."""
+    class Meta:
+        model = BannerAd
+        fields = ['id', 'title', 'image', 'navigate_link', 'view_count']
+        read_only_fields = ['id', 'image', 'view_count']
+    
 
 
 class ArtistSummarySerializer(serializers.ModelSerializer):
