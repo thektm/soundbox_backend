@@ -241,6 +241,7 @@ class Artist(models.Model):
     """Artist model - can be linked to a user account or standalone"""
     name = models.CharField(max_length=255, unique=True)
     artistic_name = models.CharField(max_length=255, blank=True, help_text="Artistic/stage name")
+    unique_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
     email = models.EmailField(blank=True, null=True)
     city = models.CharField(max_length=200, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)

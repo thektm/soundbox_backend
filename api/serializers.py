@@ -19,6 +19,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for songs in summary views"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     stream_url = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
@@ -31,7 +32,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'album_title', 'cover_image', 
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'album_title', 'cover_image', 
             'stream_url', 'duration_seconds', 'is_liked',
             'genre_names', 'tag_names', 'mood_names', 'sub_genre_names', 'play_count'
         ]
@@ -103,7 +104,7 @@ class ArtistSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Artist
-        fields = ['id', 'name', 'profile_image', 'is_following', 'verified', 'followers_count']
+        fields = ['id', 'name', 'unique_id', 'profile_image', 'is_following', 'verified', 'followers_count']
 
     def get_followers_count(self, obj):
         if hasattr(obj, '_prefetched_objects_cache') and 'follower_artist_relations' in obj._prefetched_objects_cache:
@@ -122,6 +123,8 @@ class ArtistSummarySerializer(serializers.ModelSerializer):
 class AlbumSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for albums in summary views"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
+    artist_id = serializers.IntegerField(source='artist.id', read_only=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     is_liked = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
@@ -130,7 +133,7 @@ class AlbumSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Album
-        fields = ['id', 'title', 'artist_name', 'cover_image', 'is_liked', 'genre_names', 'mood_names', 'sub_genre_names']
+        fields = ['id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'is_liked', 'genre_names', 'mood_names', 'sub_genre_names']
 
     def get_cover_image(self, obj):
         if obj.cover_image:
@@ -339,6 +342,7 @@ class FollowableEntitySerializer(serializers.Serializer):
     type = serializers.SerializerMethodField()
     name = serializers.SerializerMethodField()
     image = serializers.SerializerMethodField()
+    unique_id = serializers.SerializerMethodField()
     is_verified = serializers.SerializerMethodField()
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
@@ -346,6 +350,11 @@ class FollowableEntitySerializer(serializers.Serializer):
 
     def get_type(self, obj):
         return 'artist' if isinstance(obj, Artist) else 'user'
+
+    def get_unique_id(self, obj):
+        if isinstance(obj, Artist):
+            return obj.unique_id
+        return None
 
     def get_name(self, obj):
         if isinstance(obj, Artist):
@@ -765,7 +774,7 @@ class ArtistSerializer(serializers.ModelSerializer):
     class Meta:
         model = Artist
         fields = [
-            'id', 'name', 'artistic_name', 'user_id', 'bio', 'profile_image', 'banner_image', 
+            'id', 'name', 'artistic_name', 'unique_id', 'user_id', 'bio', 'profile_image', 'banner_image', 
             'email', 'city', 'date_of_birth', 'address', 'id_number',
             'verified', 'followers_count', 'followings_count', 
             'monthly_listeners_count', 'live_listeners', 'is_following', 'created_at',
@@ -893,6 +902,7 @@ class AlbumSerializer(serializers.ModelSerializer):
     """Serializer for Album model"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     
@@ -931,7 +941,7 @@ class AlbumSerializer(serializers.ModelSerializer):
     class Meta:
         model = Album
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'cover_image', 
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 
             'release_date', 'description', 'created_at', 'likes_count', 'is_liked',
             'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write',
             'genre_ids', 'sub_genre_ids', 'mood_ids'
@@ -976,6 +986,7 @@ class AlbumSerializer(serializers.ModelSerializer):
                     'title': s.title,
                     'artist_id': getattr(s.artist, 'id', None),
                     'artist_name': getattr(s.artist, 'name', None),
+                    'artist_unique_id': getattr(s.artist, 'unique_id', None),
                 }
                 for s in qs
             ]
@@ -1101,6 +1112,7 @@ class SongSerializer(serializers.ModelSerializer):
     """Serializer for Song model with full details"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     uploader_phone = serializers.CharField(source='uploader.phone_number', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
@@ -1166,7 +1178,7 @@ class SongSerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'featured_artists',
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists',
             'album', 'album_title', 'is_single', 'stream_url', 'audio_file', 'converted_audio_url', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
             'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked',
@@ -1586,6 +1598,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
     """Serializer for songs with wrapper stream URLs instead of direct URLs representation"""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
@@ -1597,7 +1610,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'featured_artists',
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists',
             'album', 'album_title', 'is_single', 'stream_url', 'cover_image',
             'duration_seconds', 'duration_display', 'plays', 'likes_count', 'is_liked',
             'status', 'release_date', 'language', 'description',
@@ -2272,11 +2285,12 @@ class RulesSerializer(serializers.ModelSerializer):
 class DepositRequestSerializer(serializers.ModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
 
     class Meta:
         model = DepositRequest
         fields = [
-            'id', 'artist_id', 'artist_name', 'amount', 'status', 
+            'id', 'artist_id', 'artist_name', 'artist_unique_id', 'amount', 'status', 
             'transaction_id', 'submission_date', 'status_change_date', 'summary'
         ]
         read_only_fields = ['id', 'artist_id', 'status', 'submission_date', 'status_change_date', 'summary']
@@ -2284,10 +2298,11 @@ class DepositRequestSerializer(serializers.ModelSerializer):
 
 class ReportSerializer(serializers.ModelSerializer):
     artist_id = serializers.IntegerField(source='artist.id', required=False, allow_null=True)
+    artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
 
     class Meta:
         model = Report
-        fields = ['id', 'song', 'artist_id', 'text', 'created_at']
+        fields = ['id', 'song', 'artist_id', 'artist_unique_id', 'text', 'created_at']
         read_only_fields = ['id', 'created_at']
 
     def validate(self, data):
