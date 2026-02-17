@@ -160,6 +160,8 @@ class AdminBannerAdSerializer(serializers.ModelSerializer):
 class AdminAudioAdSerializer(serializers.ModelSerializer):
     audio_upload = serializers.FileField(write_only=True, required=False)
     image_cover_upload = serializers.ImageField(write_only=True, required=False)
+    audio_url = serializers.CharField(required=False, allow_blank=True)
+    image_cover = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = AudioAd
@@ -167,7 +169,7 @@ class AdminAudioAdSerializer(serializers.ModelSerializer):
             'id', 'title', 'audio_url', 'audio_upload', 'image_cover', 'image_cover_upload',
             'navigate_link', 'duration', 'skippable_after', 'is_active', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'audio_url', 'image_cover', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 class AdminPaymentTransactionSerializer(serializers.ModelSerializer):

@@ -906,13 +906,14 @@ class AdminAudioAdListView(APIView):
         responses={201: AdminAudioAdSerializer}
     )
     def post(self, request):
-        data = request.data.copy()
+        data = request.data.dict() # Convert to dict to ensure manual overrides work
         # Accept either `file` (flat form-data) or legacy `audio_upload` field
         audio_file = request.FILES.get('file') or request.FILES.get('audio_upload')
         presigned_url = None
         if audio_file:
             safe_title = "".join([c for c in data.get('title', 'audio_ad') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            _, ext = os.path.splitext(audio_file.name)
+            filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}{ext}"
             audio_url, _ = upload_file_to_r2(audio_file, folder='ads/audio', custom_filename=filename)
             data['audio_url'] = audio_url
 
@@ -931,7 +932,8 @@ class AdminAudioAdListView(APIView):
         image_file = request.FILES.get('image_cover_upload')
         if image_file:
             safe_title = "".join([c for c in data.get('title', 'audio_ad') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"audio_ad_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            _, ext = os.path.splitext(image_file.name)
+            filename = f"audio_ad_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}{ext}"
             image_url, _ = upload_file_to_r2(image_file, folder='ads/audio/covers', custom_filename=filename)
             data['image_cover'] = image_url
 
@@ -971,12 +973,13 @@ class AdminAudioAdDetailView(APIView):
     )
     def patch(self, request, pk):
         ad = get_object_or_404(AudioAd, pk=pk)
-        data = request.data.copy()
+        data = request.data.dict() # Convert to dict
         
         audio_file = request.FILES.get('audio_upload')
         if audio_file:
             safe_title = "".join([c for c in data.get('title', ad.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            _, ext = os.path.splitext(audio_file.name)
+            filename = f"audio_ad_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}{ext}"
             audio_url, _ = upload_file_to_r2(audio_file, folder='ads/audio', custom_filename=filename)
             data['audio_url'] = audio_url
             
@@ -988,7 +991,8 @@ class AdminAudioAdDetailView(APIView):
         image_file = request.FILES.get('image_cover_upload')
         if image_file:
             safe_title = "".join([c for c in data.get('title', ad.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"audio_ad_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+            _, ext = os.path.splitext(image_file.name)
+            filename = f"audio_ad_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}{ext}"
             image_url, _ = upload_file_to_r2(image_file, folder='ads/audio/covers', custom_filename=filename)
             data['image_cover'] = image_url
 

@@ -27,12 +27,17 @@ def generate_signed_r2_url(object_key, expiration=3600):
     if not object_key:
         return None
         
-    # If it's already a full URL, extract the key if it's our CDN
+    # If it's already a full URL, extract the key if it's our CDN or R2 domain
     cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
     if object_key.startswith(cdn_base):
         object_key = object_key.replace(cdn_base + '/', '')
+    elif 'r2.cloudflarestorage.com' in object_key or 'r2.dev' in object_key:
+        # Extract key from standard R2 structure (everything after the domain)
+        parts = object_key.split('/')
+        if len(parts) > 3:
+            object_key = '/'.join(parts[3:])
     elif object_key.startswith('http'):
-        # Not our CDN or already signed?
+        # External URL, return as is
         return object_key
 
     client_kwargs = {
