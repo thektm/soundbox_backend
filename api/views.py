@@ -11,6 +11,7 @@ from .models import (
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount
 )
+from .models import BannerAd, BannerAdServeCounter
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
     RegisterSerializer, 
@@ -18,6 +19,7 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
     ArtistSerializer,
     PopularArtistSerializer,
+    BannerAdSerializer,
     AlbumSerializer,
     PopularAlbumSerializer,
     GenreSerializer,
@@ -2866,6 +2868,46 @@ class AdSubmitView(APIView):
             )
         }
     )
+
+
+
+@extend_schema(
+    summary="دریافت بنر تبلیغاتی",
+    description="یک بنر فعال را به شیوه‌ای چرخان (round-robin) برمی‌گرداند و شمارنده‌ی سروهای بنر را افزایش می‌دهد.",
+    responses={200: BannerAdSerializer, 204: None}
+)
+class BannerAdView(APIView):
+    """Public endpoint that returns exactly one banner ad.
+
+    Uses a DB-backed counter (`BannerAdServeCounter`) to atomically
+    rotate through active banners so view counts grow in a flat line.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        from django.db import transaction
+        from django.db.models import F
+
+        with transaction.atomic():
+            counter, _ = BannerAdServeCounter.objects.select_for_update().get_or_create(pk=1)
+            active_ads = list(BannerAd.objects.filter(is_active=True).order_by('created_at'))
+            if not active_ads:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+
+            n = len(active_ads)
+            idx = (counter.total_serves % n) if n > 0 else 0
+            ad = active_ads[idx]
+
+            # Increment global counter and selected ad's view_count atomically
+            counter.total_serves = F('total_serves') + 1
+            counter.save()
+            ad.view_count = F('view_count') + 1
+            ad.save()
+            # refresh to get concrete integers
+            ad.refresh_from_db()
+
+        serializer = BannerAdSerializer(ad, context={'request': request})
+        return Response(serializer.data)
     def post(self, request):
         submit_id = request.data.get('submit_id')
         if not submit_id:

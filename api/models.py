@@ -1074,6 +1074,8 @@ class BannerAd(models.Model):
     title = models.CharField(max_length=255)
     image = models.URLField(max_length=500, help_text="R2 CDN URL for banner image")
     navigate_link = models.URLField(max_length=500, blank=True, null=True)
+    # Number of times this banner has been served via the public banner endpoint
+    view_count = models.BigIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1083,6 +1085,23 @@ class BannerAd(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class BannerAdServeCounter(models.Model):
+    """Singleton-ish counter tracking how many times the public banner endpoint
+    has served a banner. Used to select the next banner in a round-robin fashion
+    to keep view counts balanced across active banners.
+    """
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    total_serves = models.BigIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Banner Ad Serve Counter'
+        verbose_name_plural = 'Banner Ad Serve Counters'
+
+    def __str__(self):
+        return f"BannerAdServeCounter(total_serves={self.total_serves})"
 
 
 class AudioAd(models.Model):

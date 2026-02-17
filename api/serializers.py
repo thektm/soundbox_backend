@@ -6,6 +6,8 @@ from .models import (
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     DepositRequest, Report, Notification, AudioAd, UserHistory
 )
+
+from .models import BannerAd
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from urllib.parse import urlencode
@@ -25,6 +27,15 @@ class SongSummarySerializer(serializers.ModelSerializer):
     mood_names = serializers.SerializerMethodField()
     sub_genre_names = serializers.SerializerMethodField()
     play_count = serializers.SerializerMethodField()
+
+
+
+class BannerAdSerializer(serializers.ModelSerializer):
+    """Public serializer for banner ads returned to audience clients."""
+    class Meta:
+        model = BannerAd
+        fields = ['id', 'title', 'image', 'navigate_link', 'view_count']
+        read_only_fields = ['id', 'image', 'view_count']
 
     class Meta:
         model = Song
