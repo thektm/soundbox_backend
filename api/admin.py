@@ -10,7 +10,6 @@ from .models import (
 )
 from .models import OtpCode
 from .models import ActivePlayback
-from .models import DownloadHistory
 from django.utils import timezone
 
 User = get_user_model()
@@ -470,14 +469,6 @@ class EventPlaylistAdmin(admin.ModelAdmin):
     def playlists_count(self, obj):
         return obj.playlists.count()
     playlists_count.short_description = 'Playlists Count'
-
-
-@admin.register(DownloadHistory)
-class DownloadHistoryAdmin(admin.ModelAdmin):
-    list_display = ('id', 'user', 'song', 'created_at', 'updated_at')
-    list_filter = ('created_at', 'updated_at')
-    search_fields = ('user__phone_number', 'song__title')
-    readonly_fields = ('created_at', 'updated_at')
 
 
 @admin.register(SearchSection)

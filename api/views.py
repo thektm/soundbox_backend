@@ -9,9 +9,8 @@ from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount
+    ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, DownloadHistory
 )
-from .models import DownloadHistory
 from .models import BannerAd, BannerAdServeCounter
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -33,7 +32,6 @@ from .serializers import (
     SongStreamSerializer,
     UserPlaylistSerializer,
     UserPlaylistCreateSerializer,
-    DownloadHistorySerializer,
     RecommendedPlaylistListSerializer,
     RecommendedPlaylistDetailSerializer,
     SearchResultSerializer,
@@ -57,6 +55,7 @@ from .serializers import (
     UserHistorySerializer,
     UserPublicProfileSerializer,
     UserSearchSummarySerializer,
+    DownloadHistorySerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -661,6 +660,52 @@ class UserHistoryView(generics.ListAPIView):
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
+class DownloadHistoryView(generics.ListAPIView):
+    """
+    Manages the user's download history.
+    """
+    serializer_class = DownloadHistorySerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="دریافت تاریخچه دانلودهای کاربر",
+        description="دریافت لیست آهنگ‌هایی که کاربر برای دانلود اقدام کرده است، بصورت صفحه‌بندی شده و مرتب شده بر اساس آخرین زمان دانلود.",
+        responses={200: DownloadHistorySerializer(many=True)}
+    )
+    def get_queryset(self):
+        return DownloadHistory.objects.filter(user=self.request.user).order_by('-updated_at')
+
+    @extend_schema(
+        summary="ثبت درخواست دانلود آهنگ",
+        description="ثبت یک آهنگ در تاریخچه دانلودهای کاربر. اگر آهنگ قبلاً دانلود شده باشد، زمان آن بروزرسانی می‌شود تا به ابتدای لیست بیاید.",
+        request=inline_serializer(
+            name='DownloadRequest',
+            fields={'song_id': serializers.IntegerField()}
+        ),
+        responses={201: DownloadHistorySerializer, 200: DownloadHistorySerializer}
+    )
+    def post(self, request, *args, **kwargs):
+        song_id = request.data.get('song_id')
+        if not song_id:
+            return Response({"error": "song_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        song = get_object_or_404(Song, id=song_id)
+        
+        obj, created = DownloadHistory.objects.update_or_create(
+            user=request.user,
+            song=song,
+            defaults={'updated_at': timezone.now()}
+        )
+        
+        serializer = self.get_serializer(obj)
+        if created:
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        else:
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
 class UserHistorySearchView(generics.ListAPIView):
     """
     Search within the authenticated user's history.
@@ -733,42 +778,6 @@ class UserHistorySearchView(generics.ListAPIView):
             qs = qs.filter(text_q).distinct()
 
         return qs
-
-    @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
-    class DownloadHistoryView(generics.ListCreateAPIView):
-        """List and create user's download history entries.
-
-        POST: accept JSON {"song": <song_id>} — creates a record or moves existing record to top.
-        GET: paginated list of user's download history ordered by most recent.
-        """
-        permission_classes = [IsAuthenticated]
-        serializer_class = DownloadHistorySerializer
-        pagination_class = StandardResultsSetPagination
-
-        def get_queryset(self):
-            return DownloadHistory.objects.filter(user=self.request.user).order_by('-updated_at', '-created_at')
-
-        def post(self, request, *args, **kwargs):
-            song_id = request.data.get('song') or request.data.get('song_id')
-            if not song_id:
-                return Response({'error': 'song is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-            try:
-                song = Song.objects.get(pk=song_id)
-            except Song.DoesNotExist:
-                return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
-
-            # If record exists, update updated_at to move it to top
-            obj, created = DownloadHistory.objects.get_or_create(user=request.user, song=song)
-            if not created:
-                # bump timestamp
-                obj.save()
-                serializer = self.get_serializer(obj, context={'request': request})
-                return Response(serializer.data, status=status.HTTP_200_OK)
-
-            serializer = self.get_serializer(obj, context={'request': request})
-            headers = self.get_success_headers(serializer.data)
-            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])

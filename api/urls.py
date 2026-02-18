@@ -16,6 +16,7 @@ from .views import (
     MyLibraryView,
     UserHistoryView,
     UserHistorySearchView,
+    DownloadHistoryView,
     UserProfilePublicView,
     R2UploadView,
     SongUploadView,
@@ -174,6 +175,7 @@ urlpatterns = [
     path('profile/my-artists/', MyArtistsView.as_view(), name='my_artists'),
     path('profile/history/', UserHistoryView.as_view(), name='user_history_list'),
     path('profile/history/search/', UserHistorySearchView.as_view(), name='user_history_search'),
+    path('profile/downloads/', DownloadHistoryView.as_view(), name='user_download_history'),
     path('profile/u/<str:unique_id>/', UserProfilePublicView.as_view(), name='user_public_profile'),
     
     path('profile/user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
@@ -181,7 +183,6 @@ urlpatterns = [
     path('profile/user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
     path('profile/user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
     path('profile/user-playlists/<int:pk>/like/', UserPlaylistLikeView.as_view(), name='user_playlist_like'),
-    path('profile/download-history/', DownloadHistoryView.as_view(), name='download_history'),
     
     # Library page endpoint
     path('my-library/', MyLibraryView.as_view(), name='my_library'),
