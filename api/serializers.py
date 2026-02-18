@@ -2408,6 +2408,8 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 class AudioAdSerializer(serializers.ModelSerializer):
     """Public serializer for audio ad objects."""
+    audio_url = serializers.SerializerMethodField()
+    image_cover = serializers.SerializerMethodField()
 
     class Meta:
         model = AudioAd
@@ -2416,6 +2418,18 @@ class AudioAdSerializer(serializers.ModelSerializer):
             'duration', 'skippable_after', 'is_active', 'created_at'
         ]
         read_only_fields = fields
+
+    def get_audio_url(self, obj):
+        if not obj.audio_url:
+            return None
+        signed = generate_signed_r2_url(obj.audio_url)
+        return signed if signed else obj.audio_url
+
+    def get_image_cover(self, obj):
+        if not obj.image_cover:
+            return None
+        signed = generate_signed_r2_url(obj.image_cover)
+        return signed if signed else obj.image_cover
 
 
 class DownloadHistorySerializer(serializers.ModelSerializer):
@@ -2427,22 +2441,6 @@ class DownloadHistorySerializer(serializers.ModelSerializer):
         fields = ['id', 'song', 'updated_at']
         read_only_fields = ['id', 'song', 'updated_at']
 
-    class Meta:
-        model = AudioAd
-        fields = ['id', 'title', 'audio_url', 'image_cover', 'navigate_link', 'duration', 'skippable_after']
-
-    def get_audio_url(self, obj):
-        if not obj.audio_url:
-            return None
-        # generate_signed_r2_url handles stripping CDN base and signing if it's our R2
-        # or returning the original URL if it's external.
-        signed = generate_signed_r2_url(obj.audio_url)
-        return signed if signed else obj.audio_url
-
-    def get_image_cover(self, obj):
-        if not obj.image_cover:
-            return None
-        signed = generate_signed_r2_url(obj.image_cover)
-        return signed if signed else obj.image_cover
+    
 
 
