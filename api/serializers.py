@@ -2407,16 +2407,15 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class AudioAdSerializer(serializers.ModelSerializer):
-    audio_url = serializers.SerializerMethodField()
+    """Public serializer for audio ad objects."""
 
     class Meta:
         model = AudioAd
-        fields = ['id', 'title', 'audio_file', 'audio_url', 'created_at']
-
-    def get_audio_url(self, obj):
-        if obj.audio_file:
-            return obj.audio_file.url
-        return None
+        fields = [
+            'id', 'title', 'audio_url', 'image_cover', 'navigate_link',
+            'duration', 'skippable_after', 'is_active', 'created_at'
+        ]
+        read_only_fields = fields
 
 
 class DownloadHistorySerializer(serializers.ModelSerializer):
@@ -2427,7 +2426,6 @@ class DownloadHistorySerializer(serializers.ModelSerializer):
         model = DownloadHistory
         fields = ['id', 'song', 'updated_at']
         read_only_fields = ['id', 'song', 'updated_at']
-    image_cover = serializers.SerializerMethodField()
 
     class Meta:
         model = AudioAd
