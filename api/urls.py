@@ -58,6 +58,7 @@ from .views import (
     UserPlaylistDetailView,
     UserPlaylistAddSongView,
     UserPlaylistRemoveSongView,
+    UserPlaylistLikeView,
     UserRecommendationView,
     DiscoveriesView,
     LatestReleasesView,
@@ -179,6 +180,7 @@ urlpatterns = [
     path('profile/user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
     path('profile/user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
     path('profile/user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
+    path('profile/user-playlists/<int:pk>/like/', UserPlaylistLikeView.as_view(), name='user_playlist_like'),
     
     # Library page endpoint
     path('my-library/', MyLibraryView.as_view(), name='my_library'),

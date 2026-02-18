@@ -3115,25 +3115,41 @@ class UserPlaylistListCreateView(APIView):
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class UserPlaylistDetailView(APIView):
-    """Retrieve, update, or delete a specific user playlist"""
-    permission_classes = [IsAuthenticated]
-    
-    def get_object(self, pk, user):
+    """Retrieve, update, or delete a specific user playlist
+
+    - GET: AllowAny — if the playlist is `public` anyone can view it. Owner can also view.
+    - PUT/DELETE: only the owner (authenticated) can modify or delete.
+    """
+
+    def get_permissions(self):
+        # Allow unauthenticated access for GET (public playlists), require authentication otherwise
+        if self.request and self.request.method == 'GET':
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def get_object_owner(self, pk, user):
         try:
             return UserPlaylist.objects.get(pk=pk, user=user)
         except UserPlaylist.DoesNotExist:
             return None
-    
+
     @extend_schema(
         summary="جزئیات پلی‌لیست کاربر",
         description="مشاهده، ویرایش یا حذف یک پلی‌لیست شخصی خاص.",
         responses={200: UserPlaylistSerializer}
     )
     def get(self, request, pk):
-        """Retrieve a playlist"""
-        playlist = self.get_object(pk, request.user)
-        if not playlist:
+        """Retrieve a playlist. Public playlists are viewable by anyone."""
+        try:
+            playlist = UserPlaylist.objects.get(pk=pk)
+        except UserPlaylist.DoesNotExist:
             return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # If playlist is public allow; otherwise only owner may view
+        if not playlist.public:
+            if not request.user or not request.user.is_authenticated or playlist.user != request.user:
+                return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+
         serializer = UserPlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
     
@@ -3145,7 +3161,7 @@ class UserPlaylistDetailView(APIView):
     )
     def put(self, request, pk):
         """Update a playlist"""
-        playlist = self.get_object(pk, request.user)
+        playlist = self.get_object_owner(pk, request.user)
         if not playlist:
             return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
         serializer = UserPlaylistSerializer(playlist, data=request.data, partial=True, context={'request': request})
@@ -3161,7 +3177,7 @@ class UserPlaylistDetailView(APIView):
     )
     def delete(self, request, pk):
         """Delete a playlist"""
-        playlist = self.get_object(pk, request.user)
+        playlist = self.get_object_owner(pk, request.user)
         if not playlist:
             return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
         playlist.delete()
@@ -3239,6 +3255,37 @@ class UserPlaylistRemoveSongView(APIView):
             return Response(serializer.data)
         except Song.DoesNotExist:
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
+class UserPlaylistLikeView(APIView):
+    """Like or unlike a user-created playlist (toggle)."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="لایک یا لغو لایک پلی‌لیست کاربر",
+        description="لایک یا لغو لایک یک پلی‌لیست ساخته شده توسط کاربر.",
+        responses={200: inline_serializer(name='UserPlaylistLikeResponse', fields={
+            'liked': serializers.BooleanField(),
+            'likes_count': serializers.IntegerField()
+        })}
+    )
+    def post(self, request, pk):
+        try:
+            playlist = UserPlaylist.objects.get(pk=pk)
+        except UserPlaylist.DoesNotExist:
+            return Response({'detail': 'Playlist not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        # Toggle membership in M2M `liked_by`
+        if playlist.liked_by.filter(id=user.id).exists():
+            playlist.liked_by.remove(user)
+            liked = False
+        else:
+            playlist.liked_by.add(user)
+            liked = True
+
+        return Response({'liked': liked, 'likes_count': playlist.liked_by.count()})
 
 
 class UserProfilePublicView(APIView):
