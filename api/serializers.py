@@ -1618,7 +1618,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
             'album', 'album_title', 'is_single', 'stream_url', 'cover_image',
             'duration_seconds', 'duration_display', 'plays', 'likes_count', 'is_liked',
             'status', 'release_date', 'language', 'description',
-            'created_at', 'display_title'
+            'created_at', 'display_title', 'uploader_unique_id'
         ]
         read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'duration_display', 'display_title']
     
