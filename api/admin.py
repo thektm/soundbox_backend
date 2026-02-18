@@ -6,10 +6,11 @@ from .models import (
     Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
-    PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform
+    PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform, Report
 )
 from .models import OtpCode
 from .models import ActivePlayback
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -113,6 +114,38 @@ class UserHistoryAdmin(admin.ModelAdmin):
 class NotificationSettingAdmin(admin.ModelAdmin):
     list_display = ('user', 'new_song_followed_artists', 'new_album_followed_artists', 'new_playlist', 'new_likes', 'new_follower', 'system_notifications')
     search_fields = ('user__phone_number',)
+
+
+@admin.register(Report)
+class ReportAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'get_target', 'short_text', 'has_reviewed', 'reviewed_at', 'created_at')
+    list_filter = ('has_reviewed', 'created_at')
+    search_fields = ('user__phone_number', 'song__title', 'artist__name', 'text')
+    readonly_fields = ('created_at', 'updated_at')
+    actions = ['mark_reviewed', 'mark_unreviewed']
+
+    def get_target(self, obj):
+        if obj.song:
+            return f"Song: {obj.song.title} (id={obj.song.id})"
+        if obj.artist:
+            return f"Artist: {obj.artist.name} (id={obj.artist.id})"
+        return 'Unknown'
+    get_target.short_description = 'Target'
+
+    def short_text(self, obj):
+        return (obj.text[:75] + '...') if len(obj.text or '') > 75 else (obj.text or '')
+    short_text.short_description = 'Text'
+
+    def mark_reviewed(self, request, queryset):
+        now = timezone.now()
+        updated = queryset.update(has_reviewed=True, reviewed_at=now)
+        self.message_user(request, f'Marked {updated} report(s) as reviewed.')
+    mark_reviewed.short_description = 'Mark selected reports as reviewed'
+
+    def mark_unreviewed(self, request, queryset):
+        updated = queryset.update(has_reviewed=False, reviewed_at=None)
+        self.message_user(request, f'Marked {updated} report(s) as unreviewed.')
+    mark_unreviewed.short_description = 'Mark selected reports as unreviewed'
 
 
 @admin.register(OtpCode)
