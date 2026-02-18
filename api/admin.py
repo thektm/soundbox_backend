@@ -42,9 +42,9 @@ class FollowAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
-    list_display = ('id', 'phone_number', 'roles', 'is_staff', 'is_active', 'date_joined')
+    list_display = ('id', 'phone_number', 'unique_id', 'roles', 'is_staff', 'is_active', 'date_joined')
     list_filter = ('roles', 'is_staff', 'is_active')
-    search_fields = ('phone_number',)
+    search_fields = ('phone_number', 'unique_id')
 
 
 @admin.register(Artist)

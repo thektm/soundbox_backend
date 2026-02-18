@@ -51,6 +51,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     ]
 
     phone_number = models.CharField(max_length=20, unique=True)
+    unique_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
     # Phone verification flag
     is_verified = models.BooleanField(default=False)
     first_name = models.CharField(max_length=150, blank=True)

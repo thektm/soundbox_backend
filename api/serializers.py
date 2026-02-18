@@ -352,9 +352,11 @@ class FollowableEntitySerializer(serializers.Serializer):
         return 'artist' if isinstance(obj, Artist) else 'user'
 
     def get_unique_id(self, obj):
-        if isinstance(obj, Artist):
-            return obj.unique_id
-        return None
+        # Return unique_id for both Artist and User when available
+        try:
+            return getattr(obj, 'unique_id', None)
+        except Exception:
+            return None
 
     def get_name(self, obj):
         if isinstance(obj, Artist):
@@ -425,7 +427,7 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = get_user_model()
         fields = [
-            'id', 'phone_number', 'first_name', 'last_name', 'email',
+            'id', 'phone_number', 'unique_id', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
             'followers_count', 'following_count', 'user_playlists_count', 
             'recently_played', 'notification_setting', 'plan', 'stream_quality',
@@ -1115,6 +1117,7 @@ class SongSerializer(serializers.ModelSerializer):
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     uploader_phone = serializers.CharField(source='uploader.phone_number', read_only=True, allow_null=True)
+    uploader_unique_id = serializers.CharField(source='uploader.unique_id', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
     stream_url = serializers.SerializerMethodField()
@@ -1186,7 +1189,7 @@ class SongSerializer(serializers.ModelSerializer):
             'mood_ids', 'tag_ids', 'description', 'lyrics', 'tempo', 'energy',
             'danceability', 'valence', 'acousticness', 'instrumentalness',
             'live_performed', 'speechiness', 'label', 'producers', 'composers',
-            'lyricists', 'credits', 'uploader', 'uploader_phone', 'created_at',
+            'lyricists', 'credits', 'uploader', 'uploader_phone', 'uploader_unique_id', 'created_at',
             'updated_at', 'display_title', 'similar_songs',
             'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write', 'tag_ids_write'
         ]
@@ -1600,6 +1603,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    uploader_unique_id = serializers.CharField(source='uploader.unique_id', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
     stream_url = serializers.SerializerMethodField()
@@ -1692,6 +1696,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
 class UserPlaylistSerializer(serializers.ModelSerializer):
     """Serializer for UserPlaylist model"""
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    user_unique_id = serializers.CharField(source='user.unique_id', read_only=True)
     songs_count = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
@@ -1709,11 +1714,11 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
     class Meta:
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
         fields = [
-            'id', 'user', 'user_phone', 'title', 'public', 'songs_count',
+            'id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
             'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 
             'type', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'user', 'user_phone', 'songs_count', 'likes_count', 
+        read_only_fields = ['id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count', 
                            'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type', 'songs']
     
     def get_songs_count(self, obj):
@@ -2153,6 +2158,8 @@ class SearchSectionSerializer(serializers.ModelSerializer):
 
     created_by_name = serializers.ReadOnlyField(source='created_by.phone_number')
     updated_by_name = serializers.ReadOnlyField(source='updated_by.phone_number')
+    created_by_unique_id = serializers.ReadOnlyField(source='created_by.unique_id')
+    updated_by_unique_id = serializers.ReadOnlyField(source='updated_by.unique_id')
 
     class Meta:
         model = SearchSection
@@ -2161,7 +2168,7 @@ class SearchSectionSerializer(serializers.ModelSerializer):
             'songs', 'albums', 'playlists', 
             'song_ids', 'album_ids', 'playlist_ids',
             'created_at', 'updated_at', 'created_by', 'updated_by',
-            'created_by_name', 'updated_by_name'
+            'created_by_name', 'updated_by_name', 'created_by_unique_id', 'updated_by_unique_id'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'updated_by']
 
