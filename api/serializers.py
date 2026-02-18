@@ -5,6 +5,7 @@ from .models import (
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     DepositRequest, Report, Notification, AudioAd, UserHistory
+        , DownloadHistory
 )
 
 from .models import BannerAd
@@ -628,6 +629,23 @@ class UserHistorySerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if obj.content_type == UserHistory.TYPE_SONG and obj.song:
             return SongSummarySerializer(obj.song, context={'request': request}).data
+        elif obj.content_type == UserHistory.TYPE_ALBUM and obj.album:
+            return AlbumSummarySerializer(obj.album, context={'request': request}).data
+        elif obj.content_type == UserHistory.TYPE_PLAYLIST and obj.playlist:
+            return SimplePlaylistSerializer(obj.playlist, context={'request': request}).data
+        elif obj.content_type == UserHistory.TYPE_ARTIST and obj.artist:
+            return ArtistSummarySerializer(obj.artist, context={'request': request}).data
+        return None
+
+class DownloadHistorySerializer(serializers.ModelSerializer):
+    """Serializer for DownloadHistory records."""
+    user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    song_detail = SongSummarySerializer(source='song', read_only=True)
+
+    class Meta:
+        model = __import__('api.models', fromlist=['DownloadHistory']).DownloadHistory
+        fields = ['id', 'user', 'user_phone', 'song', 'song_detail', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'user_phone', 'song_detail', 'created_at', 'updated_at']
         elif obj.content_type == UserHistory.TYPE_ALBUM and obj.album:
             return AlbumSummarySerializer(obj.album, context={'request': request}).data
         elif obj.content_type == UserHistory.TYPE_PLAYLIST and obj.playlist:

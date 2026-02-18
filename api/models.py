@@ -950,6 +950,25 @@ class UserHistory(models.Model):
         return f"{self.user.phone_number} viewed {self.content_type}: {item}"
 
 
+
+    class DownloadHistory(models.Model):
+        """Tracks user download attempts for songs.
+
+        - Each (user, song) pair is unique.
+        - `updated_at` is bumped when a duplicate POST is made, so the record moves to the top.
+        """
+        user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='download_history')
+        song = models.ForeignKey('Song', on_delete=models.CASCADE, related_name='download_history')
+        created_at = models.DateTimeField(auto_now_add=True)
+        updated_at = models.DateTimeField(auto_now=True)
+
+        class Meta:
+            unique_together = ('user', 'song')
+            ordering = ['-updated_at', '-created_at']
+
+        def __str__(self):
+            return f"DownloadHistory(user={self.user_id}, song={self.song_id}, updated_at={self.updated_at})"
+
 class Rules(models.Model):
     title = models.CharField(max_length=255)
     content = models.TextField()

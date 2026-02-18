@@ -11,6 +11,7 @@ from .models import (
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount
 )
+from .models import DownloadHistory
 from .models import BannerAd, BannerAdServeCounter
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
@@ -32,6 +33,7 @@ from .serializers import (
     SongStreamSerializer,
     UserPlaylistSerializer,
     UserPlaylistCreateSerializer,
+    DownloadHistorySerializer,
     RecommendedPlaylistListSerializer,
     RecommendedPlaylistDetailSerializer,
     SearchResultSerializer,
@@ -731,6 +733,42 @@ class UserHistorySearchView(generics.ListAPIView):
             qs = qs.filter(text_q).distinct()
 
         return qs
+
+    @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
+    class DownloadHistoryView(generics.ListCreateAPIView):
+        """List and create user's download history entries.
+
+        POST: accept JSON {"song": <song_id>} — creates a record or moves existing record to top.
+        GET: paginated list of user's download history ordered by most recent.
+        """
+        permission_classes = [IsAuthenticated]
+        serializer_class = DownloadHistorySerializer
+        pagination_class = StandardResultsSetPagination
+
+        def get_queryset(self):
+            return DownloadHistory.objects.filter(user=self.request.user).order_by('-updated_at', '-created_at')
+
+        def post(self, request, *args, **kwargs):
+            song_id = request.data.get('song') or request.data.get('song_id')
+            if not song_id:
+                return Response({'error': 'song is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                song = Song.objects.get(pk=song_id)
+            except Song.DoesNotExist:
+                return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            # If record exists, update updated_at to move it to top
+            obj, created = DownloadHistory.objects.get_or_create(user=request.user, song=song)
+            if not created:
+                # bump timestamp
+                obj.save()
+                serializer = self.get_serializer(obj, context={'request': request})
+                return Response(serializer.data, status=status.HTTP_200_OK)
+
+            serializer = self.get_serializer(obj, context={'request': request})
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])

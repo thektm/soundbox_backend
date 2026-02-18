@@ -181,6 +181,7 @@ urlpatterns = [
     path('profile/user-playlists/<int:pk>/add-song/', UserPlaylistAddSongView.as_view(), name='user_playlist_add_song'),
     path('profile/user-playlists/<int:pk>/remove-song/<int:song_id>/', UserPlaylistRemoveSongView.as_view(), name='user_playlist_remove_song'),
     path('profile/user-playlists/<int:pk>/like/', UserPlaylistLikeView.as_view(), name='user_playlist_like'),
+    path('profile/download-history/', DownloadHistoryView.as_view(), name='download_history'),
     
     # Library page endpoint
     path('my-library/', MyLibraryView.as_view(), name='my_library'),
