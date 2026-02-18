@@ -4676,6 +4676,14 @@ class SearchView(APIView):
     def _search_users(self, q):
         # Only search among audience (normal users) and they must have a unique_id
         qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE, unique_id__isnull=False)
+        # exclude the requester if authenticated
+        try:
+            req_user = getattr(self, 'request', None).user
+        except Exception:
+            req_user = None
+        if req_user and getattr(req_user, 'is_authenticated', False):
+            qs = qs.exclude(pk=req_user.pk)
+
         if q:
             qs = qs.filter(unique_id__icontains=q)
         return qs.order_by('-date_joined')
