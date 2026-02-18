@@ -1,6 +1,7 @@
 from django.db.models.signals import post_save, m2m_changed, pre_save
 from django.dispatch import receiver
 from .models import User, Song, Album, Follow, UserPlaylist, Notification, NotificationSetting
+from django.utils.translation import gettext as _
 
 @receiver(post_save, sender=User)
 def create_user_notification_settings(sender, instance, created, **kwargs):
@@ -17,12 +18,25 @@ def notify_new_follower(sender, instance, created, **kwargs):
             # Refresh from DB to ensure setting exists
             setting, _ = NotificationSetting.objects.get_or_create(user=user)
             if setting.new_follower:
-                follower_name = "یک نفر"
+                # Resolve a friendly display name for the follower:
+                def _display_name_for_user(u: User):
+                    if not u:
+                        return "یک کاربر"
+                    # Prefer unique_id, then first+last name, then fallback
+                    if getattr(u, 'unique_id', None):
+                        return u.unique_id
+                    names = " ".join(filter(None, [getattr(u, 'first_name', '') or '', getattr(u, 'last_name', '') or ''])).strip()
+                    if names:
+                        return names
+                    return "یک کاربر"
+
                 if instance.follower_user:
-                    follower_name = instance.follower_user.phone_number
+                    follower_name = _display_name_for_user(instance.follower_user)
                 elif instance.follower_artist:
                     follower_name = instance.follower_artist.name
-                
+                else:
+                    follower_name = "یک کاربر"
+
                 Notification.objects.create(
                     user=user,
                     text=f"{follower_name} شروع به دنبال کردن شما کرد."
@@ -38,12 +52,24 @@ def notify_playlist_like(sender, instance, action, pk_set, **kwargs):
         try:
             setting, _ = NotificationSetting.objects.get_or_create(user=owner)
             if setting.new_likes:
+                def _display_name_for_user_by_pk(pk):
+                    try:
+                        u = User.objects.get(pk=pk)
+                        if getattr(u, 'unique_id', None):
+                            return u.unique_id
+                        names = " ".join(filter(None, [getattr(u, 'first_name', '') or '', getattr(u, 'last_name', '') or ''])).strip()
+                        if names:
+                            return names
+                        return "یک کاربر"
+                    except User.DoesNotExist:
+                        return "یک کاربر"
+
                 for pk in pk_set:
                     if pk != owner.id:
-                        liker = User.objects.get(pk=pk)
+                        liker_name = _display_name_for_user_by_pk(pk)
                         Notification.objects.create(
                             user=owner,
-                            text=f"{liker.phone_number} لیست پخش '{instance.title}' شما را لایک کرد."
+                            text=f"{liker_name} لیست پخش '{instance.title}' شما را لایک کرد."
                         )
         except Exception:
             pass
