@@ -645,7 +645,7 @@ class UserSearchSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'type']
+        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'plan', 'type']
 
     def get_followers_count(self, obj):
         return Follow.objects.filter(followed_user=obj).count()
@@ -669,7 +669,7 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'unique_id', 'first_name', 'last_name', 
             'followers_count', 'following_count', 'is_following',
-            'user_playlists'
+            'plan', 'user_playlists'
         ]
 
     def get_followers_count(self, obj):
@@ -2133,6 +2133,7 @@ class SearchResultSerializer(serializers.Serializer):
                 'unique_id': obj.unique_id,
                 'first_name': obj.first_name,
                 'last_name': obj.last_name,
+                'plan': obj.plan,
             }
         return {}
 
