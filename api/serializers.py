@@ -637,6 +637,59 @@ class UserHistorySerializer(serializers.ModelSerializer):
         return None
 
 
+class UserSearchSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for users in search results"""
+    followers_count = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='user')
+
+    class Meta:
+        model = User
+        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'type']
+
+    def get_followers_count(self, obj):
+        return Follow.objects.filter(followed_user=obj).count()
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return Follow.objects.filter(follower_user=request.user, followed_user=obj).exists()
+        return False
+
+
+class UserPublicProfileSerializer(serializers.ModelSerializer):
+    """Serializer for a user's public profile"""
+    followers_count = serializers.SerializerMethodField()
+    following_count = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
+    user_playlists = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'unique_id', 'first_name', 'last_name', 
+            'followers_count', 'following_count', 'is_following',
+            'user_playlists'
+        ]
+
+    def get_followers_count(self, obj):
+        return Follow.objects.filter(followed_user=obj).count()
+
+    def get_following_count(self, obj):
+        return Follow.objects.filter(follower_user=obj).count()
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return Follow.objects.filter(follower_user=request.user, followed_user=obj).exists()
+        return False
+
+    def get_user_playlists(self, obj):
+        # Only public user playlists
+        qs = obj.user_playlists.filter(public=True)
+        return UserPlaylistSerializer(qs, many=True, context=self.context).data
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
     # allow callers to request artist role at registration time (boolean)
@@ -1972,11 +2025,14 @@ class SearchResultSerializer(serializers.Serializer):
         if isinstance(obj, Artist): return 'artist'
         if isinstance(obj, Album): return 'album'
         if isinstance(obj, (Playlist, UserPlaylist)): return 'playlist'
+        if isinstance(obj, User): return 'user'
         return 'unknown'
 
     def get_title(self, obj):
         if hasattr(obj, 'title'): return obj.title
         if hasattr(obj, 'name'): return obj.name
+        if isinstance(obj, User): 
+            return obj.unique_id or f"{obj.first_name} {obj.last_name}".strip()
         return ""
 
     def get_subtitle(self, obj):
@@ -1987,6 +2043,7 @@ class SearchResultSerializer(serializers.Serializer):
             if hasattr(obj, 'user'): return f"By {obj.user.phone_number}"
             if hasattr(obj, 'created_by'): return obj.created_by
             return "Playlist"
+        if isinstance(obj, User): return "User"
         return ""
 
     def get_image(self, obj):
@@ -2055,6 +2112,12 @@ class SearchResultSerializer(serializers.Serializer):
             return {
                 'release_date': obj.release_date,
                 'artist_name': obj.artist.name if obj.artist else None,
+            }
+        if isinstance(obj, User):
+            return {
+                'unique_id': obj.unique_id,
+                'first_name': obj.first_name,
+                'last_name': obj.last_name,
             }
         return {}
 

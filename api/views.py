@@ -53,6 +53,8 @@ from .serializers import (
     SimplePlaylistSerializer,
     ArtistSocialAccountSerializer,
     UserHistorySerializer,
+    UserPublicProfileSerializer,
+    UserSearchSummarySerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -3239,6 +3241,25 @@ class UserPlaylistRemoveSongView(APIView):
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
+class UserProfilePublicView(APIView):
+    """
+    Public profile of a normal user.
+    """
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="مشاهده پروفایل عمومی کاربر",
+        description="دریافت اطلاعات عمومی یک کاربر معمولی شامل آمار فالوورها و پلی‌لیست‌های او. شناسه منحصر‌به‌فرد کاربر (unique_id) به عنوان ورودی استفاده می‌شود.",
+        tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'],
+        responses={200: UserPublicProfileSerializer}
+    )
+    def get(self, request, unique_id):
+        user = get_object_or_404(User, unique_id=unique_id)
+        
+        serializer = UserPublicProfileSerializer(user, context={'request': request})
+        
+        return Response(serializer.data)
+
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class HomeSummaryView(APIView):
@@ -4509,7 +4530,7 @@ class SearchView(APIView):
         description="جستجو در آهنگ‌ها، هنرمندان، آلبوم‌ها و پلی‌لیست‌ها با قابلیت فیلتر بر اساس سبک و حال و هوا.",
         parameters=[
             OpenApiParameter("q", OpenApiTypes.STR, description="متن جستجو"),
-            OpenApiParameter("type", OpenApiTypes.STR, description="نوع جستجو (song, artist, album, playlist)"),
+            OpenApiParameter("type", OpenApiTypes.STR, description="نوع جستجو (song, artist, album, playlist, user)"),
             OpenApiParameter("moods", OpenApiTypes.STR, description="فیلتر بر اساس حال و هوا (آیدی یا اسلاگ)", many=True),
             OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
             OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
@@ -4549,8 +4570,10 @@ class SearchView(APIView):
                 items = self._search_albums(q)
             elif search_type == 'playlist':
                 items = self._search_playlists(q, moods)
+            elif search_type == 'user':
+                items = self._search_users(q)
             else:
-                return Response({'error': 'Invalid type. Must be song, artist, album, or playlist.'}, status=400)
+                return Response({'error': 'Invalid type. Must be song, artist, album, playlist, or user.'}, status=400)
             
             paginated_items = items[offset:offset + page_size]
             results = list(paginated_items)
@@ -4649,6 +4672,13 @@ class SearchView(APIView):
                 admin_qs = admin_qs.filter(moods__slug__in=moods).distinct()
                 
         return admin_qs.order_by('-created_at')
+
+    def _search_users(self, q):
+        # Only search among audience (normal users) and they must have a unique_id
+        qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE, unique_id__isnull=False)
+        if q:
+            qs = qs.filter(unique_id__icontains=q)
+        return qs.order_by('-date_joined')
 
 
 @extend_schema(tags=['Search Page Endpoints اندپوینت های صفحه جستجو'])

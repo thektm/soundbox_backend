@@ -16,6 +16,7 @@ from .views import (
     MyLibraryView,
     UserHistoryView,
     UserHistorySearchView,
+    UserProfilePublicView,
     R2UploadView,
     SongUploadView,
     ArtistListView,
@@ -172,6 +173,7 @@ urlpatterns = [
     path('profile/my-artists/', MyArtistsView.as_view(), name='my_artists'),
     path('profile/history/', UserHistoryView.as_view(), name='user_history_list'),
     path('profile/history/search/', UserHistorySearchView.as_view(), name='user_history_search'),
+    path('profile/u/<str:unique_id>/', UserProfilePublicView.as_view(), name='user_public_profile'),
     
     path('profile/user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
     path('profile/user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
