@@ -6823,5 +6823,5 @@ class PremiumPlanPriceView(APIView):
         return Response({
             'plan': 'premium',
             'price': price_val,
-            'currency': currency,
+            
         }, status=status.HTTP_200_OK)
