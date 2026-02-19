@@ -6796,3 +6796,27 @@ class NotificationMarkReadView(APIView):
             Notification.objects.filter(user=user, has_read=False).update(has_read=True)
             
         return Response({"message": "All notifications marked as read"})
+
+
+@extend_schema(
+    summary="Get premium plan price",
+    description="Returns the current Premium plan price and currency for audience clients (GET only).",
+    responses={200: OpenApiTypes.OBJECT}
+)
+class PremiumPlanPriceView(APIView):
+    """Public endpoint that returns the Premium plan price."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        # Read from settings if provided; fall back to a sensible default.
+        price = getattr(settings, 'PREMIUM_PLAN_PRICE', 4.99)
+        currency = getattr(settings, 'PREMIUM_PLAN_CURRENCY', 'USD')
+        try:
+            price_val = float(price)
+        except Exception:
+            price_val = 4.99
+        return Response({
+            'plan': 'premium',
+            'price': price_val,
+            'currency': currency,
+        }, status=status.HTTP_200_OK)
