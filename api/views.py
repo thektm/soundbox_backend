@@ -6808,13 +6808,18 @@ class PremiumPlanPriceView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        # Read from settings if provided; fall back to a sensible default.
-        price = getattr(settings, 'PREMIUM_PLAN_PRICE', 4.99)
+        # Prefer the latest PlayConfiguration record's premium_plan_price.
+        config = PlayConfiguration.objects.order_by('-updated_at').first()
+        if config and config.premium_plan_price is not None:
+            try:
+                price_val = float(config.premium_plan_price)
+            except Exception:
+                price_val = float(getattr(settings, 'PREMIUM_PLAN_PRICE', 4.99))
+        else:
+            price_val = float(getattr(settings, 'PREMIUM_PLAN_PRICE', 4.99))
+
         currency = getattr(settings, 'PREMIUM_PLAN_CURRENCY', 'USD')
-        try:
-            price_val = float(price)
-        except Exception:
-            price_val = 4.99
+
         return Response({
             'plan': 'premium',
             'price': price_val,
