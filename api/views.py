@@ -691,6 +691,22 @@ class UserHistoryView(generics.ListAPIView):
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
+class UserHistoryDeleteView(generics.DestroyAPIView):
+    """
+    Delete a single user history entry. Only the owner may delete their history record.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserHistorySerializer
+
+    def get_queryset(self):
+        # restrict queryset to entries owned by the authenticated user
+        return UserHistory.objects.filter(user=self.request.user)
+
+    def delete(self, request, *args, **kwargs):
+        return self.destroy(request, *args, **kwargs)
+
+
+@extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
 class DownloadHistoryView(generics.ListAPIView):
     """
     Manages the user's download history.
@@ -734,6 +750,21 @@ class DownloadHistoryView(generics.ListAPIView):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         else:
             return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
+class DownloadHistoryDeleteView(generics.DestroyAPIView):
+    """
+    Delete a single download history entry for the authenticated user.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = DownloadHistorySerializer
+
+    def get_queryset(self):
+        return DownloadHistory.objects.filter(user=self.request.user)
+
+    def delete(self, request, *args, **kwargs):
+        return self.destroy(request, *args, **kwargs)
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
