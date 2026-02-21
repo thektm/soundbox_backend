@@ -6,6 +6,7 @@ from .models import (
     Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
+    InitialCheck,
     PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform, Report
 )
 from .models import OtpCode
@@ -114,6 +115,19 @@ class UserHistoryAdmin(admin.ModelAdmin):
 class NotificationSettingAdmin(admin.ModelAdmin):
     list_display = ('user', 'new_song_followed_artists', 'new_album_followed_artists', 'new_playlist', 'new_likes', 'new_follower', 'system_notifications')
     search_fields = ('user__phone_number',)
+
+
+@admin.register(InitialCheck)
+class InitialCheckAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'genres_list', 'created_at', 'updated_at')
+    list_filter = ('created_at', 'updated_at')
+    search_fields = ('user__phone_number', 'genres__name')
+    readonly_fields = ('created_at', 'updated_at')
+    filter_horizontal = ('genres',)
+
+    def genres_list(self, obj):
+        return ', '.join([g.name for g in obj.genres.all()])
+    genres_list.short_description = 'Genres'
 
 
 @admin.register(Report)
