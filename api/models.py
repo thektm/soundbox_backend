@@ -1158,5 +1158,15 @@ class Notification(models.Model):
     def __str__(self):
         target = f"User: {self.user.phone_number}" if self.user else f"Artist: {self.artist.name}"
         return f"Notification for {target}: {self.text[:20]}..."
-        return self.song or self.artist
+
+
+class InitialCheck(models.Model):
+    """User initial genre selection for personalization"""
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='initial_check')
+    genres = models.ManyToManyField('Genre', related_name='initial_checks')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"InitialCheck for {self.user.phone_number}"
 

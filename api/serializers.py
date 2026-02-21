@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest, Report, Notification, AudioAd, UserHistory, DownloadHistory
+    DepositRequest, Report, Notification, AudioAd, UserHistory, DownloadHistory, InitialCheck
 )
 
 from .models import BannerAd
@@ -1107,9 +1107,11 @@ class PopularAlbumSerializer(AlbumSerializer):
 
 class GenreSerializer(serializers.ModelSerializer):
     """Serializer for Genre model"""
+    title = serializers.CharField(source='name', read_only=True)
+
     class Meta:
         model = Genre
-        fields = ['id', 'name', 'slug']
+        fields = ['id', 'name', 'title', 'slug']
         read_only_fields = ['id']
 
 
@@ -2441,6 +2443,24 @@ class DownloadHistorySerializer(serializers.ModelSerializer):
         fields = ['id', 'song', 'updated_at']
         read_only_fields = ['id', 'song', 'updated_at']
 
-    
+
+class InitialCheckSerializer(serializers.ModelSerializer):
+    """Serializer for initial genre selection for personalization"""
+    genres = GenreSerializer(many=True, read_only=True)
+    genre_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Genre.objects.all(), many=True, write_only=True, source='genres'
+    )
+
+    class Meta:
+        model = InitialCheck
+        fields = ['id', 'genres', 'genre_ids', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        genres = validated_data.pop('genres', [])
+        initial_check, created = InitialCheck.objects.get_or_create(user=user)
+        initial_check.genres.set(genres)
+        return initial_check
 
 

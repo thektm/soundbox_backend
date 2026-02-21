@@ -3,6 +3,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     UserProfileView,
+    InitialCheckView,
     NotificationSettingUpdateView,
     StreamQualityUpdateView,
     UserFollowView,
@@ -165,6 +166,7 @@ urlpatterns = [
     
     # ---  Profile Page Endpoints ---
     path('profile/', UserProfileView.as_view(), name='user_profile'),
+    path('profile/initial-check/', InitialCheckView.as_view(), name='initial_check'),
     path('profile/settings/notifications/', NotificationSettingUpdateView.as_view(), name='user_notification_settings'),
     path('profile/settings/stream-quality/', StreamQualityUpdateView.as_view(), name='user_stream_quality_settings'),
     path('profile/liked-songs/', LikedSongsView.as_view(), name='liked_songs'),

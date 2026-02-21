@@ -9,7 +9,8 @@ from .models import (
     User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song, 
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, DownloadHistory
+    ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, DownloadHistory,
+    InitialCheck
 )
 from .models import BannerAd, BannerAdServeCounter
 from .serializers import (
@@ -56,6 +57,7 @@ from .serializers import (
     UserPublicProfileSerializer,
     UserSearchSummarySerializer,
     DownloadHistorySerializer,
+    InitialCheckSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -245,6 +247,35 @@ class UserProfileView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class InitialCheckView(APIView):
+    """GET and POST initial user genre preferences."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(
+        summary="دریافت چک اولیه کاربر",
+        description="دریافت لیست سبک‌های انتخاب شده توسط کاربر در اولین ورود.",
+        responses={200: InitialCheckSerializer}
+    )
+    def get(self, request):
+        initial_check = get_object_or_404(InitialCheck, user=request.user)
+        serializer = InitialCheckSerializer(initial_check)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="ذخیره چک اولیه کاربر",
+        description="ذخیره لیست سبک‌های مورد علاقه در اولین ورود.",
+        request=InitialCheckSerializer,
+        responses={201: InitialCheckSerializer}
+    )
+    def post(self, request):
+        # We handle both update and create in the serializer's create method
+        serializer = InitialCheckSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -4287,8 +4318,21 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         for s in recent_songs_10:
             activity_genres.update(s.genres.all())
         
-        used_genres = set(user_top_genres)
-        used_moods = set(user_top_moods)
+        # 1.5 Incorporate InitialCheck preferences
+        try:
+            # check if user has submitted initial preferences
+            initial_check = InitialCheck.objects.filter(user=user).prefetch_related('genres').first()
+            if initial_check:
+                initial_genres = list(initial_check.genres.all())
+                for g in initial_genres:
+                    if g not in user_top_genres:
+                        user_top_genres.append(g)
+                    activity_genres.add(g)
+        except Exception:
+            pass
+
+        used_genres = set()
+        used_moods = set()
 
         # 2. Prepare Platform Popular
         platform_top_genres = list(Genre.objects.annotate(
@@ -4363,8 +4407,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 used_moods.add(m)
 
         # -- CATEGORY 6: Platform Genre (Fill if needed) --
-        available_platform_genres = [g for g in platform_top_genres if g not in used_genres]
-        for pg in available_platform_genres:
+        # Also include extra user genres from InitialCheck/Activity if we have more than 2
+        extra_user_genres = [g for g in user_top_genres if g not in used_genres]
+        available_genres = extra_user_genres + [g for g in platform_top_genres if g not in used_genres and g not in extra_user_genres]
+
+        for pg in available_genres:
             if len(recommendations_config) >= 6: break
             songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=pg).order_by('?')[:15])
             if songs:
