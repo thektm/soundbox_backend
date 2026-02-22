@@ -3420,56 +3420,53 @@ class UserProfilePublicView(APIView):
 class SedaBoxProfileView(APIView):
     """
     SedaBox (platform) profile view.
-    Returns:
-    - profile info (user details)
-    - number of followers/following
-    - all playlists (admin/system created)
-    - all event playlists
-    - all search section playlists
-    - all recommended playlists (general)
+    Structure matches a normal user's public profile, but populates 
+    `user_playlists` from all platform Sources (Admin/System/Event/Recommended).
     """
     permission_classes = [AllowAny]
 
     @extend_schema(
         summary="SedaBox Platform Profile",
         description="Returns the profile details and all public playlists for the SedaBox platform user.",
-        tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل']
+        tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'],
+        responses={200: UserPublicProfileSerializer}
     )
     def get(self, request):
         user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
         if not user:
             return Response({"error": "SedaBox user not found"}, status=status.HTTP_404_NOT_FOUND)
             
-        # Standard user info
+        # Standard user info (handles followers, likes, etc.)
         user_serializer = UserPublicProfileSerializer(user, context={'request': request})
         profile_data = user_serializer.data
         
-        # All public admin/system playlists
+        # 1. All official admin/system playlists
         playlists = Playlist.objects.filter(created_by__in=['admin', 'system'])
-        playlists_serializer = SimplePlaylistSerializer(playlists, many=True, context={'request': request})
+        playlists_data = SimplePlaylistSerializer(playlists, many=True, context={'request': request}).data
         
-        # All event playlists
+        # 2. All event playlists
         event_playlists = EventPlaylist.objects.all()
-        event_playlists_serializer = EventPlaylistSerializer(event_playlists, many=True, context={'request': request})
+        event_playlists_data = EventPlaylistSerializer(event_playlists, many=True, context={'request': request}).data
         
-        # All search sections - including their playlists
-        search_sections = SearchSection.objects.filter(playlists__isnull=False).distinct()
-        search_sections_serializer = SearchSectionSerializer(search_sections, many=True, context={'request': request})
-        
-        # All recommended playlists that are general (user__isnull=True)
+        # 3. All general recommended playlists
         recommended_playlists = RecommendedPlaylist.objects.filter(user__isnull=True)
-        recommended_playlists_serializer = RecommendedPlaylistListSerializer(recommended_playlists, many=True, context={'request': request})
+        recommended_playlists_data = RecommendedPlaylistListSerializer(recommended_playlists, many=True, context={'request': request}).data
+
+        # 4. Extract any unique playlists from search sections that might have been missed
+        # (Though usually admin/system filter covers them, this ensures all featured ones are present)
+        search_playlists = Playlist.objects.filter(search_sections__isnull=False).distinct()
+        existing_ids = {p['id'] for p in playlists_data}
+        extra_search_playlists = [p for p in search_playlists if p.id not in existing_ids]
+        if extra_search_playlists:
+            extra_data = SimplePlaylistSerializer(extra_search_playlists, many=True, context={'request': request}).data
+            playlists_data.extend(extra_data)
         
-        # Combine everything
-        response_data = {
-            **profile_data,
-            'official_playlists': playlists_serializer.data,
-            'event_playlists': event_playlists_serializer.data,
-            'search_section_playlists': search_sections_serializer.data,
-            'recommended_playlists': recommended_playlists_serializer.data
-        }
+        # Combine all into the `user_playlists` object to match normal profile structure
+        # Merging different types (normal-playlist, event-playlist, recommended)
+        # Each serializer already includes a `type` field to distinguish them.
+        profile_data['user_playlists'] = playlists_data + event_playlists_data + recommended_playlists_data
         
-        return Response(response_data)
+        return Response(profile_data)
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])

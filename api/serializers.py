@@ -284,6 +284,7 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
     """Summary serializer for normal Playlist model used in history/library"""
     songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
     cover_image = serializers.SerializerMethodField()
     top_three_song_covers = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
@@ -296,9 +297,13 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
         model = Playlist
         fields = [
             'id', 'title', 'description', 'cover_image', 
-            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 
+            'top_three_song_covers', 'songs_count', 'is_liked', 'likes_count', 'genre_names', 
             'mood_names', 'type', 'generated_by', 'creator_unique_id'
         ]
+
+    def get_likes_count(self, obj):
+        from .models import PlaylistLike
+        return PlaylistLike.objects.filter(playlist=obj).count()
 
     def get_creator_unique_id(self, obj):
         from .models import User
@@ -2195,10 +2200,11 @@ class EventPlaylistSerializer(serializers.ModelSerializer):
     playlists = PlaylistForEventSerializer(many=True, read_only=True)
     generated_by = serializers.ReadOnlyField(default='admin')
     creator_unique_id = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='event-playlist')
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id']
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
 
     def get_creator_unique_id(self, obj):
         from .models import User
@@ -2213,10 +2219,11 @@ class PlaylistCoverSerializer(serializers.ModelSerializer):
     cover_image = serializers.SerializerMethodField()
     generated_by = serializers.CharField(source='created_by', read_only=True)
     creator_unique_id = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='normal-playlist')
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'generated_by', 'creator_unique_id']
+        fields = ['id', 'title', 'description', 'cover_image', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
@@ -2254,10 +2261,11 @@ class EventPlaylistListSerializer(serializers.ModelSerializer):
     playlists = PlaylistCoverSerializer(many=True, read_only=True)
     generated_by = serializers.ReadOnlyField(default='admin')
     creator_unique_id = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='event-playlist')
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id']
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
@@ -2291,10 +2299,11 @@ class EventPlaylistDetailSerializer(serializers.ModelSerializer):
     playlists = PlaylistDetailForEventSerializer(many=True, read_only=True)
     generated_by = serializers.ReadOnlyField(default='admin')
     creator_unique_id = serializers.SerializerMethodField()
+    type = serializers.ReadOnlyField(default='event-playlist')
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id']
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
