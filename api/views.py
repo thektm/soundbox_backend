@@ -3440,15 +3440,10 @@ class SedaBoxProfileView(APIView):
         user_serializer = UserPublicProfileSerializer(user, context={'request': request})
         profile_data = user_serializer.data
         
-        # Build a unified, paginated list of playlist summaries WITHOUT embedding full song lists.
-        # We'll collect admin/system playlists, all playlists referenced by event groups,
-        # and global recommended playlists, serialize them with summary serializers
-        # and return a paginated object under `user_playlists`.
+        # Collect all Playlist records (this covers admin/system, search-section and general playlists)
+        all_playlists_qs = Playlist.objects.all().distinct()
 
-        # Admin / System playlists
-        admin_playlists = Playlist.objects.filter(created_by__in=['admin', 'system']).distinct()
-
-        # Event playlists: collect inner Playlist objects referenced by EventPlaylist groups
+        # Ensure we also include any playlists referenced by EventPlaylist (defensive)
         event_groups = EventPlaylist.objects.prefetch_related('playlists').all()
         event_inner_playlists = []
         for eg in event_groups:
@@ -3458,27 +3453,78 @@ class SedaBoxProfileView(APIView):
             except Exception:
                 continue
 
-        # Recommended playlists that are global (not user-scoped)
-        recommended_playlists = RecommendedPlaylist.objects.filter(user__isnull=True)
+        # Recommended playlists related to the SedaBox user (global + those owned by the platform user)
+        recommended_playlists = RecommendedPlaylist.objects.filter(
+            Q(user__isnull=True) | Q(user=user)
+        ).distinct()
 
-        # Serialize into lightweight summaries (these serializers do NOT include full song lists)
-        admin_data = SimplePlaylistSerializer(admin_playlists, many=True, context={'request': request}).data
-        event_data = SimplePlaylistSerializer(event_inner_playlists, many=True, context={'request': request}).data
-        recommended_data = PlaylistSummarySerializer(recommended_playlists, many=True, context={'request': request}).data
+        # Serialize items but keep a sort timestamp for each (use updated_at when available, else created_at)
+        unified_items = []
 
-        # Combine and deduplicate by (type, id/unique_id)
-        combined = admin_data + event_data + recommended_data
+        # Helper to get timestamp from model instance
+        def _ts(obj):
+            if hasattr(obj, 'updated_at') and getattr(obj, 'updated_at'):
+                return obj.updated_at
+            if hasattr(obj, 'created_at') and getattr(obj, 'created_at'):
+                return obj.created_at
+            return None
+
+        # Add Playlist model records (summary serializer)
+        for p in all_playlists_qs:
+            try:
+                data = SimplePlaylistSerializer(p, context={'request': request}).data
+                data['_sort_ts'] = _ts(p)
+                # mark type if missing
+                if 'type' not in data:
+                    data['type'] = 'normal-playlist'
+                unified_items.append(data)
+            except Exception:
+                continue
+
+        # Add any event inner playlists not already present (defensive de-dupe by id)
+        for p in event_inner_playlists:
+            try:
+                # skip if already included by id
+                if any((i.get('id') and i.get('id') == p.id) for i in unified_items):
+                    continue
+                data = SimplePlaylistSerializer(p, context={'request': request}).data
+                data['_sort_ts'] = _ts(p)
+                if 'type' not in data:
+                    data['type'] = 'normal-playlist'
+                unified_items.append(data)
+            except Exception:
+                continue
+
+        # Add RecommendedPlaylist items (use PlaylistSummarySerializer to match summary fields)
+        for rp in recommended_playlists:
+            try:
+                data = PlaylistSummarySerializer(rp, context={'request': request}).data
+                data['_sort_ts'] = _ts(rp)
+                if 'type' not in data:
+                    data['type'] = 'recommended'
+                unified_items.append(data)
+            except Exception:
+                continue
+
+        # Deduplicate combined list by (type, id/unique_id)
         seen = set()
-        unique = []
-        for item in combined:
+        deduped = []
+        for item in unified_items:
             key_id = item.get('id') or item.get('unique_id') or ''
             key = (item.get('type', 'playlist'), str(key_id))
             if key in seen:
                 continue
             seen.add(key)
-            unique.append(item)
+            deduped.append(item)
 
-        # Manual pagination so we can keep the outer profile structure intact
+        # Sort by timestamp descending (use None as oldest)
+        deduped.sort(key=lambda x: x.get('_sort_ts') or timezone.make_aware(timezone.datetime(1970,1,1)), reverse=True)
+
+        # Remove internal sort field before returning
+        for it in deduped:
+            it.pop('_sort_ts', None)
+
+        # Manual pagination
         try:
             page = int(request.query_params.get('page', 1))
         except (TypeError, ValueError):
@@ -3488,10 +3534,10 @@ class SedaBoxProfileView(APIView):
         except (TypeError, ValueError):
             page_size = 20
 
-        total = len(unique)
+        total = len(deduped)
         start = (page - 1) * page_size
         end = start + page_size
-        page_items = unique[start:end]
+        page_items = deduped[start:end]
         has_next = total > end
 
         next_url = None
