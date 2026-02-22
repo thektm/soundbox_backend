@@ -3489,7 +3489,7 @@ class SedaBoxProfileView(APIView):
         responses={200: UserPublicProfileSerializer}
     )
     def get(self, request):
-        user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        user = User.objects.filter( last_name="صداباکس").first()
         if not user:
             return Response({"error": "SedaBox user not found"}, status=status.HTTP_404_NOT_FOUND)
             
