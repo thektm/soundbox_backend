@@ -1223,9 +1223,9 @@ class LikedSongsSearchView(APIView):
             
             # Added more comprehensive normalized checks
             qs = qs.annotate(
-                st_clean=Replace(Replace('song__title', Value(' '), Value('')), Value('\u200c'), Value('')),
-                sa_clean=Replace(Replace('song__artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
-                sla_clean=Replace(Replace('song__album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                st_clean=Replace(Replace(Cast('song__title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                sa_clean=Replace(Replace(Cast('song__artist__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                sla_clean=Replace(Replace(Cast('song__album__title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
             token_q |= (
                 Q(st_clean__icontains=clean_token) |
@@ -1266,8 +1266,8 @@ class LikedAlbumsSearchView(APIView):
 
         # Annotate with space-removed fields for comprehensive search
         qs = qs.annotate(
-            at_clean=Replace(Replace('album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
-            aa_clean=Replace(Replace('album__artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
+            at_clean=Replace(Replace(Cast('album__title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+            aa_clean=Replace(Replace(Cast('album__artist__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
         )
 
         for token in parts:
@@ -4965,14 +4965,14 @@ class SearchView(APIView):
             q_clean = q.replace(' ', '').replace('\u200c', '')
             
             qs = qs.annotate(
-                t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
-                a_clean=Replace(Replace('artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
-                al_clean=Replace(Replace('album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                t_clean=Replace(Replace(Cast('title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                a_clean=Replace(Replace(Cast('artist__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                al_clean=Replace(Replace(Cast('album__title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
                 # Cast JSONFields to TextField before applying string Replace
-                p_clean=Replace(Replace(Cast('producers', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
-                c_clean=Replace(Replace(Cast('composers', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
-                l_clean=Replace(Replace(Cast('lyricists', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
-                f_clean=Replace(Replace(Cast('featured_artists', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
+                p_clean=Replace(Replace(Cast('producers', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                c_clean=Replace(Replace(Cast('composers', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                l_clean=Replace(Replace(Cast('lyricists', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                f_clean=Replace(Replace(Cast('featured_artists', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
 
             combined = Q(t_clean__icontains=q_clean) | \
@@ -5006,7 +5006,7 @@ class SearchView(APIView):
         if q:
             q_clean = q.replace(' ', '').replace('\u200c', '')
             qs = qs.annotate(
-                n_clean=Replace(Replace('name', Value(' '), Value('')), Value('\u200c'), Value('')),
+                n_clean=Replace(Replace(Cast('name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
             combined = Q(n_clean__icontains=q_clean) | Q(bio__icontains=q)
             
@@ -5022,8 +5022,8 @@ class SearchView(APIView):
         if q:
             q_clean = q.replace(' ', '').replace('\u200c', '')
             qs = qs.annotate(
-                t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
-                a_clean=Replace(Replace('artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
+                t_clean=Replace(Replace(Cast('title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                a_clean=Replace(Replace(Cast('artist__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
             combined = Q(t_clean__icontains=q_clean) | \
                        Q(a_clean__icontains=q_clean) | \
@@ -5045,7 +5045,7 @@ class SearchView(APIView):
         if q:
             q_clean = q.replace(' ', '').replace('\u200c', '')
             admin_qs = admin_qs.annotate(
-                t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                t_clean=Replace(Replace(Cast('title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
             combined = Q(t_clean__icontains=q_clean) | Q(description__icontains=q)
             
@@ -5077,9 +5077,9 @@ class SearchView(APIView):
         if q:
             q_clean = q.replace(' ', '').replace('\u200c', '')
             qs = qs.annotate(
-                u_clean=Replace(Replace('unique_id', Value(' '), Value('')), Value('\u200c'), Value('')),
-                f_clean=Replace(Replace('first_name', Value(' '), Value('')), Value('\u200c'), Value('')),
-                l_clean=Replace(Replace('last_name', Value(' '), Value('')), Value('\u200c'), Value('')),
+                u_clean=Replace(Replace(Cast('unique_id', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                f_clean=Replace(Replace(Cast('first_name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                l_clean=Replace(Replace(Cast('last_name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
             combined = Q(u_clean__icontains=q_clean) | \
                        Q(f_clean__icontains=q_clean) | \
