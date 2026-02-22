@@ -4931,17 +4931,26 @@ class SearchView(APIView):
     def _search_songs(self, q, moods=None):
         qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album')
         if q:
-            # Complex matching: title, description, lyrics, producers, composers, lyricists, artist name, album title
-            qs = qs.filter(
-                Q(title__icontains=q) |
-                Q(description__icontains=q) |
-                Q(lyrics__icontains=q) |
-                Q(producers__icontains=q) |
-                Q(composers__icontains=q) |
-                Q(lyricists__icontains=q) |
-                Q(artist__name__icontains=q) |
-                Q(album__title__icontains=q)
-            )
+            # Complex matching: handle both spaced and non-spaced variants so
+            # searches like "بهنام بانی" match "بهنامبانی" and vice versa.
+            variants = set()
+            q_norm = re.sub(r'\s+', ' ', q).strip()
+            variants.add(q_norm)
+            variants.add(q_norm.replace(' ', ''))
+
+            combined = Q()
+            for v in variants:
+                combined |= (
+                    Q(title__icontains=v) |
+                    Q(description__icontains=v) |
+                    Q(lyrics__icontains=v) |
+                    Q(producers__icontains=v) |
+                    Q(composers__icontains=v) |
+                    Q(lyricists__icontains=v) |
+                    Q(artist__name__icontains=v) |
+                    Q(album__title__icontains=v)
+                )
+            qs = qs.filter(combined)
         
         if moods:
             # Filter by mood IDs or slugs
@@ -4955,20 +4964,23 @@ class SearchView(APIView):
     def _search_artists(self, q):
         qs = Artist.objects.all()
         if q:
-            qs = qs.filter(
-                Q(name__icontains=q) |
-                Q(bio__icontains=q)
-            )
+            q_norm = re.sub(r'\s+', ' ', q).strip()
+            variants = {q_norm, q_norm.replace(' ', '')}
+            combined = Q()
+            for v in variants:
+                combined |= Q(name__icontains=v) | Q(bio__icontains=v)
+            qs = qs.filter(combined)
         return qs.order_by('-verified', '-created_at')
 
     def _search_albums(self, q):
         qs = Album.objects.all().select_related('artist')
         if q:
-            qs = qs.filter(
-                Q(title__icontains=q) |
-                Q(description__icontains=q) |
-                Q(artist__name__icontains=q)
-            )
+            q_norm = re.sub(r'\s+', ' ', q).strip()
+            variants = {q_norm, q_norm.replace(' ', '')}
+            combined = Q()
+            for v in variants:
+                combined |= Q(title__icontains=v) | Q(description__icontains=v) | Q(artist__name__icontains=v)
+            qs = qs.filter(combined)
         # Always exclude albums explicitly named "single" (case-insensitive)
         # and the Persian equivalent "سینگل" from any search results.
         qs = qs.exclude(title__iexact='single').exclude(title__iexact='سینگل')
@@ -4978,10 +4990,12 @@ class SearchView(APIView):
         # Combine admin/system playlists and public user playlists
         admin_qs = Playlist.objects.all()
         if q:
-            admin_qs = admin_qs.filter(
-                Q(title__icontains=q) |
-                Q(description__icontains=q)
-            )
+            q_norm = re.sub(r'\s+', ' ', q).strip()
+            variants = {q_norm, q_norm.replace(' ', '')}
+            combined = Q()
+            for v in variants:
+                combined |= Q(title__icontains=v) | Q(description__icontains=v)
+            admin_qs = admin_qs.filter(combined)
         
         if moods:
             if all(m.isdigit() for m in moods):
@@ -5003,7 +5017,12 @@ class SearchView(APIView):
             qs = qs.exclude(pk=req_user.pk)
 
         if q:
-            qs = qs.filter(unique_id__icontains=q)
+            q_norm = re.sub(r'\s+', ' ', q).strip()
+            variants = {q_norm, q_norm.replace(' ', '')}
+            combined = Q()
+            for v in variants:
+                combined |= Q(unique_id__icontains=v) | Q(first_name__icontains=v) | Q(last_name__icontains=v)
+            qs = qs.filter(combined)
         return qs.order_by('-date_joined')
 
 
