@@ -1208,6 +1208,10 @@ class LikedSongsSearchView(APIView):
             token = token.strip()
             if not token:
                 continue
+            
+            # Normalize both the search token and fields to ignore spaces/half-spaces
+            clean_token = token.replace(' ', '').replace('\u200c', '')
+            
             token_q = (
                 Q(song__title__icontains=token) |
                 Q(song__artist__name__icontains=token) |
@@ -1216,6 +1220,19 @@ class LikedSongsSearchView(APIView):
                 Q(song__lyrics__icontains=token) |
                 Q(song__description__icontains=token)
             )
+            
+            # Added more comprehensive normalized checks
+            qs = qs.annotate(
+                st_clean=Replace(Replace('song__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                sa_clean=Replace(Replace('song__artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
+                sla_clean=Replace(Replace('song__album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+            )
+            token_q |= (
+                Q(st_clean__icontains=clean_token) |
+                Q(sa_clean__icontains=clean_token) |
+                Q(sla_clean__icontains=clean_token)
+            )
+            
             qs = qs.filter(token_q)
 
         qs = qs.order_by('-created_at').distinct()
@@ -1247,17 +1264,28 @@ class LikedAlbumsSearchView(APIView):
 
         qs = AlbumLike.objects.filter(user=request.user).select_related('album__artist').prefetch_related('album__genres', 'album__sub_genres', 'album__moods')
 
+        # Annotate with space-removed fields for comprehensive search
+        qs = qs.annotate(
+            at_clean=Replace(Replace('album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+            aa_clean=Replace(Replace('album__artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
+        )
+
         for token in parts:
             token = token.strip()
             if not token:
                 continue
+            
+            clean_token = token.replace(' ', '').replace('\u200c', '')
+            
             token_q = (
                 Q(album__title__icontains=token) |
                 Q(album__artist__name__icontains=token) |
                 Q(album__description__icontains=token) |
                 Q(album__genres__name__icontains=token) |
                 Q(album__sub_genres__name__icontains=token) |
-                Q(album__moods__name__icontains=token)
+                Q(album__moods__name__icontains=token) |
+                Q(at_clean__icontains=clean_token) |
+                Q(aa_clean__icontains=clean_token)
             )
             qs = qs.filter(token_q)
 
@@ -4940,16 +4968,19 @@ class SearchView(APIView):
                 t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
                 a_clean=Replace(Replace('artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
                 al_clean=Replace(Replace('album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                p_clean=Replace(Replace('producers', Value(' '), Value('')), Value('\u200c'), Value('')),
+                c_clean=Replace(Replace('composers', Value(' '), Value('')), Value('\u200c'), Value('')),
+                l_clean=Replace(Replace('lyricists', Value(' '), Value('')), Value('\u200c'), Value('')),
             )
 
             combined = Q(t_clean__icontains=q_clean) | \
                        Q(a_clean__icontains=q_clean) | \
                        Q(al_clean__icontains=q_clean) | \
+                       Q(p_clean__icontains=q_clean) | \
+                       Q(c_clean__icontains=q_clean) | \
+                       Q(l_clean__icontains=q_clean) | \
                        Q(description__icontains=q) | \
-                       Q(lyrics__icontains=q) | \
-                       Q(producers__icontains=q) | \
-                       Q(composers__icontains=q) | \
-                       Q(lyricists__icontains=q)
+                       Q(lyrics__icontains=q)
 
             # Also include original variants to be safe
             q_norm = re.sub(r'\s+', ' ', q).strip()
