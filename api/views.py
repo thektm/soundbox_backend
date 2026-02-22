@@ -3440,32 +3440,74 @@ class SedaBoxProfileView(APIView):
         user_serializer = UserPublicProfileSerializer(user, context={'request': request})
         profile_data = user_serializer.data
         
-        # 1. All official admin/system playlists
-        playlists = Playlist.objects.filter(created_by__in=['admin', 'system'])
-        playlists_data = SimplePlaylistSerializer(playlists, many=True, context={'request': request}).data
-        
-        # 2. All event playlists
-        event_playlists = EventPlaylist.objects.all()
-        event_playlists_data = EventPlaylistSerializer(event_playlists, many=True, context={'request': request}).data
-        
-        # 3. All general recommended playlists
-        recommended_playlists = RecommendedPlaylist.objects.filter(user__isnull=True)
-        recommended_playlists_data = RecommendedPlaylistListSerializer(recommended_playlists, many=True, context={'request': request}).data
+        # Build a unified, paginated list of playlist summaries WITHOUT embedding full song lists.
+        # We'll collect admin/system playlists, all playlists referenced by event groups,
+        # and global recommended playlists, serialize them with summary serializers
+        # and return a paginated object under `user_playlists`.
 
-        # 4. Extract any unique playlists from search sections that might have been missed
-        # (Though usually admin/system filter covers them, this ensures all featured ones are present)
-        search_playlists = Playlist.objects.filter(search_sections__isnull=False).distinct()
-        existing_ids = {p['id'] for p in playlists_data}
-        extra_search_playlists = [p for p in search_playlists if p.id not in existing_ids]
-        if extra_search_playlists:
-            extra_data = SimplePlaylistSerializer(extra_search_playlists, many=True, context={'request': request}).data
-            playlists_data.extend(extra_data)
-        
-        # Combine all into the `user_playlists` object to match normal profile structure
-        # Merging different types (normal-playlist, event-playlist, recommended)
-        # Each serializer already includes a `type` field to distinguish them.
-        profile_data['user_playlists'] = playlists_data + event_playlists_data + recommended_playlists_data
-        
+        # Admin / System playlists
+        admin_playlists = Playlist.objects.filter(created_by__in=['admin', 'system']).distinct()
+
+        # Event playlists: collect inner Playlist objects referenced by EventPlaylist groups
+        event_groups = EventPlaylist.objects.prefetch_related('playlists').all()
+        event_inner_playlists = []
+        for eg in event_groups:
+            try:
+                for p in eg.playlists.all():
+                    event_inner_playlists.append(p)
+            except Exception:
+                continue
+
+        # Recommended playlists that are global (not user-scoped)
+        recommended_playlists = RecommendedPlaylist.objects.filter(user__isnull=True)
+
+        # Serialize into lightweight summaries (these serializers do NOT include full song lists)
+        admin_data = SimplePlaylistSerializer(admin_playlists, many=True, context={'request': request}).data
+        event_data = SimplePlaylistSerializer(event_inner_playlists, many=True, context={'request': request}).data
+        recommended_data = PlaylistSummarySerializer(recommended_playlists, many=True, context={'request': request}).data
+
+        # Combine and deduplicate by (type, id/unique_id)
+        combined = admin_data + event_data + recommended_data
+        seen = set()
+        unique = []
+        for item in combined:
+            key_id = item.get('id') or item.get('unique_id') or ''
+            key = (item.get('type', 'playlist'), str(key_id))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+
+        # Manual pagination so we can keep the outer profile structure intact
+        try:
+            page = int(request.query_params.get('page', 1))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get('page_size', 20))
+        except (TypeError, ValueError):
+            page_size = 20
+
+        total = len(unique)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = unique[start:end]
+        has_next = total > end
+
+        next_url = None
+        if has_next:
+            params = request.query_params.copy()
+            params['page'] = page + 1
+            params['page_size'] = page_size
+            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
+
+        profile_data['user_playlists'] = {
+            'count': len(page_items),
+            'total': total,
+            'next': next_url,
+            'results': page_items
+        }
+
         return Response(profile_data)
 
 
