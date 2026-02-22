@@ -1799,6 +1799,8 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
         source='songs',
         required=False
     )
+    # Store/read client-side ordering as JSON (list of song ids or mapping)
+    order = serializers.JSONField(required=False)
     # Include lightweight song summaries when returning playlist detail
     songs = SongSummarySerializer(many=True, read_only=True)
     generated_by = serializers.ReadOnlyField(default='audience')
@@ -1808,7 +1810,7 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
         fields = [
             'id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
-            'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 
+            'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 'order', 
             'type', 'generated_by', 'creator_unique_id', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count', 
@@ -1843,10 +1845,11 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
 class UserPlaylistCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating UserPlaylist with optional first song"""
     first_song_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    order = serializers.JSONField(required=False)
     
     class Meta:
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
-        fields = ['title', 'public', 'first_song_id']
+        fields = ['title', 'public', 'first_song_id', 'order']
     
     def create(self, validated_data):
         first_song_id = validated_data.pop('first_song_id', None)

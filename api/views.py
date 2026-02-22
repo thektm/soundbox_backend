@@ -3364,6 +3364,19 @@ class UserPlaylistAddSongView(APIView):
             )
 
         playlist.songs.add(song)
+        # Maintain playlist.order JSON (append new song id if not present)
+        try:
+            order = playlist.order or []
+            if not isinstance(order, list):
+                order = list(order)
+        except Exception:
+            order = []
+
+        if song.id not in order:
+            order.append(song.id)
+            playlist.order = order
+            playlist.save(update_fields=['order'])
+
         serializer = UserPlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
 
@@ -3388,6 +3401,22 @@ class UserPlaylistRemoveSongView(APIView):
         try:
             song = Song.objects.get(id=song_id)
             playlist.songs.remove(song)
+            # Update playlist.order to remove this song id if present
+            try:
+                order = playlist.order or []
+                if not isinstance(order, list):
+                    order = list(order)
+            except Exception:
+                order = []
+
+            if song.id in order:
+                try:
+                    order.remove(song.id)
+                except ValueError:
+                    pass
+                playlist.order = order
+                playlist.save(update_fields=['order'])
+
             serializer = UserPlaylistSerializer(playlist, context={'request': request})
             return Response(serializer.data)
         except Song.DoesNotExist:

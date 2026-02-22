@@ -725,6 +725,8 @@ class UserPlaylist(models.Model):
     public = models.BooleanField(default=False)
     liked_by = models.ManyToManyField(User, blank=True, related_name='liked_playlists')
     songs = models.ManyToManyField(Song, blank=True, related_name='user_playlists')
+    # JSON field to store client-side ordering info for songs (e.g. list of song ids)
+    order = models.JSONField(default=list, blank=True, help_text='Client-side order for songs (JSON array)')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
