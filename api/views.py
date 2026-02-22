@@ -63,8 +63,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField
-from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace
+from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField, CharField, TextField
+from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
@@ -4968,9 +4968,11 @@ class SearchView(APIView):
                 t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
                 a_clean=Replace(Replace('artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
                 al_clean=Replace(Replace('album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
-                p_clean=Replace(Replace('producers', Value(' '), Value('')), Value('\u200c'), Value('')),
-                c_clean=Replace(Replace('composers', Value(' '), Value('')), Value('\u200c'), Value('')),
-                l_clean=Replace(Replace('lyricists', Value(' '), Value('')), Value('\u200c'), Value('')),
+                # Cast JSONFields to TextField before applying string Replace
+                p_clean=Replace(Replace(Cast('producers', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
+                c_clean=Replace(Replace(Cast('composers', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
+                l_clean=Replace(Replace(Cast('lyricists', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
+                f_clean=Replace(Replace(Cast('featured_artists', TextField()), Value(' '), Value('')), Value('\u200c'), Value('')),
             )
 
             combined = Q(t_clean__icontains=q_clean) | \
@@ -4979,6 +4981,7 @@ class SearchView(APIView):
                        Q(p_clean__icontains=q_clean) | \
                        Q(c_clean__icontains=q_clean) | \
                        Q(l_clean__icontains=q_clean) | \
+                       Q(f_clean__icontains=q_clean) | \
                        Q(description__icontains=q) | \
                        Q(lyrics__icontains=q)
 
