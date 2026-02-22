@@ -202,14 +202,21 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='recommended')
+    generated_by = serializers.ReadOnlyField(default='system')
+    creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
         model = RecommendedPlaylist
         fields = [
             'id', 'unique_id', 'title', 'description', 'cover_image', 
             'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 
-            'mood_names', 'type'
+            'mood_names', 'type', 'generated_by', 'creator_unique_id'
         ]
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     def get_genre_names(self, obj):
         """Aggregate unique genre names from all songs in this playlist."""
@@ -282,14 +289,22 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='normal-playlist')
+    generated_by = serializers.CharField(source='created_by', read_only=True)
+    creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Playlist
         fields = [
             'id', 'title', 'description', 'cover_image', 
             'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names', 
-            'mood_names', 'type'
+            'mood_names', 'type', 'generated_by', 'creator_unique_id'
         ]
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        # For official playlists, we use the SedaBox platform user's unique_id
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     def get_genre_names(self, obj):
         return [g.name for g in obj.genres.all()]
@@ -1611,14 +1626,22 @@ class PlaylistSerializer(serializers.ModelSerializer):
         model = Playlist
         fields = [
             'id', 'title', 'description', 'cover_image', 'created_at', 'created_by',
+            'generated_by', 'creator_unique_id',
             'genres', 'moods', 'tags', 'songs',
             'likes_count', 'is_liked',
             'genre_ids', 'mood_ids', 'tag_ids', 'song_ids'
         ]
-        read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
+        read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked', 'generated_by', 'creator_unique_id']
 
     likes_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    generated_by = serializers.CharField(source='created_by', read_only=True)
+    creator_unique_id = serializers.SerializerMethodField()
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     def get_likes_count(self, obj):
         # Prefer annotated value when available to avoid extra query
@@ -1648,8 +1671,16 @@ class PlaylistForEventSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'genres', 'moods', 'tags', 'songs']
+        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = ['id', 'created_at']
+
+    generated_by = serializers.CharField(source='created_by', read_only=True)
+    creator_unique_id = serializers.SerializerMethodField()
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
 
 class SongStreamSerializer(serializers.ModelSerializer):
@@ -1765,16 +1796,18 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
     )
     # Include lightweight song summaries when returning playlist detail
     songs = SongSummarySerializer(many=True, read_only=True)
+    generated_by = serializers.ReadOnlyField(default='audience')
+    creator_unique_id = serializers.CharField(source='user.unique_id', read_only=True)
     
     class Meta:
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
         fields = [
             'id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
             'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 
-            'type', 'created_at', 'updated_at'
+            'type', 'generated_by', 'creator_unique_id', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count', 
-                           'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type', 'songs']
+                           'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type', 'songs', 'generated_by', 'creator_unique_id']
     
     def get_songs_count(self, obj):
         return obj.songs.count()
@@ -1854,9 +1887,17 @@ class RecommendedPlaylistListSerializer(serializers.ModelSerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'covers', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
             'views', 'relevance_score', 'match_percentage', 'created_at',
-            'genre_names', 'mood_names', 'type'
+            'genre_names', 'mood_names', 'type', 'generated_by', 'creator_unique_id'
         ]
         read_only_fields = fields
+
+    generated_by = serializers.ReadOnlyField(default='system')
+    creator_unique_id = serializers.SerializerMethodField()
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     def get_genre_names(self, obj):
         """Aggregate unique genre names from all songs in this playlist."""
@@ -1938,9 +1979,17 @@ class RecommendedPlaylistDetailSerializer(serializers.ModelSerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type',
             'songs', 'songs_count', 'is_liked', 'is_saved', 'likes_count',
             'views', 'relevance_score', 'match_percentage', 'created_at', 'updated_at',
-            'playlist_ref', 'genre_names', 'mood_names'
+            'playlist_ref', 'genre_names', 'mood_names', 'generated_by', 'creator_unique_id'
         ]
         read_only_fields = fields
+
+    generated_by = serializers.ReadOnlyField(default='system')
+    creator_unique_id = serializers.SerializerMethodField()
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     def get_genre_names(self, obj):
         try:
@@ -2144,10 +2193,17 @@ class EventPlaylistSerializer(serializers.ModelSerializer):
     """Serializer for EventPlaylist model"""
     # use compact playlist serializer that omits slug fields on nested genres/moods/tags
     playlists = PlaylistForEventSerializer(many=True, read_only=True)
+    generated_by = serializers.ReadOnlyField(default='admin')
+    creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id']
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
 
 class PlaylistCoverSerializer(serializers.ModelSerializer):
@@ -2155,11 +2211,18 @@ class PlaylistCoverSerializer(serializers.ModelSerializer):
     Uses the first song's cover image as the playlist cover when available.
     """
     cover_image = serializers.SerializerMethodField()
+    generated_by = serializers.CharField(source='created_by', read_only=True)
+    creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image']
+        fields = ['id', 'title', 'description', 'cover_image', 'generated_by', 'creator_unique_id']
         read_only_fields = fields
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     def get_cover_image(self, obj):
         try:
@@ -2189,11 +2252,18 @@ class PlaylistCoverSerializer(serializers.ModelSerializer):
 class EventPlaylistListSerializer(serializers.ModelSerializer):
     """Serializer for listing EventPlaylists with lightweight playlist covers."""
     playlists = PlaylistCoverSerializer(many=True, read_only=True)
+    generated_by = serializers.ReadOnlyField(default='admin')
+    creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id']
         read_only_fields = fields
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
 
 class PlaylistDetailForEventSerializer(serializers.ModelSerializer):
@@ -2202,21 +2272,35 @@ class PlaylistDetailForEventSerializer(serializers.ModelSerializer):
     moods = SlimMoodSerializer(many=True, read_only=True)
     tags = SlimTagSerializer(many=True, read_only=True)
     songs = SongSummarySerializer(many=True, read_only=True)
+    generated_by = serializers.CharField(source='created_by', read_only=True)
+    creator_unique_id = serializers.SerializerMethodField()
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'genres', 'moods', 'tags', 'songs']
+        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = fields
 
 
 class EventPlaylistDetailSerializer(serializers.ModelSerializer):
     """Detailed EventPlaylist serializer returning playlists with summarized songs."""
     playlists = PlaylistDetailForEventSerializer(many=True, read_only=True)
+    generated_by = serializers.ReadOnlyField(default='admin')
+    creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at']
+        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id']
         read_only_fields = fields
+
+    def get_creator_unique_id(self, obj):
+        from .models import User
+        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        return sedabox_user.unique_id if sedabox_user else None
 
 
 class SearchSectionSerializer(serializers.ModelSerializer):

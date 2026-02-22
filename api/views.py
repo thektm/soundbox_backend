@@ -3417,6 +3417,61 @@ class UserProfilePublicView(APIView):
         return Response(serializer.data)
 
 
+class SedaBoxProfileView(APIView):
+    """
+    SedaBox (platform) profile view.
+    Returns:
+    - profile info (user details)
+    - number of followers/following
+    - all playlists (admin/system created)
+    - all event playlists
+    - all search section playlists
+    - all recommended playlists (general)
+    """
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="SedaBox Platform Profile",
+        description="Returns the profile details and all public playlists for the SedaBox platform user.",
+        tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل']
+    )
+    def get(self, request):
+        user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
+        if not user:
+            return Response({"error": "SedaBox user not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Standard user info
+        user_serializer = UserPublicProfileSerializer(user, context={'request': request})
+        profile_data = user_serializer.data
+        
+        # All public admin/system playlists
+        playlists = Playlist.objects.filter(created_by__in=['admin', 'system'])
+        playlists_serializer = SimplePlaylistSerializer(playlists, many=True, context={'request': request})
+        
+        # All event playlists
+        event_playlists = EventPlaylist.objects.all()
+        event_playlists_serializer = EventPlaylistSerializer(event_playlists, many=True, context={'request': request})
+        
+        # All search sections - including their playlists
+        search_sections = SearchSection.objects.filter(playlists__isnull=False).distinct()
+        search_sections_serializer = SearchSectionSerializer(search_sections, many=True, context={'request': request})
+        
+        # All recommended playlists that are general (user__isnull=True)
+        recommended_playlists = RecommendedPlaylist.objects.filter(user__isnull=True)
+        recommended_playlists_serializer = RecommendedPlaylistListSerializer(recommended_playlists, many=True, context={'request': request})
+        
+        # Combine everything
+        response_data = {
+            **profile_data,
+            'official_playlists': playlists_serializer.data,
+            'event_playlists': event_playlists_serializer.data,
+            'search_section_playlists': search_sections_serializer.data,
+            'recommended_playlists': recommended_playlists_serializer.data
+        }
+        
+        return Response(response_data)
+
+
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class HomeSummaryView(APIView):
     """

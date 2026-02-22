@@ -21,6 +21,7 @@ from .views import (
     UserHistorySearchView,
     DownloadHistoryView,
     UserProfilePublicView,
+    SedaBoxProfileView,
     R2UploadView,
     SongUploadView,
     ArtistListView,
@@ -184,6 +185,7 @@ urlpatterns = [
     path('profile/downloads/', DownloadHistoryView.as_view(), name='user_download_history'),
     path('profile/downloads/<int:pk>/', DownloadHistoryDeleteView.as_view(), name='download_history_delete'),
     path('profile/u/<str:unique_id>/', UserProfilePublicView.as_view(), name='user_public_profile'),
+    path('profile/sedabox/', SedaBoxProfileView.as_view(), name='sedabox_profile'),
     
     path('profile/user-playlists/', UserPlaylistListCreateView.as_view(), name='user_playlist_list_create'),
     path('profile/user-playlists/<int:pk>/', UserPlaylistDetailView.as_view(), name='user_playlist_detail'),
