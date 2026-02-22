@@ -3453,10 +3453,16 @@ class SedaBoxProfileView(APIView):
             except Exception:
                 continue
 
-        # Only include global recommended playlists (exclude ones owned by the SedaBox user)
-        recommended_playlists = RecommendedPlaylist.objects.filter(
-            user__isnull=True
-        ).distinct()
+        # Include global recommended playlists and any RecommendedPlaylist
+        # generated for the requesting user (if authenticated)
+        if request.user and getattr(request, 'user').is_authenticated:
+            recommended_playlists = RecommendedPlaylist.objects.filter(
+                Q(user__isnull=True) | Q(user=request.user)
+            ).distinct()
+        else:
+            recommended_playlists = RecommendedPlaylist.objects.filter(
+                user__isnull=True
+            ).distinct()
 
         # Serialize items but keep a sort timestamp for each (use updated_at when available, else created_at)
         unified_items = []
