@@ -64,7 +64,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField
-from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth
+from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
@@ -4931,25 +4931,31 @@ class SearchView(APIView):
     def _search_songs(self, q, moods=None):
         qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album')
         if q:
-            # Complex matching: handle both spaced and non-spaced variants so
-            # searches like "بهنام بانی" match "بهنامبانی" and vice versa.
-            variants = set()
-            q_norm = re.sub(r'\s+', ' ', q).strip()
-            variants.add(q_norm)
-            variants.add(q_norm.replace(' ', ''))
+            # Complex matching: handle both spaced and non-spaced variants.
+            # Normalizing both query and field by removing spaces/ZWNJ ensures
+            # that "بهنام بانی" matches "بهنامبانی" and vice versa.
+            q_clean = q.replace(' ', '').replace('\u200c', '')
+            
+            qs = qs.annotate(
+                t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                a_clean=Replace(Replace('artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
+                al_clean=Replace(Replace('album__title', Value(' '), Value('')), Value('\u200c'), Value('')),
+            )
 
-            combined = Q()
-            for v in variants:
-                combined |= (
-                    Q(title__icontains=v) |
-                    Q(description__icontains=v) |
-                    Q(lyrics__icontains=v) |
-                    Q(producers__icontains=v) |
-                    Q(composers__icontains=v) |
-                    Q(lyricists__icontains=v) |
-                    Q(artist__name__icontains=v) |
-                    Q(album__title__icontains=v)
-                )
+            combined = Q(t_clean__icontains=q_clean) | \
+                       Q(a_clean__icontains=q_clean) | \
+                       Q(al_clean__icontains=q_clean) | \
+                       Q(description__icontains=q) | \
+                       Q(lyrics__icontains=q) | \
+                       Q(producers__icontains=q) | \
+                       Q(composers__icontains=q) | \
+                       Q(lyricists__icontains=q)
+
+            # Also include original variants to be safe
+            q_norm = re.sub(r'\s+', ' ', q).strip()
+            if q_norm != q:
+                combined |= Q(title__icontains=q_norm) | Q(artist__name__icontains=q_norm)
+            
             qs = qs.filter(combined)
         
         if moods:
@@ -4964,22 +4970,35 @@ class SearchView(APIView):
     def _search_artists(self, q):
         qs = Artist.objects.all()
         if q:
+            q_clean = q.replace(' ', '').replace('\u200c', '')
+            qs = qs.annotate(
+                n_clean=Replace(Replace('name', Value(' '), Value('')), Value('\u200c'), Value('')),
+            )
+            combined = Q(n_clean__icontains=q_clean) | Q(bio__icontains=q)
+            
             q_norm = re.sub(r'\s+', ' ', q).strip()
-            variants = {q_norm, q_norm.replace(' ', '')}
-            combined = Q()
-            for v in variants:
-                combined |= Q(name__icontains=v) | Q(bio__icontains=v)
+            if q_norm != q:
+                combined |= Q(name__icontains=q_norm)
+                
             qs = qs.filter(combined)
         return qs.order_by('-verified', '-created_at')
 
     def _search_albums(self, q):
         qs = Album.objects.all().select_related('artist')
         if q:
+            q_clean = q.replace(' ', '').replace('\u200c', '')
+            qs = qs.annotate(
+                t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
+                a_clean=Replace(Replace('artist__name', Value(' '), Value('')), Value('\u200c'), Value('')),
+            )
+            combined = Q(t_clean__icontains=q_clean) | \
+                       Q(a_clean__icontains=q_clean) | \
+                       Q(description__icontains=q)
+            
             q_norm = re.sub(r'\s+', ' ', q).strip()
-            variants = {q_norm, q_norm.replace(' ', '')}
-            combined = Q()
-            for v in variants:
-                combined |= Q(title__icontains=v) | Q(description__icontains=v) | Q(artist__name__icontains=v)
+            if q_norm != q:
+                combined |= Q(title__icontains=q_norm) | Q(artist__name__icontains=q_norm)
+                
             qs = qs.filter(combined)
         # Always exclude albums explicitly named "single" (case-insensitive)
         # and the Persian equivalent "سینگل" from any search results.
@@ -4990,11 +5009,16 @@ class SearchView(APIView):
         # Combine admin/system playlists and public user playlists
         admin_qs = Playlist.objects.all()
         if q:
+            q_clean = q.replace(' ', '').replace('\u200c', '')
+            admin_qs = admin_qs.annotate(
+                t_clean=Replace(Replace('title', Value(' '), Value('')), Value('\u200c'), Value('')),
+            )
+            combined = Q(t_clean__icontains=q_clean) | Q(description__icontains=q)
+            
             q_norm = re.sub(r'\s+', ' ', q).strip()
-            variants = {q_norm, q_norm.replace(' ', '')}
-            combined = Q()
-            for v in variants:
-                combined |= Q(title__icontains=v) | Q(description__icontains=v)
+            if q_norm != q:
+                combined |= Q(title__icontains=q_norm)
+                
             admin_qs = admin_qs.filter(combined)
         
         if moods:
@@ -5017,11 +5041,22 @@ class SearchView(APIView):
             qs = qs.exclude(pk=req_user.pk)
 
         if q:
+            q_clean = q.replace(' ', '').replace('\u200c', '')
+            qs = qs.annotate(
+                u_clean=Replace(Replace('unique_id', Value(' '), Value('')), Value('\u200c'), Value('')),
+                f_clean=Replace(Replace('first_name', Value(' '), Value('')), Value('\u200c'), Value('')),
+                l_clean=Replace(Replace('last_name', Value(' '), Value('')), Value('\u200c'), Value('')),
+            )
+            combined = Q(u_clean__icontains=q_clean) | \
+                       Q(f_clean__icontains=q_clean) | \
+                       Q(l_clean__icontains=q_clean)
+            
             q_norm = re.sub(r'\s+', ' ', q).strip()
-            variants = {q_norm, q_norm.replace(' ', '')}
-            combined = Q()
-            for v in variants:
-                combined |= Q(unique_id__icontains=v) | Q(first_name__icontains=v) | Q(last_name__icontains=v)
+            if q_norm != q:
+                combined |= Q(unique_id__icontains=q_norm) | \
+                            Q(first_name__icontains=q_norm) | \
+                            Q(last_name__icontains=q_norm)
+            
             qs = qs.filter(combined)
         return qs.order_by('-date_joined')
 
