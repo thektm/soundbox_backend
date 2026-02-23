@@ -57,6 +57,14 @@ def generate_otp(length=4):
     return get_random_string(length=length, allowed_chars='0123456789')
 
 
+def generate_unique_numeric_id(length=10):
+    """Generate a unique numeric-only string for `unique_id` field."""
+    while True:
+        new_id = get_random_string(length=length, allowed_chars='0123456789')
+        if not User.objects.filter(unique_id=new_id).exists():
+            return new_id
+
+
 def parse_artist_flag(request) -> bool:
     """Read `artist` flag from query params only (no body fallback)."""
     try:
@@ -346,9 +354,9 @@ class AuthVerifyView(APIView):
                 user.roles.append(User.ROLE_ARTIST)
             if artist_password:
                 user.set_artist_password(artist_password)
-        # Ensure a numeric-only string `unique_id` is assigned if missing (use DB PK)
+        # Ensure a numeric-only string `unique_id` is assigned if missing
         if not user.unique_id:
-            user.unique_id = str(user.id)
+            user.unique_id = generate_unique_numeric_id(10)
             save_fields = ['is_verified', 'roles'] if artist_flag else ['is_verified']
             if 'unique_id' not in save_fields:
                 save_fields.append('unique_id')
@@ -485,12 +493,18 @@ class LoginOtpVerifyView(APIView):
         # mark verified if not
         if not user.is_verified:
             user.is_verified = True
-            # ensure numeric unique_id exists for newly-verified users
-            if not user.unique_id:
-                user.unique_id = str(user.id)
-                user.save(update_fields=['is_verified', 'unique_id'])
-            else:
-                user.save(update_fields=['is_verified'])
+            save_fields = ['is_verified']
+        else:
+            save_fields = []
+
+        # ensure numeric unique_id exists
+        if not user.unique_id:
+            user.unique_id = generate_unique_numeric_id(10)
+            if 'unique_id' not in save_fields:
+                save_fields.append('unique_id')
+
+        if save_fields:
+            user.save(update_fields=save_fields)
         tokens = issue_tokens_for_user(user, request)
         from .serializers import UserSerializer
         user_data = UserSerializer(user, context={'request': request}).data
@@ -634,7 +648,7 @@ class PasswordResetView(APIView):
                 user.set_password(new_password)
             # ensure unique_id exists after password reset if missing
             if not user.unique_id:
-                user.unique_id = str(user.id)
+                user.unique_id = generate_unique_numeric_id(10)
             user.save()
             # revoke refresh tokens
             RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
