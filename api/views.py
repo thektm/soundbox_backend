@@ -3647,6 +3647,15 @@ class SedaBoxProfileView(APIView):
         # Standard user info (handles followers, likes, etc.)
         user_serializer = UserPublicProfileSerializer(user, context={'request': request})
         profile_data = user_serializer.data
+
+        # Record profile view in history (skip if anonymous or viewing own profile)
+        if request.user.is_authenticated and request.user.id != user.id:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_USER,
+                target_user=user,
+                defaults={'updated_at': timezone.now()}
+            )
         
         # Collect all Playlist records (this covers admin/system, search-section and general playlists)
         all_playlists_qs = Playlist.objects.all().distinct()
