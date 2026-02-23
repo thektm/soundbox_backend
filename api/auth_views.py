@@ -640,6 +640,7 @@ class TokenRefreshView(APIView):
                 fields={
                     'accessToken': serializers.CharField(),
                     'refreshToken': serializers.CharField(),
+                    'user': __import__('api.serializers', fromlist=['']).UserSerializer,
                 }
             )
         }
@@ -690,7 +691,14 @@ class TokenRefreshView(APIView):
             valid_session.save()
         except Exception:
             pass
-        return Response({'accessToken': str(new_access), 'refreshToken': str(new_refresh)})
+        
+        from .serializers import UserSerializer
+        user_data = UserSerializer(user, context={'request': request}).data
+        return Response({
+            'accessToken': str(new_access),
+            'refreshToken': str(new_refresh),
+            'user': user_data
+        })
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])

@@ -435,12 +435,20 @@ class NotificationSettingSerializer(serializers.ModelSerializer):
         ]
 
 
+class UserImageProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserImageProfile
+        fields = ['id', 'image', 'status', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'status', 'created_at', 'updated_at']
+
+
 class UserSerializer(serializers.ModelSerializer):
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
     user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
     recently_played = serializers.SerializerMethodField()
     notification_setting = NotificationSettingSerializer(read_only=True)
+    image_profile = UserImageProfileSerializer(read_only=True)
     followers = serializers.SerializerMethodField()
     following = serializers.SerializerMethodField()
     
@@ -450,13 +458,13 @@ class UserSerializer(serializers.ModelSerializer):
             'id', 'phone_number', 'unique_id', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
             'followers_count', 'following_count', 'user_playlists_count', 
-            'recently_played', 'notification_setting', 'plan', 'stream_quality',
+            'recently_played', 'notification_setting', 'image_profile', 'plan', 'stream_quality',
             'followers', 'following'
         ]
         read_only_fields = [
             'id', 'is_active', 'is_staff', 'date_joined', 
             'followers_count', 'following_count', 'user_playlists_count',
-            'notification_setting', 'followers', 'following', 'plan'
+            'notification_setting', 'image_profile', 'followers', 'following', 'plan'
         ]
 
     def get_followers_count(self, obj):
@@ -661,11 +669,12 @@ class UserSearchSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for users in search results"""
     followers_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
+    image_profile = UserImageProfileSerializer(read_only=True)
     type = serializers.ReadOnlyField(default='user')
 
     class Meta:
         model = User
-        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'plan', 'type']
+        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'image_profile', 'plan', 'type']
 
     def get_followers_count(self, obj):
         return Follow.objects.filter(followed_user=obj).count()
@@ -682,6 +691,7 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
+    image_profile = UserImageProfileSerializer(read_only=True)
     user_playlists = serializers.SerializerMethodField()
 
     class Meta:
@@ -689,7 +699,7 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'unique_id', 'first_name', 'last_name', 
             'followers_count', 'following_count', 'is_following',
-            'plan', 'user_playlists'
+            'image_profile', 'plan', 'user_playlists'
         ]
 
     def get_followers_count(self, obj):
@@ -2564,12 +2574,5 @@ class InitialCheckSerializer(serializers.ModelSerializer):
         initial_check, created = InitialCheck.objects.get_or_create(user=user)
         initial_check.genres.set(genres)
         return initial_check
-
-
-class UserImageProfileSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = UserImageProfile
-        fields = ['id', 'image', 'status', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'status', 'created_at', 'updated_at']
 
 
