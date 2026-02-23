@@ -3530,9 +3530,87 @@ class UserProfilePublicView(APIView):
     )
     def get(self, request, unique_id):
         user = get_object_or_404(User, unique_id=unique_id)
-        
+        # If caller requests followers/following lists via query params, return paginated lists.
+        # Supported params:
+        # - followers=1 : return followers page using f_page & f_page_size
+        # - following=1 : return following page using fg_page & fg_page_size
+        # If neither provided, return standard public profile serializer.
+        include_followers = request.query_params.get('followers') is not None
+        include_following = request.query_params.get('following') is not None
+
+        if include_followers or include_following:
+            from .serializers import FollowableEntitySerializer
+            result = {}
+            if include_followers:
+                # pagination params for followers
+                try:
+                    page = int(request.query_params.get('f_page', 1))
+                    page_size = int(request.query_params.get('f_page_size', 10))
+                except (ValueError, TypeError):
+                    page, page_size = 1, 10
+
+                offset = (page - 1) * page_size
+                qs = Follow.objects.filter(followed_user=user).order_by('-created_at')
+                total = qs.count()
+                items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
+                has_next = total > offset + page_size
+
+                next_url = None
+                if request and has_next:
+                    try:
+                        base = reverse('user_public_profile', kwargs={'unique_id': unique_id})
+                    except Exception:
+                        base = request.path
+                    params = request.query_params.copy()
+                    params['f_page'] = str(page + 1)
+                    params['f_page_size'] = str(page_size)
+                    next_url = request.build_absolute_uri(base + '?' + params.urlencode())
+
+                result['followers'] = {
+                    'items': FollowableEntitySerializer(items, many=True, context={'request': request}).data,
+                    'total': total,
+                    'page': page,
+                    'has_next': has_next,
+                    'next': next_url,
+                }
+
+            if include_following:
+                # pagination params for following
+                try:
+                    page = int(request.query_params.get('fg_page', 1))
+                    page_size = int(request.query_params.get('fg_page_size', 10))
+                except (ValueError, TypeError):
+                    page, page_size = 1, 10
+
+                offset = (page - 1) * page_size
+                qs = Follow.objects.filter(follower_user=user).order_by('-created_at')
+                total = qs.count()
+                items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
+                has_next = total > offset + page_size
+
+                next_url = None
+                if request and has_next:
+                    try:
+                        base = reverse('user_public_profile', kwargs={'unique_id': unique_id})
+                    except Exception:
+                        base = request.path
+                    params = request.query_params.copy()
+                    params['fg_page'] = str(page + 1)
+                    params['fg_page_size'] = str(page_size)
+                    next_url = request.build_absolute_uri(base + '?' + params.urlencode())
+
+                result['following'] = {
+                    'items': FollowableEntitySerializer(items, many=True, context={'request': request}).data,
+                    'total': total,
+                    'page': page,
+                    'has_next': has_next,
+                    'next': next_url,
+                }
+
+            return Response(result)
+
+        # default: full public profile
         serializer = UserPublicProfileSerializer(user, context={'request': request})
-        
         return Response(serializer.data)
 
 
