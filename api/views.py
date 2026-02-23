@@ -10,7 +10,7 @@ from .models import (
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, DownloadHistory,
-    InitialCheck
+    InitialCheck, UserImageProfile
 )
 from .models import BannerAd, BannerAdServeCounter
 from .serializers import (
@@ -58,6 +58,7 @@ from .serializers import (
     UserSearchSummarySerializer,
     DownloadHistorySerializer,
     InitialCheckSerializer,
+    UserImageProfileSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -248,6 +249,67 @@ class UserProfileView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UserImageProfileView(APIView):
+    """View for direct upload of user image profile."""
+    permission_classes = [IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
+
+    @extend_schema(
+        summary="آپلود تصویر پروفایل کاربر",
+        description="آپلود تصویر پروفایل. اگر کاربر از قبل تصویری داشته باشد، تصویر قدیمی حذف و رکورد جدید جایگزین می‌شود.",
+        request=UserImageProfileSerializer,
+        responses={201: UserImageProfileSerializer}
+    )
+    def post(self, request, *args, **kwargs):
+        # Remove existing record if any as per requirements
+        existing_profile = UserImageProfile.objects.filter(user=request.user).first()
+        if existing_profile:
+            if existing_profile.image:
+                try:
+                    if os.path.isfile(existing_profile.image.path):
+                        os.remove(existing_profile.image.path)
+                except (ValueError, FileNotFoundError, NotImplementedError):
+                    pass
+            existing_profile.delete()
+        
+        serializer = UserImageProfileSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @extend_schema(
+        summary="مشاهده تصویر پروفایل کاربر",
+        description="دریافت اطلاعات تصویر پروفایل کاربر فعلی.",
+        responses={200: UserImageProfileSerializer}
+    )
+    def get(self, request, *args, **kwargs):
+        profile = get_object_or_404(UserImageProfile, user=request.user)
+        serializer = UserImageProfileSerializer(profile)
+        return Response(serializer.data)
+
+
+class UserImageProfileDetailView(APIView):
+    """View for deleting user image profile."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary="حذف تصویر پروفایل کاربر",
+        description="حذف تصویر پروفایل کاربر فعلی.",
+        responses={204: None}
+    )
+    def delete(self, request, *args, **kwargs):
+        profile = get_object_or_404(UserImageProfile, user=request.user)
+        if profile.image:
+            try:
+                if os.path.isfile(profile.image.path):
+                    os.remove(profile.image.path)
+            except (ValueError, FileNotFoundError, NotImplementedError):
+                pass
+        profile.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class InitialCheckView(APIView):

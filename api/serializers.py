@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest, Report, Notification, AudioAd, UserHistory, DownloadHistory, InitialCheck
+    DepositRequest, Report, Notification, AudioAd, UserHistory, DownloadHistory, InitialCheck, UserImageProfile
 )
 
 from .models import BannerAd
@@ -2483,17 +2483,23 @@ class DepositRequestSerializer(serializers.ModelSerializer):
 class ReportSerializer(serializers.ModelSerializer):
     artist_id = serializers.IntegerField(source='artist.id', required=False, allow_null=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
+    reported_user_phone = serializers.CharField(source='reported_user.phone_number', read_only=True)
 
     class Meta:
         model = Report
-        fields = ['id', 'song', 'artist_id', 'artist_unique_id', 'text', 'created_at']
+        fields = ['id', 'song', 'artist', 'artist_id', 'artist_unique_id', 'reported_user', 'reported_user_phone', 'text', 'created_at']
         read_only_fields = ['id', 'created_at']
 
     def validate(self, data):
-        if not data.get('song') and not data.get('artist'):
-            raise serializers.ValidationError("Either song or artist must be provided.")
-        if data.get('song') and data.get('artist'):
-            raise serializers.ValidationError("Only one of song or artist should be provided.")
+        # Require exactly one target: song, artist, or reported_user
+        has_song = bool(data.get('song'))
+        has_artist = bool(data.get('artist'))
+        has_reported_user = bool(data.get('reported_user'))
+        total = sum([has_song, has_artist, has_reported_user])
+        if total == 0:
+            raise serializers.ValidationError("One of song, artist or reported_user must be provided.")
+        if total > 1:
+            raise serializers.ValidationError("Provide only one of song, artist or reported_user.")
         return data
 
 
@@ -2558,5 +2564,12 @@ class InitialCheckSerializer(serializers.ModelSerializer):
         initial_check, created = InitialCheck.objects.get_or_create(user=user)
         initial_check.genres.set(genres)
         return initial_check
+
+
+class UserImageProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserImageProfile
+        fields = ['id', 'image', 'status', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'status', 'created_at', 'updated_at']
 
 

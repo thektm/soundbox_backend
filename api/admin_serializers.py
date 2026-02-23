@@ -106,14 +106,15 @@ class AdminReportSerializer(serializers.ModelSerializer):
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
     song_title = serializers.CharField(source='song.title', read_only=True, allow_null=True)
     artist_name = serializers.CharField(source='artist.name', read_only=True, allow_null=True)
+    reported_user_phone = serializers.CharField(source='reported_user.phone_number', read_only=True, allow_null=True)
 
     class Meta:
         model = Report
         fields = [
-            'id', 'user', 'user_phone', 'song', 'song_title', 'artist', 'artist_name',
+            'id', 'user', 'user_phone', 'song', 'song_title', 'artist', 'artist_name', 'reported_user', 'reported_user_phone',
             'text', 'has_reviewed', 'reviewed_at', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'user', 'song', 'artist', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user', 'song', 'artist', 'reported_user', 'created_at', 'updated_at']
 
 
 class AdminAlbumSerializer(serializers.ModelSerializer):

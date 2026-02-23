@@ -703,6 +703,8 @@ class AdminReportListView(APIView):
             qs = qs.filter(song__isnull=False)
         elif typ == 'artist':
             qs = qs.filter(artist__isnull=False)
+        elif typ == 'user':
+            qs = qs.filter(reported_user__isnull=False)
             
         paginator = AdminPagination()
         result_page = paginator.paginate_queryset(qs, request)

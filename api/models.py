@@ -1046,6 +1046,8 @@ class Report(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reports')
     song = models.ForeignKey('Song', on_delete=models.SET_NULL, null=True, blank=True, related_name='reports')
     artist = models.ForeignKey('Artist', on_delete=models.SET_NULL, null=True, blank=True, related_name='reports')
+    # If a user is being reported, store that relation here
+    reported_user = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True, related_name='reports_against')
     text = models.TextField()
     has_reviewed = models.BooleanField(default=False)
     reviewed_at = models.DateTimeField(null=True, blank=True)
@@ -1056,13 +1058,20 @@ class Report(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        target = f"Song: {self.song.title}" if self.song else f"Artist: {self.artist.name}" if self.artist else "Unknown"
+        if self.song:
+            target = f"Song: {self.song.title}"
+        elif self.artist:
+            target = f"Artist: {self.artist.name}"
+        elif self.reported_user:
+            target = f"User: {self.reported_user.phone_number}"
+        else:
+            target = "Unknown"
         return f"Report by {self.user.phone_number} on {target}"
 
     @property
     def related(self):
         """Return the related object (Song or Artist)."""
-        return self.song or self.artist
+        return self.song or self.artist or self.reported_user
 
 
 class PaymentTransaction(models.Model):
@@ -1171,4 +1180,25 @@ class InitialCheck(models.Model):
 
     def __str__(self):
         return f"InitialCheck for {self.user.phone_number}"
+
+
+class UserImageProfile(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_PUBLISHED = 'published'
+    STATUS_REJECTED = 'rejected'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_PUBLISHED, 'Published'),
+        (STATUS_REJECTED, 'Rejected'),
+    ]
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='image_profile')
+    image = models.ImageField(upload_to='user_profiles/')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"ImageProfile for {self.user.phone_number} - {self.status}"
 
