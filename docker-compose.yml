@@ -20,6 +20,7 @@ services:
       - "8000:8000"
     volumes:
       - static_volume:/app/static
+      - media_volume:/app/media
     networks:
       - soundbox_network
   db:
@@ -42,6 +43,7 @@ services:
 
 volumes:
   static_volume:
+  media_volume:
   db_data:
 
 networks:
