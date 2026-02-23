@@ -654,6 +654,9 @@ class UserHistorySerializer(serializers.ModelSerializer):
 
     def get_item(self, obj):
         request = self.context.get('request')
+        # Handle user profile views
+        if obj.content_type == UserHistory.TYPE_USER and obj.target_user:
+            return UserSearchSummarySerializer(obj.target_user, context={'request': request}).data
         if obj.content_type == UserHistory.TYPE_SONG and obj.song:
             return SongSummarySerializer(obj.song, context={'request': request}).data
         elif obj.content_type == UserHistory.TYPE_ALBUM and obj.album:

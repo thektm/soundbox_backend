@@ -655,7 +655,7 @@ class MyLibraryView(APIView):
         summary="تاریخچه کتابخانه کاربر",
         description="دریافت تاریخچه بازدیدها و فعالیت‌های کاربر در کتابخانه (آهنگ، آلبوم، پلی‌لیست، هنرمند).",
         parameters=[
-            OpenApiParameter("type", OpenApiTypes.STR, description="نوع محتوا (song, album, playlist, artist)"),
+            OpenApiParameter("type", OpenApiTypes.STR, description="نوع محتوا (song, album, playlist, artist, user)"),
             OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
             OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
         ],
@@ -689,7 +689,7 @@ class MyLibraryView(APIView):
         qs = UserHistory.objects.filter(user=request.user).order_by('-updated_at')
 
         if content_type:
-            if content_type not in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST]:
+            if content_type not in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST, UserHistory.TYPE_USER]:
                 return Response({"detail": "Invalid type."}, status=status.HTTP_400_BAD_REQUEST)
             qs = qs.filter(content_type=content_type)
 
@@ -712,6 +712,8 @@ class MyLibraryView(APIView):
                 data['item'] = SimplePlaylistSerializer(entry.playlist, context={'request': request}).data
             elif entry.content_type == UserHistory.TYPE_ARTIST and entry.artist:
                 data['item'] = ArtistSummarySerializer(entry.artist, context={'request': request}).data
+            elif entry.content_type == UserHistory.TYPE_USER and entry.target_user:
+                data['item'] = UserSearchSummarySerializer(entry.target_user, context={'request': request}).data
             else:
                 continue
                 
@@ -737,9 +739,9 @@ class UserHistoryView(generics.ListAPIView):
 
     @extend_schema(
         summary="تاریخچه فعالیت‌های کاربر",
-        description="دریافت لیست فعالیت‌های اخیر کاربر شامل آهنگ‌های پخش شده، آلبوم‌ها، هنرمندان و پلی‌لیست‌های مشاهده شده. قابلیت فیلتر بر اساس نوع (song, album, playlist, artist) را دارد.",
+        description="دریافت لیست فعالیت‌های اخیر کاربر شامل آهنگ‌ها، آلبوم‌ها، پلی‌لیست‌ها، هنرمندان و بازدیدهای پروفایل کاربران. قابلیت فیلتر بر اساس نوع (song, album, playlist, artist, user) را دارد.",
         parameters=[
-            OpenApiParameter("type", OpenApiTypes.STR, description="فیلتر بر اساس نوع محتوا (song, album, playlist, artist)"),
+            OpenApiParameter("type", OpenApiTypes.STR, description="فیلتر بر اساس نوع محتوا (song, album, playlist, artist, user)"),
         ],
         responses={200: UserHistorySerializer(many=True)}
     )
@@ -747,7 +749,7 @@ class UserHistoryView(generics.ListAPIView):
         queryset = UserHistory.objects.filter(user=self.request.user).order_by('-updated_at')
         content_type = self.request.query_params.get('type')
         if content_type:
-            if content_type in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST]:
+            if content_type in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST, UserHistory.TYPE_USER]:
                 queryset = queryset.filter(content_type=content_type)
         return queryset
 
@@ -841,10 +843,10 @@ class UserHistorySearchView(generics.ListAPIView):
 
     @extend_schema(
         summary="جستجو در تاریخچه کاربر",
-        description="جستجو و فیلتر در تاریخچه فعالیت‌های کاربر (آهنگ، آلبوم، پلی‌لیست، هنرمند).",
+        description="جستجو و فیلتر در تاریخچه فعالیت‌های کاربر (آهنگ، آلبوم، پلی‌لیست، هنرمند، بازدید پروفایل کاربران).",
         parameters=[
             OpenApiParameter('q', OpenApiTypes.STR, description='Query text to search titles/names'),
-            OpenApiParameter('type', OpenApiTypes.STR, description='Filter by content type (song, album, playlist, artist)'),
+            OpenApiParameter('type', OpenApiTypes.STR, description='Filter by content type (song, album, playlist, artist, user)'),
             OpenApiParameter('date_from', OpenApiTypes.DATE, description='Start date (YYYY-MM-DD)'),
             OpenApiParameter('date_to', OpenApiTypes.DATE, description='End date (YYYY-MM-DD)'),
             OpenApiParameter('page', OpenApiTypes.INT, description='Page number'),
@@ -3610,6 +3612,15 @@ class UserProfilePublicView(APIView):
             return Response(result)
 
         # default: full public profile
+        # Record profile view in history (skip if anonymous or viewing own profile)
+        if request.user.is_authenticated and request.user.id != user.id:
+            UserHistory.objects.update_or_create(
+                user=request.user,
+                content_type=UserHistory.TYPE_USER,
+                target_user=user,
+                defaults={'updated_at': timezone.now()}
+            )
+
         serializer = UserPublicProfileSerializer(user, context={'request': request})
         return Response(serializer.data)
 

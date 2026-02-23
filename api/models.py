@@ -915,12 +915,14 @@ class SearchSection(models.Model):
 
 class UserHistory(models.Model):
     """Tracks user interactions with songs, albums, playlists, and artists"""
+    TYPE_USER = 'user'
     TYPE_SONG = 'song'
     TYPE_ALBUM = 'album'
     TYPE_PLAYLIST = 'playlist'
     TYPE_ARTIST = 'artist'
     
     TYPE_CHOICES = [
+        (TYPE_USER, 'User'),
         (TYPE_SONG, 'Song'),
         (TYPE_ALBUM, 'Album'),
         (TYPE_PLAYLIST, 'Playlist'),
@@ -934,6 +936,8 @@ class UserHistory(models.Model):
     album = models.ForeignKey(Album, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
     playlist = models.ForeignKey(Playlist, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
     artist = models.ForeignKey(Artist, on_delete=models.CASCADE, null=True, blank=True, related_name='user_history')
+    # If the history entry is viewing another user's profile, store that user here
+    target_user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='profile_viewed_history')
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -948,7 +952,7 @@ class UserHistory(models.Model):
         ]
 
     def __str__(self):
-        item = self.song or self.album or self.playlist or self.artist
+        item = self.song or self.album or self.playlist or self.artist or self.target_user
         return f"{self.user.phone_number} viewed {self.content_type}: {item}"
 
 
