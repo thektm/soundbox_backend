@@ -691,6 +691,7 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
+    is_yours = serializers.SerializerMethodField()
     image_profile = UserImageProfileSerializer(read_only=True)
     user_playlists = serializers.SerializerMethodField()
 
@@ -699,6 +700,7 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'unique_id', 'first_name', 'last_name', 
             'followers_count', 'following_count', 'is_following',
+            'is_yours',
             'image_profile', 'plan', 'user_playlists'
         ]
 
@@ -713,6 +715,18 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return Follow.objects.filter(follower_user=request.user, followed_user=obj).exists()
         return False
+
+    def get_is_yours(self, obj):
+        request = self.context.get('request')
+        if not request:
+            return False
+        user = getattr(request, 'user', None)
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+        try:
+            return int(user.id) == int(obj.id)
+        except Exception:
+            return False
 
     def get_user_playlists(self, obj):
         # Only public user playlists

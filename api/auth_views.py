@@ -346,7 +346,15 @@ class AuthVerifyView(APIView):
                 user.roles.append(User.ROLE_ARTIST)
             if artist_password:
                 user.set_artist_password(artist_password)
-        user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])
+        # Ensure a numeric-only string `unique_id` is assigned if missing (use DB PK)
+        if not user.unique_id:
+            user.unique_id = str(user.id)
+            save_fields = ['is_verified', 'roles'] if artist_flag else ['is_verified']
+            if 'unique_id' not in save_fields:
+                save_fields.append('unique_id')
+            user.save(update_fields=save_fields)
+        else:
+            user.save(update_fields=['is_verified', 'roles'] if artist_flag else ['is_verified'])
         tokens = issue_tokens_for_user(user, request)
         from .serializers import UserSerializer
         user_data = UserSerializer(user, context={'request': request}).data
@@ -477,7 +485,12 @@ class LoginOtpVerifyView(APIView):
         # mark verified if not
         if not user.is_verified:
             user.is_verified = True
-            user.save(update_fields=['is_verified'])
+            # ensure numeric unique_id exists for newly-verified users
+            if not user.unique_id:
+                user.unique_id = str(user.id)
+                user.save(update_fields=['is_verified', 'unique_id'])
+            else:
+                user.save(update_fields=['is_verified'])
         tokens = issue_tokens_for_user(user, request)
         from .serializers import UserSerializer
         user_data = UserSerializer(user, context={'request': request}).data
@@ -619,6 +632,9 @@ class PasswordResetView(APIView):
                 user.set_artist_password(new_password)
             else:
                 user.set_password(new_password)
+            # ensure unique_id exists after password reset if missing
+            if not user.unique_id:
+                user.unique_id = str(user.id)
             user.save()
             # revoke refresh tokens
             RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
