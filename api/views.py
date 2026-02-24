@@ -235,7 +235,40 @@ class UserProfileView(APIView):
     )
     def get(self, request):
         serializer = UserSerializer(request.user, context={'request': request})
-        return Response(serializer.data)
+        data = serializer.data
+        
+        # Add 'image' field for main user from image_profile
+        data['image'] = ""
+        try:
+            if hasattr(request.user, 'image_profile') and request.user.image_profile.status == 'published' and request.user.image_profile.image:
+                data['image'] = request.build_absolute_uri(request.user.image_profile.image.url)
+        except Exception:
+            pass
+
+        # Patch 'image' field for user items in followers and following lists
+        user_ids_to_fetch = []
+        for key in ['followers', 'following']:
+            if key in data and isinstance(data[key], dict) and 'items' in data[key]:
+                for item in data[key]['items']:
+                    if item.get('type') == 'user':
+                        user_ids_to_fetch.append(item.get('id'))
+        
+        if user_ids_to_fetch:
+            profiles = {
+                p.user_id: p for p in UserImageProfile.objects.filter(
+                    user_id__in=user_ids_to_fetch, 
+                    status='published'
+                ).only('user_id', 'image')
+            }
+            for key in ['followers', 'following']:
+                if key in data and isinstance(data[key], dict) and 'items' in data[key]:
+                    for item in data[key]['items']:
+                        if item.get('type') == 'user':
+                            profile = profiles.get(item.get('id'))
+                            if profile and profile.image:
+                                item['image'] = request.build_absolute_uri(profile.image.url)
+
+        return Response(data)
 
     @extend_schema(
         summary="ویرایش پروفایل کاربر",
@@ -3552,7 +3585,7 @@ class UserProfilePublicView(APIView):
                     page, page_size = 1, 10
 
                 offset = (page - 1) * page_size
-                qs = Follow.objects.filter(followed_user=user).order_by('-created_at')
+                qs = Follow.objects.filter(followed_user=user).select_related('follower_user', 'follower_user__image_profile', 'follower_artist').order_by('-created_at')
                 total = qs.count()
                 items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
                 has_next = total > offset + page_size
@@ -3568,8 +3601,17 @@ class UserProfilePublicView(APIView):
                     params['f_page_size'] = str(page_size)
                     next_url = request.build_absolute_uri(base + '?' + params.urlencode())
 
+                items_data = FollowableEntitySerializer(items, many=True, context={'request': request}).data
+                for i, item_data in enumerate(items_data):
+                    if item_data.get('type') == 'user':
+                        user_obj = items[i]
+                        try:
+                            if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
+                                item_data['image'] = request.build_absolute_uri(user_obj.image_profile.image.url)
+                        except Exception: pass
+
                 result['followers'] = {
-                    'items': FollowableEntitySerializer(items, many=True, context={'request': request}).data,
+                    'items': items_data,
                     'total': total,
                     'page': page,
                     'has_next': has_next,
@@ -3585,7 +3627,7 @@ class UserProfilePublicView(APIView):
                     page, page_size = 1, 10
 
                 offset = (page - 1) * page_size
-                qs = Follow.objects.filter(follower_user=user).order_by('-created_at')
+                qs = Follow.objects.filter(follower_user=user).select_related('followed_user', 'followed_user__image_profile', 'followed_artist').order_by('-created_at')
                 total = qs.count()
                 items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
                 has_next = total > offset + page_size
@@ -3601,8 +3643,17 @@ class UserProfilePublicView(APIView):
                     params['fg_page_size'] = str(page_size)
                     next_url = request.build_absolute_uri(base + '?' + params.urlencode())
 
+                items_data = FollowableEntitySerializer(items, many=True, context={'request': request}).data
+                for i, item_data in enumerate(items_data):
+                    if item_data.get('type') == 'user':
+                        user_obj = items[i]
+                        try:
+                            if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
+                                item_data['image'] = request.build_absolute_uri(user_obj.image_profile.image.url)
+                        except Exception: pass
+
                 result['following'] = {
-                    'items': FollowableEntitySerializer(items, many=True, context={'request': request}).data,
+                    'items': items_data,
                     'total': total,
                     'page': page,
                     'has_next': has_next,
@@ -3622,7 +3673,17 @@ class UserProfilePublicView(APIView):
             )
 
         serializer = UserPublicProfileSerializer(user, context={'request': request})
-        return Response(serializer.data)
+        data = serializer.data
+        
+        # Add 'image' field for main user from image_profile
+        data['image'] = ""
+        try:
+            if hasattr(user, 'image_profile') and user.image_profile.status == 'published' and user.image_profile.image:
+                data['image'] = request.build_absolute_uri(user.image_profile.image.url)
+        except Exception:
+            pass
+
+        return Response(data)
 
 
 class SedaBoxProfileView(APIView):

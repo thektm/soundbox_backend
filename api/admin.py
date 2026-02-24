@@ -7,7 +7,8 @@ from .models import (
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
     InitialCheck,
-    PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform, Report
+    PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform, Report,
+    UserImageProfile
 )
 from .models import OtpCode
 from .models import ActivePlayback
@@ -170,6 +171,15 @@ class OtpCodeAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'code', 'code_hash')
     raw_id_fields = ('user',)
     ordering = ('-created_at',)
+
+
+@admin.register(UserImageProfile)
+class UserImageProfileAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'status', 'created_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('user__phone_number', 'user__unique_id')
+    readonly_fields = ('created_at', 'updated_at')
+    raw_id_fields = ('user',)
 
 
 @admin.register(Album)
