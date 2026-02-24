@@ -67,10 +67,17 @@ def generate_unique_numeric_id(length=10):
 
 def parse_artist_flag(request) -> bool:
     """Read `artist` flag from query params only (no body fallback)."""
+    # Primary source: query params (preferred for public API calls)
     try:
         val = request.query_params.get('artist')
     except Exception:
         val = None
+    # Fallback: allow `artist` in JSON body for clients that send it there
+    if val is None:
+        try:
+            val = request.data.get('artist') if hasattr(request, 'data') else None
+        except Exception:
+            val = None
     if isinstance(val, bool):
         return val
     if val is None:
@@ -142,6 +149,10 @@ def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
 
     # Ensure phone is in local format (09xxxxxxxxx)
     receptor = normalize_phone(phone)
+    # Basic validation: receptor must look like a local mobile number
+    if not receptor or len(receptor) != 11 or not receptor.startswith('09'):
+        logger.error('Invalid phone format for Kavenegar receptor: %s', receptor)
+        return False
 
     url = f"https://api.kavenegar.com/v1/{api_key}/verify/lookup.json"
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
@@ -152,6 +163,7 @@ def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
     }
 
     try:
+        logger.debug('Kavenegar request prepared: url=%s template=%s receptor=%s', url, template_name, receptor)
         resp = requests.post(url, data=data, headers=headers, timeout=5)
         if resp.status_code != 200:
             logger.error('Kavenegar returned non-200 status: %s %s', resp.status_code, resp.text)
@@ -171,6 +183,8 @@ def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5)
     # Persist both hashed and plaintext OTP. Plaintext is stored for admin visibility only.
     otp_obj = OtpCode.objects.create(user=user, code_hash=hashed, code=otp, purpose=purpose, expires_at=expires)
     # send SMS and log result to help debugging in development
+    logger = logging.getLogger(__name__)
+    logger.debug('Created OTP object id=%s purpose=%s phone=%s (plaintext logged for admin)', otp_obj.id, purpose, phone)
     sent = send_sms(phone, otp, purpose, minutes)
     logger = logging.getLogger(__name__)
     if sent:
