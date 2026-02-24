@@ -86,7 +86,8 @@ from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Q, Count, Avg, F
+from django.db.models import Q, Count, Avg, F, Value
+from django.db.models.functions import Concat, Replace, Lower
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from rest_framework import serializers
@@ -1212,12 +1213,49 @@ class ArtistListView(APIView):
 
     @extend_schema(
         summary="لیست هنرمندان",
-        description="دریافت لیست تمامی هنرمندان ثبت شده در سامانه.",
+        description="دریافت لیست تمامی هنرمندان ثبت شده در سامانه. Supports `q` (search) and `unlinked` query params.",
+        parameters=[
+            OpenApiParameter('q', OpenApiTypes.STR, description='Search query (spaces ignored, partial match)'),
+            OpenApiParameter('unlinked', OpenApiTypes.BOOL, description='If true, return only artists without a linked user')
+        ],
         responses={200: ArtistSerializer(many=True)}
     )
     def get(self, request):
-        artists = Artist.objects.all()
-        serializer = ArtistSerializer(artists, many=True, context={'request': request})
+        """List artists. Query params:
+        - `q`: text to search in `name` and `artistic_name` (spaces ignored)
+        - `unlinked`: boolean; if true only include artists with `user IS NULL`.
+        """
+        qs = Artist.objects.all()
+
+        # unlinked filter
+        unlinked_val = request.query_params.get('unlinked')
+        if unlinked_val is not None:
+            try:
+                if isinstance(unlinked_val, bool):
+                    unlinked = unlinked_val
+                else:
+                    unlinked = str(unlinked_val).lower() in ('1', 'true', 'yes', 'on')
+            except Exception:
+                unlinked = False
+            if unlinked:
+                qs = qs.filter(user__isnull=True)
+
+        # search query: ignore spaces in both stored fields and query
+        q = request.query_params.get('q') or request.query_params.get('query')
+        if q:
+            q_norm = ''.join(q.split()).lower()
+            # build combined field (name + artistic_name), remove spaces and lowercase
+            qs = qs.annotate(
+                _combined=Lower(
+                    Replace(
+                        Concat(F('name'), Value(' '), F('artistic_name')),
+                        Value(' '),
+                        Value('')
+                    )
+                )
+            ).filter(_combined__contains=q_norm)
+
+        serializer = ArtistSerializer(qs, many=True, context={'request': request})
         return Response(serializer.data)
 
     @extend_schema(

@@ -220,6 +220,7 @@ urlpatterns = [
     
     # Utility , DetailScreens & action Endpoints 
     path('follow/', UserFollowView.as_view(), name='user_follow'),
+    path('artists/', ArtistListView.as_view(), name='artist_list'),
     path('artists/<int:pk>/', ArtistDetailView.as_view(), name='artist_detail'),
     path('albums/<int:pk>/', AlbumDetailView.as_view(), name='album_detail'),
     path('albums/<int:pk>/like/', AlbumLikeView.as_view(), name='album_like'),
