@@ -282,15 +282,23 @@ class AuthRegisterView(APIView):
                 return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
             # If already verified, block registration
             if existing.is_verified:
-                # If client requested artist role, add it to the existing user
+                # If client requested artist role, send a verification OTP to confirm
                 if artist_flag:
-                    # add artist role to existing roles
-                    if User.ROLE_ARTIST not in existing.roles:
-                        existing.roles.append(User.ROLE_ARTIST)
+                    # rate-limit similar to unverified flow
+                    last_otp = OtpCode.objects.filter(user=existing, purpose=OtpCode.PURPOSE_VERIFY).order_by('-created_at').first()
+                    if last_otp:
+                        elapsed = timezone.now() - last_otp.created_at
+                        if elapsed < timedelta(minutes=1):
+                            retry_after = int((timedelta(minutes=1) - elapsed).total_seconds())
+                            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                    # store artist password now so user can verify and become artist (verify will add role)
                     if artist_password:
                         existing.set_artist_password(artist_password)
-                    existing.save()
-                    return Response({'status': 'ok', 'message': 'Artist role added to user'}, status=status.HTTP_200_OK)
+                        existing.save(update_fields=['artist_password'])
+                    otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
+                    if sent:
+                        return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+                    return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                 return Response({'error': {'code': 'USER_EXISTS', 'message': 'Phone already registered'}}, status=status.HTTP_409_CONFLICT)
             # Not verified: allow resend but rate-limit to 1 minute since last verify OTP
             last_otp = OtpCode.objects.filter(user=existing, purpose=OtpCode.PURPOSE_VERIFY).order_by('-created_at').first()
