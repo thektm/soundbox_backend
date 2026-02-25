@@ -7425,6 +7425,92 @@ class ArtistAlbumsManagementView(APIView):
         return Response({"message": "Album deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
+class ArtistAlbumSongsView(APIView):
+    """
+    Manage songs assigned to a specific album for the authenticated artist.
+
+    POST: assign one or more existing songs (that belong to the artist) to the album.
+    DELETE: remove one or more songs from the album (sets their album to null).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_artist(self, user):
+        if User.ROLE_ARTIST not in user.roles:
+            return None
+        try:
+            return user.artist_profile
+        except Artist.DoesNotExist:
+            return None
+
+    @extend_schema(
+        summary="اضافه یا اختصاص آهنگ‌ها به آلبوم",
+        description="اختصاص لیستی از `song_ids` به آلبوم مشخص. فقط آهنگ‌های متعلق به این هنرمند پذیرفته می‌شوند.",
+        request=inline_serializer(name='AssignSongsToAlbum', fields={
+            'song_ids': serializers.ListField(child=serializers.IntegerField())
+        }),
+        responses={200: SongSerializer(many=True)}
+    )
+    def post(self, request, pk):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        album = get_object_or_404(Album, pk=pk, artist=artist)
+
+        raw = request.data.get('song_ids') or request.data.get('song_id') or request.data.getlist('song_ids')
+        song_ids = _normalize_id_list(raw)
+        if not song_ids:
+            return Response({'error': 'song_ids is required (list of integers)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Only update songs that belong to this artist
+        qs = Song.objects.filter(id__in=song_ids, artist=artist)
+        updated_count = qs.update(album=album)
+
+        updated_ids = list(qs.values_list('id', flat=True))
+        missing = [i for i in song_ids if i not in updated_ids]
+
+        songs = Song.objects.filter(id__in=updated_ids)
+        return Response({
+            'updated_count': updated_count,
+            'updated_ids': updated_ids,
+            'missing_or_not_owned_ids': missing,
+            'songs': SongSerializer(songs, many=True, context={'request': request}).data
+        })
+
+    @extend_schema(
+        summary="حذف اختصاص آهنگ‌ها از آلبوم",
+        description="حذف رابطهٔ آلبوم از روی یک یا چند آهنگ (تنها اگر آن آهنگ‌ها در این آلبوم باشند).",
+        request=inline_serializer(name='RemoveSongsFromAlbum', fields={
+            'song_ids': serializers.ListField(child=serializers.IntegerField())
+        }),
+        responses={200: inline_serializer(name='RemoveFromAlbumResponse', fields={'removed_count': serializers.IntegerField()})}
+    )
+    def delete(self, request, pk):
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        album = get_object_or_404(Album, pk=pk, artist=artist)
+
+        raw = request.data.get('song_ids') or request.data.get('song_id') or request.data.getlist('song_ids')
+        song_ids = _normalize_id_list(raw)
+        if not song_ids:
+            return Response({'error': 'song_ids is required (list of integers)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Only remove album relation if the song currently belongs to this album and the artist matches
+        qs = Song.objects.filter(id__in=song_ids, artist=artist, album=album)
+        removed_count = qs.update(album=None)
+        removed_ids = list(qs.values_list('id', flat=True))
+        missing = [i for i in song_ids if i not in removed_ids]
+
+        return Response({
+            'removed_count': removed_count,
+            'removed_ids': removed_ids,
+            'missing_or_not_owned_or_not_in_album': missing
+        })
+
+
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
 class ReportCreateView(generics.CreateAPIView):
     """Endpoint for users to submit reports for songs or artists."""
