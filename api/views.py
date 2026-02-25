@@ -93,6 +93,7 @@ from django.urls import reverse
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
 from collections import Counter
+import json
 
 
 
@@ -125,6 +126,81 @@ def make_safe_filename(s: str) -> str:
     cleaned = ''.join(ch for ch in s if ch in allowed)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
+
+
+def _normalize_id_list(value):
+    """Normalize incoming id list values from multipart/form-data or JSON.
+
+    Accepts:
+    - a list of strings/ints -> returns list of ints
+    - a single string containing JSON array -> returns list of ints
+    - a comma-separated string like "1,2" -> returns list of ints
+    - a single numeric string or int -> returns [int]
+    - returns None for empty/invalid
+    """
+    if value is None:
+        return None
+
+    # If already a list, try to flatten and parse elements
+    if isinstance(value, list):
+        out = []
+        for v in value:
+            # If element looks like a JSON array string, parse it
+            if isinstance(v, str) and v.startswith('[') and v.endswith(']'):
+                try:
+                    parsed = json.loads(v)
+                    out.extend(parsed if isinstance(parsed, list) else [parsed])
+                    continue
+                except Exception:
+                    pass
+            # If comma-separated string inside list element
+            if isinstance(v, str) and ',' in v:
+                parts = [p.strip() for p in v.split(',') if p.strip()]
+                out.extend(parts)
+                continue
+            out.append(v)
+        value = out
+
+    # If string, try JSON decode or comma split
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        if s.startswith('[') and s.endswith(']'):
+            try:
+                parsed = json.loads(s)
+                value = parsed
+            except Exception:
+                # fall through to comma-split
+                pass
+        elif ',' in s:
+            value = [p.strip() for p in s.split(',') if p.strip()]
+        else:
+            # single scalar string
+            value = [s]
+
+    # Now expect iterable
+    try:
+        iter(value)
+    except TypeError:
+        return None
+
+    out_ids = []
+    for item in value:
+        if item is None or item == '':
+            continue
+        try:
+            out_ids.append(int(item))
+        except Exception:
+            # ignore non-integer items
+            try:
+                # sometimes items are dicts with id
+                if isinstance(item, dict) and 'id' in item:
+                    out_ids.append(int(item['id']))
+            except Exception:
+                continue
+
+    return out_ids if out_ids else None
 
 
 class RegisterView(APIView):
@@ -6835,11 +6911,12 @@ class ArtistSongsManagementView(APIView):
         # Map many-to-many id lists to serializer write-only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
             if hasattr(request.data, 'getlist'):
-                val = request.data.getlist(field)
+                raw_val = request.data.getlist(field)
             else:
-                val = request.data.get(field)
-            if val:
-                clean[f"{field}_write"] = val
+                raw_val = request.data.get(field)
+            normalized = _normalize_id_list(raw_val)
+            if normalized:
+                clean[f"{field}_write"] = normalized
 
         # Attach the derived fields (strings/ids only)
         clean['artist'] = artist.id
@@ -6894,7 +6971,10 @@ class ArtistSongsManagementView(APIView):
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
             if field in data and f"{field}_write" not in data:
-                data[f"{field}_write"] = data.getlist(field) if hasattr(data, 'getlist') else data[field]
+                raw_val = data.getlist(field) if hasattr(data, 'getlist') else data.get(field)
+                normalized = _normalize_id_list(raw_val)
+                if normalized is not None:
+                    data[f"{field}_write"] = normalized
         
         audio_file = request.FILES.get('audio_file')
         if audio_file:
