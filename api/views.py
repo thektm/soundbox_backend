@@ -6856,7 +6856,8 @@ class ArtistSongsManagementView(APIView):
 
         serializer = SongSerializer(data=clean, context={'request': request})
         if serializer.is_valid():
-            serializer.save()
+            # Ensure the created Song gets linked to the artist instance
+            serializer.save(artist=artist)
             print(f"DEBUG: Song saved successfully. ID: {serializer.instance.id}")
             return Response({
                 "message": "OK",
