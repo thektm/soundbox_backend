@@ -6808,7 +6808,26 @@ class ArtistSongsManagementView(APIView):
         
         status_param = request.query_params.get('status')
         if status_param:
-            queryset = queryset.filter(status=status_param)
+            # Support comma-separated values, case-insensitive matching against allowed statuses
+            raw = status_param
+            parts = [p.strip() for p in raw.split(',') if p.strip()]
+            allowed = {c[0] for c in Song.STATUS_CHOICES}
+            valid = []
+            for p in parts:
+                if p in allowed:
+                    valid.append(p)
+                    continue
+                pl = p.lower()
+                for a in allowed:
+                    if a.lower() == pl:
+                        valid.append(a)
+                        break
+
+            if valid:
+                queryset = queryset.filter(status__in=valid)
+            else:
+                # If no valid status tokens provided, return empty result set
+                queryset = queryset.none()
 
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(queryset, request)
@@ -7047,6 +7066,80 @@ class ArtistSongsManagementView(APIView):
                 "song": serializer.data
             })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk=None):
+        """Delete a song record and try to remove related files from R2 (best-effort).
+
+        Returns OK if the DB record is removed regardless of R2 deletion success.
+        """
+        artist = self.get_artist(request.user)
+        if not artist:
+            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+
+        song = get_object_or_404(Song, pk=pk, artist=artist)
+
+        # Collect possible file URLs from the song
+        file_urls = []
+        for field in ('audio_file', 'converted_audio_url', 'cover_image'):
+            val = getattr(song, field, None)
+            if val:
+                file_urls.append(val)
+
+        # Helper to extract object key from CDN/R2 URLs (similar to utils.generate_signed_r2_url)
+        from urllib.parse import unquote
+        cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+
+        client_kwargs = {
+            'service_name': 's3',
+            'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
+            'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
+            'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
+            'config': Config(signature_version='s3v4'),
+        }
+        session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
+        if session_token:
+            client_kwargs['aws_session_token'] = session_token
+        client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
+
+        s3 = None
+        tried_delete = []
+        for url in file_urls:
+            key = None
+            try:
+                if url.startswith(cdn_base):
+                    key = unquote(url.replace(cdn_base + '/', ''))
+                elif 'r2.cloudflarestorage.com' in url or 'r2.dev' in url:
+                    parts = url.split('/')
+                    if len(parts) > 3:
+                        key = unquote('/'.join(parts[3:]))
+                elif url.startswith('http'):
+                    # External URL not in our R2; skip deletion
+                    key = None
+
+                if not key:
+                    continue
+
+                # Lazy-create client
+                if s3 is None:
+                    s3 = boto3.client(**client_kwargs)
+
+                bucket = getattr(settings, 'R2_BUCKET_NAME')
+                try:
+                    s3.delete_object(Bucket=bucket, Key=key)
+                    tried_delete.append(key)
+                except Exception as e:
+                    # Best-effort: log and continue
+                    print(f"DEBUG: Failed to delete R2 object {key}: {e}")
+            except Exception as e:
+                print(f"DEBUG: Error while attempting to parse/delete URL {url}: {e}")
+
+        # Delete DB record regardless of R2 deletion outcome
+        try:
+            song.delete()
+        except Exception as e:
+            return Response({"error": "Failed to delete song record", "detail": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"message": "OK", "deleted_files": tried_delete})
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
