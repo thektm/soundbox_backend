@@ -1126,11 +1126,10 @@ class SongUploadView(APIView):
             cover_url = ""
             if data.get('cover_image'):
                 cover_file = data['cover_image']
-                cover_filename = f"{safe_filename_base}_cover.{cover_file.name.split('.')[-1]}"
+                # Keep original name and format for cover image
                 cover_url, _ = upload_file_to_r2(
                     cover_file,
-                    folder='covers',
-                    custom_filename=cover_filename
+                    folder='covers'
                 )
             
             # Create song record
@@ -6810,9 +6809,8 @@ class ArtistSongsManagementView(APIView):
         cover_image = request.FILES.get('cover_image')
         cover_url = ""
         if cover_image:
-            _, ext = os.path.splitext(cover_image.name)
-            cover_filename = f"{safe_filename_base}_cover{ext}"
-            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers')
 
         # Create a clean dict (avoid copying request.data which may include file objects)
         clean = {}
@@ -6934,19 +6932,8 @@ class ArtistSongsManagementView(APIView):
 
         cover_image = request.FILES.get('cover_image')
         if cover_image:
-            title = data.get('title', song.title)
-            artist_name = artist.artistic_name or artist.name
-            featured = data.getlist('featured_artists') if hasattr(data, 'getlist') else data.get('featured_artists', song.featured_artists)
-            
-            if featured:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
-            else:
-                filename_base = f"{artist_name} - {title}"
-            
-            safe_filename_base = make_safe_filename(filename_base)
-            _, ext = os.path.splitext(cover_image.name)
-            cover_filename = f"{safe_filename_base}_cover{ext}"
-            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers')
             data['cover_image'] = cover_url
 
         serializer = SongSerializer(song, data=data, partial=partial, context={'request': request})

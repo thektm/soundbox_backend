@@ -649,25 +649,8 @@ class AdminSongDetailView(APIView):
         # Handle cover image upload
         cover_image = request.FILES.get('cover_image_upload')
         if cover_image:
-            title = data.get('title', song.title)
-            artist = song.artist
-            if 'artist' in data:
-                try:
-                    artist = Artist.objects.get(pk=data['artist'])
-                except Artist.DoesNotExist:
-                    pass
-            artist_name = artist.artistic_name or artist.name
-            
-            featured = data.get('featured_artists', song.featured_artists)
-            if featured:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
-            else:
-                filename_base = f"{artist_name} - {title}"
-            
-            safe_filename_base = filename_base
-            _, ext = os.path.splitext(cover_image.name)
-            cover_filename = f"{safe_filename_base}_cover{ext}"
-            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers')
             data['cover_image'] = cover_url
 
         serializer = AdminSongSerializer(song, data=data, partial=partial)
@@ -1091,17 +1074,8 @@ class AdminAlbumDetailView(APIView):
         # Handle cover image upload
         cover_image = request.FILES.get('cover_image_upload')
         if cover_image:
-            artist = album.artist
-            if 'artist' in data:
-                try:
-                    artist = Artist.objects.get(pk=data['artist'])
-                except Artist.DoesNotExist:
-                    pass
-            artist_name = artist.artistic_name or artist.name
-            safe_title = "".join([c for c in data.get('title', album.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in artist_name if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            cover_filename = f"{safe_artist} - {safe_title}_album_cover"
-            cover_url, _ = upload_file_to_r2(cover_image, folder='covers', custom_filename=cover_filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_image, folder='covers')
             data['cover_image'] = cover_url
 
         serializer = AdminAlbumSerializer(album, data=data, partial=partial)
@@ -1454,9 +1428,8 @@ class AdminEventPlaylistDetailView(APIView):
         data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
-            safe_title = "".join([c for c in data.get('title', event.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"event_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
-            cover_url, _ = upload_file_to_r2(cover_file, folder='events/covers', custom_filename=filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_file, folder='events/covers')
             data['cover_image'] = cover_url
 
         serializer = AdminEventPlaylistSerializer(event, data=data, partial=True)
@@ -1504,9 +1477,8 @@ class AdminPlaylistListView(APIView):
         data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
-            safe_title = "".join([c for c in data.get('title', 'playlist') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"playlist_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
-            cover_url, _ = upload_file_to_r2(cover_file, folder='playlists/covers', custom_filename=filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_file, folder='playlists/covers')
             data['cover_image'] = cover_url
 
         serializer = AdminPlaylistSerializer(data=data)
@@ -1543,9 +1515,8 @@ class AdminPlaylistDetailView(APIView):
         data = request.data.copy()
         cover_file = request.FILES.get('cover_image_upload')
         if cover_file:
-            safe_title = "".join([c for c in data.get('title', playlist.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            filename = f"playlist_cover_{safe_title}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
-            cover_url, _ = upload_file_to_r2(cover_file, folder='playlists/covers', custom_filename=filename)
+            # Keep original name and format for cover image
+            cover_url, _ = upload_file_to_r2(cover_file, folder='playlists/covers')
             data['cover_image'] = cover_url
 
         serializer = AdminPlaylistSerializer(playlist, data=data, partial=True)
