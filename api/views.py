@@ -133,6 +133,7 @@ def _normalize_id_list(value):
 
     Accepts:
     - a list of strings/ints -> returns list of ints
+    - a list containing another list (fix for QueryDict quirk) -> flattens and returns list of ints
     - a single string containing JSON array -> returns list of ints
     - a comma-separated string like "1,2" -> returns list of ints
     - a single numeric string or int -> returns [int]
@@ -145,6 +146,10 @@ def _normalize_id_list(value):
     if isinstance(value, list):
         out = []
         for v in value:
+            # Flatten if nested list (Django QueryDict quirk when manually setting list values)
+            if isinstance(v, list):
+                out.extend(v)
+                continue
             # If element looks like a JSON array string, parse it
             if isinstance(v, str) and v.startswith('[') and v.endswith(']'):
                 try:
@@ -6619,7 +6624,12 @@ class ArtistSettingsView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
-        data = request.data.copy()
+        # Create a plain dict for the serializer input to avoid QueryDict and pickling issues
+        data = {}
+        for key in request.data:
+            val = request.data.get(key)
+            if not hasattr(val, 'read'): # Skip file handles
+                data[key] = val
 
         # Handle images (upload to R2 and store URL)
         profile_file = request.FILES.get('profile_image')
@@ -6966,12 +6976,24 @@ class ArtistSongsManagementView(APIView):
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
         
-        data = request.data.copy()
+        # Create a plain dict for the serializer input to avoid QueryDict list-of-lists and pickling issues
+        data = {}
+        list_fields = ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids', 'featured_artists', 
+                       'producers', 'composers', 'lyricists', 
+                       'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write', 'tag_ids_write',
+                       'genres', 'sub_genres', 'moods', 'tags']
+        for key in request.data:
+            if hasattr(request.data, 'getlist') and key in list_fields:
+                data[key] = request.data.getlist(key)
+            else:
+                val = request.data.get(key)
+                if not hasattr(val, 'read'): # Skip file handles
+                    data[key] = val
 
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
             if field in data and f"{field}_write" not in data:
-                raw_val = data.getlist(field) if hasattr(data, 'getlist') else data.get(field)
+                raw_val = data.get(field)
                 normalized = _normalize_id_list(raw_val)
                 if normalized is not None:
                     data[f"{field}_write"] = normalized
@@ -7096,12 +7118,24 @@ class ArtistAlbumsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         # 1. Create Album
-        album_data = request.data.copy()
+        # Create a plain dict for the serializer input to avoid QueryDict issues and pickling errors
+        album_data = {}
+        list_fields = ['genre_ids', 'sub_genre_ids', 'mood_ids', 'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write']
+        for key in request.data:
+            if hasattr(request.data, 'getlist') and key in list_fields:
+                album_data[key] = request.data.getlist(key)
+            else:
+                val = request.data.get(key)
+                if not hasattr(val, 'read'): # Skip file handles
+                    album_data[key] = val
         
         # Map user-friendly field names to serializer write_only fields for album
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
             if field in album_data and f"{field}_write" not in album_data:
-                album_data[f"{field}_write"] = album_data.getlist(field) if hasattr(album_data, 'getlist') else album_data[field]
+                raw_val = album_data.get(field)
+                normalized = _normalize_id_list(raw_val)
+                if normalized is not None:
+                    album_data[f"{field}_write"] = normalized
 
         # Handle album cover
         album_cover = request.FILES.get('cover_image')
@@ -7247,12 +7281,24 @@ class ArtistAlbumsManagementView(APIView):
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
         
-        album_data = request.data.copy()
+        # Create a plain dict for the serializer input to avoid QueryDict issues and pickling errors
+        album_data = {}
+        list_fields = ['genre_ids', 'sub_genre_ids', 'mood_ids', 'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write']
+        for key in request.data:
+            if hasattr(request.data, 'getlist') and key in list_fields:
+                album_data[key] = request.data.getlist(key)
+            else:
+                val = request.data.get(key)
+                if not hasattr(val, 'read'): # Skip file handles
+                    album_data[key] = val
         
         # Map user-friendly field names to serializer write_only fields for album
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids']:
             if field in album_data and f"{field}_write" not in album_data:
-                album_data[f"{field}_write"] = album_data.getlist(field) if hasattr(album_data, 'getlist') else album_data[field]
+                raw_val = album_data.get(field)
+                normalized = _normalize_id_list(raw_val)
+                if normalized is not None:
+                    album_data[f"{field}_write"] = normalized
 
         album_cover = request.FILES.get('cover_image')
         if album_cover:
