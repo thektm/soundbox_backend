@@ -77,6 +77,12 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None, bitrate_label=N
 
     if custom_filename:
         filename = custom_filename
+        # If custom filename doesn't include an extension, preserve original file's extension
+        base_custom, ext_custom = os.path.splitext(filename)
+        if not ext_custom:
+            _, ext_orig = os.path.splitext(original_filename)
+            if ext_orig:
+                filename = f"{filename}{ext_orig}"
     else:
         filename = original_filename
 
@@ -87,9 +93,14 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None, bitrate_label=N
 
     print(f"DEBUG: upload_file_to_r2: filename={filename}, folder={folder}, bitrate_label={bitrate_label}")
 
-    # Get original format
+    # Get original format (from original uploaded filename)
     _, ext = os.path.splitext(original_filename)
-    original_format = ext.lstrip('.').lower()
+    original_format = ext.lstrip('.').lower() if ext else ''
+
+    # If for some reason filename still lacks extension, append original extension
+    file_base, file_ext = os.path.splitext(filename)
+    if not file_ext and ext:
+        filename = f"{filename}{ext}"
 
     # Build boto3 client
     client_kwargs = {

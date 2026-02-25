@@ -137,13 +137,15 @@ class AlbumSummarySerializer(serializers.ModelSerializer):
 
     def get_cover_image(self, obj):
         if obj.cover_image:
-            return obj.cover_image
+            signed = generate_signed_r2_url(obj.cover_image)
+            return signed if signed else obj.cover_image
         # Fallback to the first song's cover if available
         try:
             songs = obj.songs.all()
             first_song = songs[0] if songs else None
             if first_song:
-                return first_song.cover_image
+                signed = generate_signed_r2_url(first_song.cover_image) if first_song.cover_image else None
+                return signed if signed else first_song.cover_image
         except Exception:
             pass
         return None
@@ -386,6 +388,9 @@ class FollowableEntitySerializer(serializers.Serializer):
 
     def get_image(self, obj):
         if isinstance(obj, Artist):
+            if obj.profile_image:
+                signed = generate_signed_r2_url(obj.profile_image)
+                return signed if signed else obj.profile_image
             return obj.profile_image
         # Users might store profile image in settings or we can return empty
         return obj.settings.get('profile_image', '') if isinstance(obj.settings, dict) else ''
@@ -1121,7 +1126,13 @@ class AlbumSerializer(serializers.ModelSerializer):
             # Fallback to the cover image of the first song in the album if the album cover is missing
             first_song = instance.songs.all().first()
             if first_song and first_song.cover_image:
-                representation['cover_image'] = first_song.cover_image
+                signed = generate_signed_r2_url(first_song.cover_image)
+                representation['cover_image'] = signed if signed else first_song.cover_image
+        # Ensure album cover (if present) is a signed URL when served from our CDN
+        if representation.get('cover_image'):
+            signed = generate_signed_r2_url(representation['cover_image'])
+            representation['cover_image'] = signed if signed else representation['cover_image']
+
         return representation
 
 
