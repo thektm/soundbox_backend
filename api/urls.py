@@ -247,7 +247,7 @@ urlpatterns = [
     path('artist/live-listeners/', ArtistLiveListenersView.as_view(), name='artist_live_listeners'),
     path('artist/live-listeners/poll/', ArtistLiveListenersPollView.as_view(), name='artist_live_listeners_poll'),
     path('artist/songs/', ArtistSongsManagementView.as_view(), name='artist_songs_management'),
-    path('artist/songs/upload/', ArtistSongsManagementView.as_view(), name='artist_songs_upload'),
+    
     path('artist/songs/<int:pk>/', ArtistSongsManagementView.as_view(), name='artist_songs_detail'),
     path('artist/albums/', ArtistAlbumsManagementView.as_view(), name='artist_albums_management'),
     path('artist/albums/<int:pk>/', ArtistAlbumsManagementView.as_view(), name='artist_albums_detail'),
