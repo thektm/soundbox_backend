@@ -1276,13 +1276,6 @@ class SongSerializer(serializers.ModelSerializer):
     mood_ids = serializers.SerializerMethodField()
     tag_ids = serializers.SerializerMethodField()
 
-    # Allow cleaning of featured_artists on update/create
-    featured_artists = serializers.ListField(
-        child=serializers.CharField(max_length=255),
-        required=False,
-        allow_empty=True
-    )
-
     def get_genre_ids(self, obj):
         return [{'id': genre.id, 'title': genre.name} for genre in obj.genres.all()]
 
@@ -1295,22 +1288,14 @@ class SongSerializer(serializers.ModelSerializer):
     def get_tag_ids(self, obj):
         return [{'id': tag.id, 'title': tag.name} for tag in obj.tags.all()]
     
-    def _clean_string_list(self, value):
-        if value is None:
-            return []
-        if isinstance(value, str):
-            v = value.strip()
-            return [v] if v else []
-        if isinstance(value, (list, tuple)):
-            cleaned = [s.strip() for s in value if isinstance(s, str) and s.strip()]
-            return cleaned
-        return []
-
-    def validate_featured_artists(self, value):
-        return self._clean_string_list(value)
-    
     # Read-only paginated similar songs block
     similar_songs = serializers.SerializerMethodField()
+
+    def validate_featured_artists(self, value):
+        """Filter out empty or whitespace-only strings before saving to model."""
+        if not value:
+            return []
+        return [str(v) for v in value if v and str(v).strip()]
     
     class Meta:
         model = Song
@@ -1611,25 +1596,6 @@ class SongUploadSerializer(serializers.Serializer):
         allow_empty=True,
         default=list
     )
-
-    def _clean_string_list(self, value):
-        # Normalize various incoming types for string lists.
-        if value is None:
-            return []
-        if isinstance(value, str):
-            v = value.strip()
-            return [v] if v else []
-        if isinstance(value, (list, tuple)):
-            cleaned = [s.strip() for s in value if isinstance(s, str) and s.strip()]
-            return cleaned
-        return []
-
-    def validate_featured_artists(self, value):
-        """Remove empty/whitespace-only entries coming from front-end forms.
-        Examples: [""], ["", "Artist"], "", or None.
-        """
-        cleaned = self._clean_string_list(value)
-        return cleaned
     tag_ids = serializers.ListField(
         child=serializers.IntegerField(),
         required=False,
@@ -1676,13 +1642,19 @@ class SongUploadSerializer(serializers.Serializer):
         if ext not in valid_extensions:
             raise serializers.ValidationError(f"Only {', '.join(valid_extensions)} files are allowed")
         return value
-    
-    def validate_artist_id(self, value):
-        """Validate artist exists"""
-        if not Artist.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Artist not found")
-        return value
-    
+
+    def validate_featured_artists(self, value):
+        """Reject empty/blank entries coming from front-end.
+
+        The frontend sometimes sends ["\""] when no artists are entered. We
+        accept the list but filter out invalid items and return an empty list if
+        nothing meaningful remains. The view logic already tolerates an empty
+        list and the model default will store `[]`.
+        """
+        if not value:
+            return []
+        cleaned = [str(v) for v in value if v and str(v).strip()]
+        return cleaned
     def validate_album_id(self, value):
         """Validate album exists if provided"""
         if value and not Album.objects.filter(id=value).exists():

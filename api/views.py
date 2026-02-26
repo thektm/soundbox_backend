@@ -128,6 +128,18 @@ def make_safe_filename(s: str) -> str:
     return cleaned
 
 
+def _clean_string_list(lst):
+    """Remove empty or whitespace-only strings from a list.
+
+    Used when incoming payload may include stray empty values (e.g. [""])
+    which should not be persisted. Returns a new list; if all items are
+    filtered out the result will be empty.
+    """
+    if not lst:
+        return []
+    return [str(item) for item in lst if item and str(item).strip()]
+
+
 def _normalize_id_list(value):
     """Normalize incoming id list values from multipart/form-data or JSON.
 
@@ -1156,6 +1168,8 @@ class SongUploadView(APIView):
             # Build filename: "Artist - Title (feat. X)" or "Artist - Title"
             title = data['title']
             featured = data.get('featured_artists', [])
+            # filter out empty strings if frontend sent [""] or similar
+            featured = _clean_string_list(featured)
             artist_name = artist.artistic_name or artist.name
             if featured:
                 filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
@@ -7009,6 +7023,10 @@ class ArtistSongsManagementView(APIView):
                 if not hasattr(val, 'read'): # Skip file handles
                     data[key] = val
 
+        # Always remove empty strings from featured_artists before further processing
+        if 'featured_artists' in data:
+            data['featured_artists'] = _clean_string_list(data['featured_artists'])
+
         # Map user-friendly field names to serializer write_only fields
         for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
             if field in data and f"{field}_write" not in data:
@@ -7022,6 +7040,9 @@ class ArtistSongsManagementView(APIView):
             title = data.get('title', song.title)
             artist_name = artist.artistic_name or artist.name
             featured = data.getlist('featured_artists') if hasattr(data, 'getlist') else data.get('featured_artists', song.featured_artists)
+            featured = _clean_string_list(featured)
+            # keep cleaned list in the payload so serializer/filename logic stay in sync
+            data['featured_artists'] = featured
             
             duration, bitrate, format_ext = get_audio_info(audio_file)
             if not format_ext:
@@ -7330,7 +7351,8 @@ class ArtistAlbumsManagementView(APIView):
             for list_field in ['featured_artists', 'producers', 'composers', 'lyricists']:
                 val = request.data.getlist(f"{prefix}{list_field}")
                 if val:
-                    song_data[list_field] = val
+                    # drop empty entries coming from form serialization
+                    song_data[list_field] = _clean_string_list(val)
 
             # Handle ManyToMany IDs
             for id_field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
