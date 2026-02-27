@@ -108,6 +108,13 @@ class SongSummarySerializer(serializers.ModelSerializer):
     def get_sub_genre_ids(self, obj):
         return [sg.id for sg in obj.sub_genres.all()]
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if ret.get('cover_image'):
+            signed = generate_signed_r2_url(ret['cover_image'])
+            if signed:
+                ret['cover_image'] = signed
+        return ret
 
 
 class BannerAdSerializer(serializers.ModelSerializer):
@@ -116,6 +123,14 @@ class BannerAdSerializer(serializers.ModelSerializer):
         model = BannerAd
         fields = ['id', 'title', 'image', 'navigate_link', 'view_count']
         read_only_fields = ['id', 'image', 'view_count']
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if ret.get('image'):
+            signed = generate_signed_r2_url(ret['image'])
+            if signed:
+                ret['image'] = signed
+        return ret
     
 
 
@@ -140,6 +155,15 @@ class ArtistSummarySerializer(serializers.ModelSerializer):
                 return any(f.follower_user_id == request.user.id for f in obj.follower_artist_relations.all())
             return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
         return False
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        for field in ['profile_image', 'banner_image']:
+            if ret.get(field):
+                signed = generate_signed_r2_url(ret[field])
+                if signed:
+                    ret[field] = signed
+        return ret
 
 
 class AlbumSummarySerializer(serializers.ModelSerializer):
@@ -303,6 +327,22 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
             return obj.liked_by.filter(id=request.user.id).exists()
         return False
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Handle cover_image
+        if ret.get('cover_image'):
+            signed = generate_signed_r2_url(ret['cover_image'])
+            if signed:
+                ret['cover_image'] = signed
+        # Handle top_three_song_covers
+        if ret.get('top_three_song_covers'):
+            signed_covers = []
+            for cover in ret['top_three_song_covers']:
+                signed = generate_signed_r2_url(cover)
+                signed_covers.append(signed if signed else cover)
+            ret['top_three_song_covers'] = signed_covers
+        return ret
+
 
 class SimplePlaylistSerializer(serializers.ModelSerializer):
     """Summary serializer for normal Playlist model used in history/library"""
@@ -378,6 +418,22 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
         if first_song:
             return first_song.cover_image
         return None
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Handle cover_image
+        if ret.get('cover_image'):
+            signed = generate_signed_r2_url(ret['cover_image'])
+            if signed:
+                ret['cover_image'] = signed
+        # Handle top_three_song_covers
+        if ret.get('top_three_song_covers'):
+            signed_covers = []
+            for cover in ret['top_three_song_covers']:
+                signed = generate_signed_r2_url(cover)
+                signed_covers.append(signed if signed else cover)
+            ret['top_three_song_covers'] = signed_covers
+        return ret
 
 
 class FollowableEntitySerializer(serializers.Serializer):
@@ -975,6 +1031,15 @@ class ArtistSerializer(serializers.ModelSerializer):
             return Follow.objects.filter(follower_user=request.user, followed_artist=obj).exists()
         return False
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        for field in ['profile_image', 'banner_image']:
+            if ret.get(field):
+                signed = generate_signed_r2_url(ret[field])
+                if signed:
+                    ret[field] = signed
+        return ret
+
 
 class PopularArtistSerializer(ArtistSerializer):
     """Artist serializer extended with popularity metrics."""
@@ -1087,6 +1152,14 @@ class AlbumSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return AlbumLike.objects.filter(user=request.user, album=obj).exists()
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if ret.get('cover_image'):
+            signed = generate_signed_r2_url(ret['cover_image'])
+            if signed:
+                ret['cover_image'] = signed
+        return ret
 
     def get_genre_ids(self, obj):
         return [genre.name for genre in obj.genres.all()]
@@ -1795,6 +1868,14 @@ class SongStreamSerializer(serializers.ModelSerializer):
             return SongLike.objects.filter(user=request.user, song=obj).exists()
         return False
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if ret.get('cover_image'):
+            signed = generate_signed_r2_url(ret['cover_image'])
+            if signed:
+                ret['cover_image'] = signed
+        return ret
+
     def get_stream_url(self, obj):
         """
         CRITICAL: ONLY RETURN UNWRAP LINKS HERE - NEVER DIRECT SIGNED URLS!
@@ -1900,6 +1981,17 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.liked_by.filter(id=request.user.id).exists()
         return False
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Handle top_three_song_covers
+        if ret.get('top_three_song_covers'):
+            signed_covers = []
+            for cover in ret['top_three_song_covers']:
+                signed = generate_signed_r2_url(cover)
+                signed_covers.append(signed if signed else cover)
+            ret['top_three_song_covers'] = signed_covers
+        return ret
 
     def get_top_three_song_covers(self, obj):
         try:
