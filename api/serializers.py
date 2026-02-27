@@ -21,6 +21,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    album_id = serializers.SerializerMethodField()
     stream_url = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
@@ -32,7 +33,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'album_title', 'cover_image', 
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'album_id', 'album_title', 'cover_image', 
             'stream_url', 'duration_seconds', 'is_liked',
             'genre_names', 'tag_names', 'mood_names', 'sub_genre_names', 'play_count'
         ]
@@ -48,6 +49,11 @@ class SongSummarySerializer(serializers.ModelSerializer):
 
     def get_sub_genre_names(self, obj):
         return [sg.name for sg in obj.sub_genres.all()]
+
+    def get_album_id(self, obj):
+        if obj.album and not obj.is_single:
+            return obj.album.id
+        return None
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
