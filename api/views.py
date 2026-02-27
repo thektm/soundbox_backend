@@ -7442,9 +7442,21 @@ class ArtistAlbumsManagementView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
+        from django.db import transaction
+
         album = get_object_or_404(Album, pk=pk, artist=artist)
-        album.delete()
-        return Response({"message": "Album deleted successfully"}, status=status.HTTP_204_NO_CONTENT)
+
+        # Delete songs belonging to this album and then delete the album itself atomically
+        with transaction.atomic():
+            songs_qs = Song.objects.filter(album=album)
+            deleted_songs_count = songs_qs.count()
+            songs_qs.delete()
+            album.delete()
+
+        return Response({
+            "message": "Album and its songs deleted successfully",
+            "deleted_songs": deleted_songs_count
+        }, status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
