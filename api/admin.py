@@ -250,7 +250,7 @@ class SongAdmin(admin.ModelAdmin):
     search_fields = ('title', 'artist__name', 'description', 'lyrics')
     readonly_fields = ('plays', 'duration_display', 'display_title', 'created_at', 'updated_at')
     autocomplete_fields = ['artist', 'album', 'uploader']
-    filter_horizontal = ('genres', 'moods', 'tags')
+    filter_horizontal = ('genres', 'moods', 'tags', 'featured_artists')
     
     fieldsets = (
         ('Basic Information', {
@@ -297,8 +297,9 @@ class SongAdmin(admin.ModelAdmin):
     
     def display_featured(self, obj):
         """Display featured artists in list view"""
-        if obj.featured_artists:
-            return ', '.join(obj.featured_artists)
+        featured_names = [a.name for a in obj.featured_artists.all()]
+        if featured_names:
+            return ', '.join(featured_names)
         return '-'
     display_featured.short_description = 'Featured Artists'
     

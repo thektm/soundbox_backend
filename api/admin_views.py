@@ -441,10 +441,12 @@ class AdminSongListView(APIView):
             
             # Build filename: "Artist - Title (feat. X)" or "Artist - Title"
             title = data['title']
-            featured = data.get('featured_artists', [])
+            featured_artists = data.get('featured_artists', [])
+            featured_names = [a.artistic_name or a.name for a in featured_artists]
+            
             artist_name = artist.artistic_name or artist.name
-            if featured:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            if featured_names:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured_names)})"
             else:
                 filename_base = f"{artist_name} - {title}"
             
@@ -510,6 +512,7 @@ class AdminSongListView(APIView):
             # Remove file fields and many-to-many from data for create
             song_data.pop('audio_file_upload', None)
             song_data.pop('cover_image_upload', None)
+            featured_artists = song_data.pop('featured_artists', [])
             genres = song_data.pop('genres', [])
             sub_genres = song_data.pop('sub_genres', [])
             moods = song_data.pop('moods', [])
@@ -518,6 +521,7 @@ class AdminSongListView(APIView):
             song = Song.objects.create(**song_data)
             
             # Add many-to-many relationships
+            song.featured_artists.set(featured_artists)
             song.genres.set(genres)
             song.sub_genres.set(sub_genres)
             song.moods.set(moods)
@@ -620,9 +624,17 @@ class AdminSongDetailView(APIView):
                 format_ext = ext.lstrip('.').lower()
             
             # Build filename base
-            featured = data.get('featured_artists', song.featured_artists)
-            if featured:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            featured_ids = data.get('featured_artists', [])
+            if not featured_ids:
+                # Fallback to current song featured artists if not in request
+                featured_artists = song.featured_artists.all()
+            else:
+                featured_artists = Artist.objects.filter(id__in=featured_ids)
+            
+            featured_names = [a.artistic_name or a.name for a in featured_artists]
+            
+            if featured_names:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured_names)})"
             else:
                 filename_base = f"{artist_name} - {title}"
             

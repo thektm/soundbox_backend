@@ -1796,7 +1796,7 @@ class ArtistDetailView(APIView):
         
         # Credited songs
         credited_songs = Song.objects.filter(
-            Q(featured_artists__icontains=artist.name) |
+            Q(featured_artists=artist) |
             Q(producers__icontains=artist.name) |
             Q(composers__icontains=artist.name) |
             Q(lyricists__icontains=artist.name)
@@ -5385,7 +5385,8 @@ class SearchView(APIView):
                 p_clean=Replace(Replace(Cast('producers', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
                 c_clean=Replace(Replace(Cast('composers', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
                 l_clean=Replace(Replace(Cast('lyricists', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                f_clean=Replace(Replace(Cast('featured_artists', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                fa_name_clean=Replace(Replace(Cast('featured_artists__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
+                fa_artistic_clean=Replace(Replace(Cast('featured_artists__artistic_name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
             )
 
             combined = Q(t_clean__icontains=q_clean) | \
@@ -5394,7 +5395,8 @@ class SearchView(APIView):
                        Q(p_clean__icontains=q_clean) | \
                        Q(c_clean__icontains=q_clean) | \
                        Q(l_clean__icontains=q_clean) | \
-                       Q(f_clean__icontains=q_clean) | \
+                       Q(fa_name_clean__icontains=q_clean) | \
+                       Q(fa_artistic_clean__icontains=q_clean) | \
                        Q(description__icontains=q) | \
                        Q(lyrics__icontains=q)
 
@@ -6915,7 +6917,15 @@ class ArtistSongsManagementView(APIView):
         
         # Determine artist name for filename
         artist_name = artist.artistic_name or artist.name
-        featured = request.data.getlist('featured_artists') if hasattr(request.data, 'getlist') else request.data.get('featured_artists', [])
+        
+        # Determine featured artist IDs and names for filename
+        featured_ids = _normalize_id_list(request.data.getlist('featured_artist_ids') if hasattr(request.data, 'getlist') else request.data.get('featured_artist_ids', []))
+        featured_names = []
+        if featured_ids:
+            featured_names = list(Artist.objects.filter(id__in=featured_ids).values_list('artistic_name', flat=True))
+            # Fallback to name if artistic_name is empty
+            if not any(featured_names):
+                featured_names = list(Artist.objects.filter(id__in=featured_ids).values_list('name', flat=True))
 
         # Get audio info
         duration, bitrate, format_ext = get_audio_info(audio_file)
@@ -6925,8 +6935,8 @@ class ArtistSongsManagementView(APIView):
             format_ext = ext.lstrip('.').lower()
         
         # Build filename base and sanitize
-        if featured:
-            filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+        if featured_names:
+            filename_base = f"{artist_name} - {title} (feat. {', '.join(filter(None, featured_names))})"
         else:
             filename_base = f"{artist_name} - {title}"
         safe_filename_base = make_safe_filename(filename_base)
@@ -6983,13 +6993,16 @@ class ArtistSongsManagementView(APIView):
                 clean[list_field] = val
 
         # Map many-to-many id lists to serializer write-only fields
-        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids', 'featured_artist_ids']:
             if hasattr(request.data, 'getlist'):
                 raw_val = request.data.getlist(field)
             else:
                 raw_val = request.data.get(field)
             normalized = _normalize_id_list(raw_val)
             if normalized:
+                # For featured_artists, the serializer has featured_artist_ids_write if needed
+                # or we can rely on featured_artist_ids directly if the serializer supports it.
+                # Based on AdminSongSerializer, we use featured_artist_ids_write.
                 clean[f"{field}_write"] = normalized
 
         # Attach the derived fields (strings/ids only)
@@ -7042,9 +7055,9 @@ class ArtistSongsManagementView(APIView):
         
         # Create a plain dict for the serializer input to avoid QueryDict list-of-lists and pickling issues
         data = {}
-        list_fields = ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids', 'featured_artists', 
+        list_fields = ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids', 'featured_artist_ids', 
                        'producers', 'composers', 'lyricists', 
-                       'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write', 'tag_ids_write',
+                       'genre_ids_write', 'sub_genre_ids_write', 'mood_ids_write', 'tag_ids_write', 'featured_artist_ids_write',
                        'genres', 'sub_genres', 'moods', 'tags']
         for key in request.data:
             if hasattr(request.data, 'getlist') and key in list_fields:
@@ -7054,12 +7067,8 @@ class ArtistSongsManagementView(APIView):
                 if not hasattr(val, 'read'): # Skip file handles
                     data[key] = val
 
-        # Always remove empty strings from featured_artists before further processing
-        if 'featured_artists' in data:
-            data['featured_artists'] = _clean_string_list(data['featured_artists'])
-
         # Map user-friendly field names to serializer write_only fields
-        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+        for field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids', 'featured_artist_ids']:
             if field in data and f"{field}_write" not in data:
                 raw_val = data.get(field)
                 normalized = _normalize_id_list(raw_val)
@@ -7070,19 +7079,30 @@ class ArtistSongsManagementView(APIView):
         if audio_file:
             title = data.get('title', song.title)
             artist_name = artist.artistic_name or artist.name
-            featured = data.getlist('featured_artists') if hasattr(data, 'getlist') else data.get('featured_artists', song.featured_artists)
-            featured = _clean_string_list(featured)
-            # keep cleaned list in the payload so serializer/filename logic stay in sync
-            data['featured_artists'] = featured
             
+            # For filename, we prefer IDs if provided, else current relation
+            featured_ids = data.get('featured_artist_ids_write')
+            featured_names = []
+            if featured_ids:
+                featured_names = list(Artist.objects.filter(id__in=featured_ids).values_list('artistic_name', flat=True))
+                # Fallback to name if artistic_name is empty
+                if not any(featured_names):
+                    featured_names = list(Artist.objects.filter(id__in=featured_ids).values_list('name', flat=True))
+            else:
+                featured_names = list(song.featured_artists.values_list('artistic_name', flat=True))
+                if not any(featured_names):
+                    featured_names = list(song.featured_artists.values_list('name', flat=True))
+            
+            featured_names = [n for n in featured_names if n]
+
             duration, bitrate, format_ext = get_audio_info(audio_file)
             if not format_ext:
                 _, ext = os.path.splitext(audio_file.name)
                 format_ext = ext.lstrip('.').lower()
             
             # Build filename base and sanitize
-            if featured:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            if featured_names:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured_names)})"
             else:
                 filename_base = f"{artist_name} - {title}"
             safe_filename_base = make_safe_filename(filename_base)
@@ -7379,17 +7399,21 @@ class ArtistAlbumsManagementView(APIView):
             }
             
             # Handle JSON fields
-            for list_field in ['featured_artists', 'producers', 'composers', 'lyricists']:
+            for list_field in ['producers', 'composers', 'lyricists']:
                 val = request.data.getlist(f"{prefix}{list_field}")
                 if val:
                     # drop empty entries coming from form serialization
                     song_data[list_field] = _clean_string_list(val)
 
             # Handle ManyToMany IDs
-            for id_field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids']:
+            for id_field in ['genre_ids', 'sub_genre_ids', 'mood_ids', 'tag_ids', 'featured_artist_ids']:
                 val = request.data.getlist(f"{prefix}{id_field}")
                 if val:
-                    song_data[f"{id_field}_write"] = val
+                    # Use _write for consistency with SongSerializer expectation if configured
+                    if id_field == 'featured_artist_ids':
+                        song_data['featured_artist_ids'] = val
+                    else:
+                        song_data[f"{id_field}_write"] = val
 
             song_serializer = SongSerializer(data=song_data, context={'request': request})
             if song_serializer.is_valid():

@@ -81,8 +81,20 @@ class AdminSongSerializer(serializers.ModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
 
+    # Relationship details
+    featured_artists = serializers.SerializerMethodField()
+    featured_artist_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Artist.objects.all(),
+        many=True,
+        source='featured_artists',
+        required=False,
+        write_only=True
+    )
+
+    def get_featured_artists(self, obj):
+        return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
+
     # JSON fields as ListFields for better form-data handling
-    featured_artists = serializers.ListField(child=serializers.CharField(), required=False)
     producers = serializers.ListField(child=serializers.CharField(), required=False)
     composers = serializers.ListField(child=serializers.CharField(), required=False)
     lyricists = serializers.ListField(child=serializers.CharField(), required=False)
@@ -90,7 +102,7 @@ class AdminSongSerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist', 'artist_name', 'featured_artists', 'album', 'album_title',
+            'id', 'title', 'artist', 'artist_name', 'featured_artists', 'featured_artist_ids', 'album', 'album_title',
             'is_single', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
             'duration_seconds', 'plays', 'status', 'release_date', 'language',
             'genres', 'sub_genres', 'moods', 'tags', 'description', 'lyrics',
