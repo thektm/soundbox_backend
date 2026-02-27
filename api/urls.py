@@ -46,6 +46,7 @@ from .views import (
     AlbumLikeView,
     GenreListView,
     GenreDetailView,
+    GenreSongsListView,
     MoodListView,
     MoodDetailView,
     TagListView,
@@ -266,6 +267,7 @@ urlpatterns = [
     # --- Classification
     path('genres/', GenreListView.as_view(), name='genre_list'),
     path('genres/<int:pk>/', GenreDetailView.as_view(), name='genre_detail'),
+    path('search/genres/<int:pk>/', GenreSongsListView.as_view(), name='search_genre_songs_list'),
     path('subgenres/', SubGenreListView.as_view(), name='subgenre_list'),
     path('subgenres/<int:pk>/', SubGenreDetailView.as_view(), name='subgenre_detail'),
     path('moods/', MoodListView.as_view(), name='mood_list'),

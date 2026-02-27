@@ -2068,6 +2068,32 @@ class GenreDetailView(APIView):
         serializer = GenreSerializer(genre, context={'request': request})
         return Response(serializer.data)
 
+
+@extend_schema(tags=['Classification اندپوینت های دسته‌بندی'])
+class GenreSongsListView(generics.ListAPIView):
+    """List songs associated with a specific genre."""
+    permission_classes = [AllowAny]
+    serializer_class = SongSummarySerializer
+    pagination_class = StandardResultsSetPagination
+
+    @extend_schema(
+        summary="لیست آهنگ‌های یک سبک",
+        description="دریافت لیست آهنگ‌هایی که با یک سبک موسیقی خاص مرتبط هستند.",
+        responses={200: SongSummarySerializer(many=True)}
+    )
+    def get_queryset(self):
+        genre_id = self.kwargs.get('pk')
+        genre = get_object_or_404(Genre, pk=genre_id)
+        return Song.objects.filter(
+            genres=genre, 
+            status=Song.STATUS_PUBLISHED
+        ).select_related('artist', 'album').prefetch_related('genres', 'tags', 'moods', 'sub_genres')
+
+
+@extend_schema(tags=['Classification اندپوینت های دسته‌بندی'])
+class GenreDetailView(APIView):
+    """Retrieve, Update, and Delete Genre"""
+
     @extend_schema(
         summary="ویرایش سبک (کامل) (Admin Only)",
         description="به‌روزرسانی تمامی اطلاعات یک سبک موسیقی.",
