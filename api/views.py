@@ -2905,17 +2905,18 @@ class UnwrapStreamView(APIView):
             defaults={'updated_at': timezone.now()}
         )
         
-        # Quality selection: Default to low (128kbps) unless user is premium and chose high
-        quality = request.user.settings.get('stream_quality', 'low')
-        if quality == 'high' and song.audio_file:
+        # Quality selection: Use user setting if available
+        # if high quality was selected by user we only provide audio_url (128kbps/320kbps usually)
+        # but if medium quality was selected, we provide converted_audio_url (128kbps) if available, 
+        # otherwise fallback to audio_url
+        quality = request.user.stream_quality
+        if quality == 'high' or not song.converted_audio_url:
             audio_url = song.audio_file
-        elif song.converted_audio_url:
-            audio_url = song.converted_audio_url
         else:
-            audio_url = song.audio_file
+            audio_url = song.converted_audio_url
 
-        # Extract key for R2
-        cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
+        # Extract path for signing if it's an R2 URL
+        cdn_base = getattr(settings, 'R2_CDN_BASE', '').rstrip('/')
         from urllib.parse import unquote, urlparse
         if audio_url.startswith(cdn_base):
             object_key = unquote(audio_url.replace(cdn_base + '/', ''))
