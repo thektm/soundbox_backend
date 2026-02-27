@@ -51,7 +51,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
         return [sg.name for sg in obj.sub_genres.all()]
 
     def get_album_id(self, obj):
-        if obj.album and not obj.is_single:
+        if obj.album:
             return obj.album.id
         return None
 
