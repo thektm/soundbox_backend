@@ -1167,12 +1167,13 @@ class SongUploadView(APIView):
             
             # Build filename: "Artist - Title (feat. X)" or "Artist - Title"
             title = data['title']
-            featured = data.get('featured_artists', [])
-            # filter out empty strings if frontend sent [""] or similar
-            featured = _clean_string_list(featured)
+            featured_ids = data.get('featured_artist_ids', [])
+            featured_artists = Artist.objects.filter(id__in=featured_ids)
+            featured_names = [a.artistic_name or a.name for a in featured_artists]
+            
             artist_name = artist.artistic_name or artist.name
-            if featured:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured)})"
+            if featured_names:
+                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured_names)})"
             else:
                 filename_base = f"{artist_name} - {title}"
             
@@ -1228,10 +1229,10 @@ class SongUploadView(APIView):
                 )
             
             # Create song record
+            # featured_artists is handled via M2M later
             song_data = {
                 'title': title,
                 'artist': artist,
-                'featured_artists': featured,
                 'audio_file': audio_url,
                 'converted_audio_url': converted_audio_url,
                 'cover_image': cover_url,
@@ -1266,6 +1267,9 @@ class SongUploadView(APIView):
             song = Song.objects.create(**song_data)
             
             # Add many-to-many relationships
+            if featured_ids:
+                song.featured_artists.set(featured_artists)
+            
             if data.get('genre_ids'):
                 song.genres.set(Genre.objects.filter(id__in=data['genre_ids']))
             if data.get('sub_genre_ids'):

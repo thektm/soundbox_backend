@@ -20,6 +20,7 @@ class SongSummarySerializer(serializers.ModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
+    featured_artists = serializers.SerializerMethodField()
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     album_id = serializers.SerializerMethodField()
     stream_url = serializers.SerializerMethodField()
@@ -37,11 +38,14 @@ class SongSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'album_id', 'album_title', 'cover_image', 
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists', 'album_id', 'album_title', 'cover_image', 
             'stream_url', 'duration_seconds', 'is_liked',
             'genre_names', 'tag_names', 'mood_names', 'sub_genre_names', 'play_count',
             'genre_ids', 'tag_ids', 'mood_ids', 'sub_genre_ids'
         ]
+
+    def get_featured_artists(self, obj):
+        return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
 
     def get_genre_names(self, obj):
         return [g.name for g in obj.genres.all()]
@@ -1371,6 +1375,19 @@ class SongSerializer(serializers.ModelSerializer):
     sub_genre_ids = serializers.SerializerMethodField()
     mood_ids = serializers.SerializerMethodField()
     tag_ids = serializers.SerializerMethodField()
+    featured_artists = serializers.SerializerMethodField()
+
+    # Add a write field for featured artists
+    featured_artist_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Artist.objects.all(),
+        many=True,
+        source='featured_artists',
+        required=False,
+        write_only=True
+    )
+
+    def get_featured_artists(self, obj):
+        return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
 
     def get_genre_ids(self, obj):
         return [{'id': genre.id, 'title': genre.name} for genre in obj.genres.all()]
@@ -1387,16 +1404,10 @@ class SongSerializer(serializers.ModelSerializer):
     # Read-only paginated similar songs block
     similar_songs = serializers.SerializerMethodField()
 
-    def validate_featured_artists(self, value):
-        """Filter out empty or whitespace-only strings before saving to model."""
-        if not value:
-            return []
-        return [str(v) for v in value if v and str(v).strip()]
-    
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists',
+            'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists', 'featured_artist_ids',
             'album', 'album_id', 'album_title', 'is_single', 'stream_url', 'audio_file', 'converted_audio_url', 'cover_image',
             'original_format', 'duration_seconds', 'duration_display', 'plays',
             'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked',
@@ -1658,11 +1669,12 @@ class SongUploadSerializer(serializers.Serializer):
     # Basic info
     title = serializers.CharField(max_length=400, required=True)
     artist_id = serializers.IntegerField(required=True, help_text="Artist ID")
-    featured_artists = serializers.ListField(
-        child=serializers.CharField(max_length=255),
+    featured_artist_ids = serializers.ListField(
+        child=serializers.IntegerField(),
         required=False,
         allow_empty=True,
-        default=list
+        default=list,
+        help_text="List of artist IDs featured on this song"
     )
     album_id = serializers.IntegerField(required=False, allow_null=True)
     is_single = serializers.BooleanField(default=False)
@@ -1839,6 +1851,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
+    featured_artists = serializers.SerializerMethodField()
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
     uploader_unique_id = serializers.CharField(source='uploader.unique_id', read_only=True, allow_null=True)
     duration_display = serializers.ReadOnlyField()
@@ -1858,6 +1871,9 @@ class SongStreamSerializer(serializers.ModelSerializer):
             'created_at', 'display_title', 'uploader_unique_id'
         ]
         read_only_fields = ['id', 'plays', 'likes_count', 'is_liked', 'created_at', 'duration_display', 'display_title']
+    
+    def get_featured_artists(self, obj):
+        return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
     
     def get_likes_count(self, obj):
         return SongLike.objects.filter(song=obj).count()

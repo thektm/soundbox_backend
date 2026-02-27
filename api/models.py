@@ -520,7 +520,7 @@ class Song(models.Model):
     # Basic info
     title = models.CharField(max_length=400)
     artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name="songs")
-    featured_artists = models.JSONField(default=list, blank=True, help_text="List of featured artist names")
+    featured_artists = models.ManyToManyField(Artist, blank=True, related_name="featured_songs", help_text="Artists featured on this song")
     album = models.ForeignKey(Album, on_delete=models.SET_NULL, null=True, blank=True, related_name="songs")
     is_single = models.BooleanField(default=False)
 
@@ -582,7 +582,8 @@ class Song(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        featured = f" (feat. {', '.join(self.featured_artists)})" if self.featured_artists else ""
+        featured_names = [a.name for a in self.featured_artists.all()]
+        featured = f" (feat. {', '.join(featured_names)})" if featured_names else ""
         return f"{self.title}{featured} — {self.artist.name}"
 
     @property
@@ -600,8 +601,9 @@ class Song(models.Model):
     @property
     def display_title(self) -> str:
         """Return formatted title with featured artists if any."""
-        if self.featured_artists:
-            return f"{self.title} (feat. {', '.join(self.featured_artists)})"
+        featured_names = [a.name for a in self.featured_artists.all()]
+        if featured_names:
+            return f"{self.title} (feat. {', '.join(featured_names)})"
         return self.title
 
     # Play counts
