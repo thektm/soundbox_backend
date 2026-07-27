@@ -204,7 +204,7 @@ for model in (Artist, Album, Playlist, RecommendedPlaylist):
 
 for model, fields in (
     (Album, ('genres', 'sub_genres', 'moods')),
-    (Playlist, ('songs', 'genres', 'sub_genres', 'moods')),
+    (Playlist, ('songs', 'genres', 'moods', 'tags')),
     (RecommendedPlaylist, ('songs',)),
 ):
     for field_name in fields:
