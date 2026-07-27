@@ -3847,7 +3847,9 @@ def _pick_ids(queryset, size, seed, used=None, pool_size=100):
         used = set()
     picked = [song_id for song_id in candidates if song_id not in used][:size]
     if len(picked) < size:
-        picked.extend(song_id for song_id in candidates if song_id not in picked)[:size - len(picked)]
+        picked.extend([
+            song_id for song_id in candidates if song_id not in picked
+        ][:size - len(picked)])
     used.update(picked)
     return picked
 
