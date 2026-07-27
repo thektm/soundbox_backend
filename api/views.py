@@ -3476,6 +3476,72 @@ class UserProfilePublicView(APIView):
         return Response(data)
 
 
+def _sedabox_user():
+    users = User.objects.select_related('image_profile')
+    return users.filter(unique_id='sedabox').first() or users.filter(
+        Q(first_name='SedaBox |', last_name='صداباکس') | Q(last_name='صداباکس')
+    ).order_by('id').first()
+
+
+def _sedabox_unique_id():
+    key = stable_cache_key(
+        'sedabox-user-id', cache_version(USER_DIRECTORY_VERSION_KEY), 'v1',
+    )
+    value = cache_get(key)
+    if value is None:
+        value = User.objects.filter(unique_id='sedabox').values_list(
+            'unique_id', flat=True,
+        ).first() or User.objects.filter(
+            first_name='SedaBox |', last_name='صداباکس',
+        ).values_list('unique_id', flat=True).first() or 'sedabox'
+        cache_set(key, value, 600)
+    return value
+
+
+def _sedabox_preview_payload(request, user, page_size=3):
+    require_preview = not request.user.is_authenticated
+    song_filter = Q(songs__status=Song.STATUS_PUBLISHED)
+    if require_preview:
+        song_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
+    song_qs = _home_song_queryset(require_preview).order_by('-release_date', '-created_at')
+    playlists = list(Playlist.objects.annotate(
+        songs_count_value=Count('songs', filter=song_filter, distinct=True)
+    ).filter(songs_count_value__gt=0).prefetch_related(
+        'genres', 'moods', Prefetch('songs', queryset=song_qs, to_attr='_card_songs')
+    ).order_by('-created_at')[:page_size])
+    hydrate_playlist_metrics(playlists, request.user if request.user.is_authenticated else None)
+    for playlist in playlists:
+        playlist._songs_count = playlist.songs_count_value
+        playlist._creator_unique_id = 'sedabox'
+
+    image_profile = None
+    try:
+        if user.image_profile.status == 'published' and user.image_profile.image:
+            image_profile = {
+                'id': user.image_profile.id,
+                'image': absolute_api_url(request, user.image_profile.image.url),
+                'status': user.image_profile.status,
+            }
+    except Exception:
+        pass
+    return {
+        'id': user.id,
+        'unique_id': 'sedabox',
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'followers_count': Follow.objects.filter(followed_user=user).count(),
+        'image_profile': image_profile,
+        'user_playlists': {
+            'count': len(playlists),
+            'total': Playlist.objects.annotate(
+                playable=Count('songs', filter=song_filter, distinct=True)
+            ).filter(playable__gt=0).count(),
+            'next': None,
+            'results': SimplePlaylistSerializer(playlists, many=True, context={'request': request}).data,
+        },
+    }
+
+
 class SedaBoxProfileView(APIView):
     """
     SedaBox (platform) profile view.
@@ -3491,13 +3557,30 @@ class SedaBoxProfileView(APIView):
         responses={200: UserPublicProfileSerializer}
     )
     def get(self, request):
-        user = User.objects.filter( last_name="صداباکس").first()
+        user = _sedabox_user()
         if not user:
             return Response({"error": "SedaBox user not found"}, status=status.HTTP_404_NOT_FOUND)
+        if str(request.query_params.get('preview', '')).lower() in {'1', 'true', 'yes'}:
+            try:
+                page_size = max(1, min(int(request.query_params.get('page_size', 3)), 4))
+            except (TypeError, ValueError):
+                page_size = 3
+            key = stable_cache_key(
+                'sedabox-profile-preview', not request.user.is_authenticated, page_size,
+                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v2',
+            )
+            cached = cache_get(key) if not request.user.is_authenticated else None
+            if cached is not None:
+                return Response(cached)
+            payload = _sedabox_preview_payload(request, user, page_size)
+            if not request.user.is_authenticated:
+                cache_set(key, payload, 120)
+            return Response(payload)
             
         # Standard user info (handles followers, likes, etc.)
         user_serializer = UserPublicProfileSerializer(user, context={'request': request})
         profile_data = user_serializer.data
+        profile_data['unique_id'] = 'sedabox'
 
         # Record profile view in history (skip if anonymous or viewing own profile)
         if request.user.is_authenticated and request.user.id != user.id:
@@ -3710,6 +3793,266 @@ def _home_playlist_queryset(user=None):
     )
 
 
+def _time_bucket(minutes=20, value=None):
+    moment = value or timezone.now()
+    return int(moment.timestamp() // (minutes * 60))
+
+
+def _recent_play_song_ids(require_preview=False, days=1, limit=300):
+    """Return ranked song IDs from real plays, refreshed every two minutes."""
+    bucket = _time_bucket(2)
+    key = stable_cache_key(
+        'recent-play-song-ids', days, require_preview, limit, bucket,
+        cache_version(CATALOG_VERSION_KEY), 'v2',
+    )
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+
+    links = Song.play_counts.through.objects.filter(
+        playcount__created_at__gte=timezone.now() - timedelta(days=days),
+        song__status=Song.STATUS_PUBLISHED,
+    )
+    if require_preview:
+        links = links.filter(song__preview_audio_url__isnull=False).exclude(
+            song__preview_audio_url=''
+        )
+    rows = links.values('song_id').annotate(
+        total=Count('playcount_id')
+    ).order_by('-total', '-song_id')[:limit]
+    ids = [row['song_id'] for row in rows]
+    cache_set(key, ids, 120)
+    return ids
+
+
+def _guest_daily_song_ids(limit=48):
+    """24-hour guest chart with a popularity fallback and no duplicate IDs."""
+    ranked = _recent_play_song_ids(require_preview=True, days=1, limit=max(limit * 4, 120))
+    ids = list(ranked[:limit])
+    if len(ids) < limit:
+        fallback = _cached_ranked_ids(
+            'guest-daily-popular-fallback',
+            _home_song_queryset(True).order_by('-plays', '-release_date', '-created_at'),
+            max(limit * 4, 120), 180, 'v2',
+        )
+        seen = set(ids)
+        ids.extend(song_id for song_id in fallback if song_id not in seen)
+    return ids[:limit]
+
+
+def _pick_ids(queryset, size, seed, used=None, pool_size=100):
+    candidates = list(queryset.values_list('id', flat=True)[:pool_size])
+    random.Random(str(seed)).shuffle(candidates)
+    if used is None:
+        used = set()
+    picked = [song_id for song_id in candidates if song_id not in used][:size]
+    if len(picked) < size:
+        picked.extend(song_id for song_id in candidates if song_id not in picked)[:size - len(picked)]
+    used.update(picked)
+    return picked
+
+
+def _rotate_ranked_ids(ids, size, seed, anchor=5):
+    """Keep the strongest items visible while rotating the rest deterministically."""
+    ranked = list(dict.fromkeys(ids))
+    fixed = ranked[:min(anchor, size)]
+    pool = ranked[len(fixed):]
+    random.Random(str(seed)).shuffle(pool)
+    return (fixed + pool)[:size]
+
+
+def _dynamic_playlist_recipes(require_preview=False, bucket=None):
+    """Cache lightweight recipes; hydrate current Song rows at response time."""
+    bucket = bucket or _time_bucket(15)
+    version = cache_version(CATALOG_VERSION_KEY)
+    key = stable_cache_key('fresh-playlist-recipes', require_preview, bucket, version, 'v6')
+    cached, claimed = cache_get_or_claim(key)
+    if cached is not None:
+        return cached
+
+    base = _home_song_queryset(require_preview)
+    used = set()
+    recipes = []
+
+    def add(code, title, description, playlist_type, ids):
+        if len(ids) < 3:
+            return
+        recipes.append({
+            'code': code,
+            'title': title,
+            'description': description,
+            'playlist_type': playlist_type,
+            'song_ids': ids,
+        })
+
+    trending_pool = _recent_play_song_ids(require_preview=require_preview, days=1, limit=120)
+    if trending_pool:
+        trend_ids = _rotate_ranked_ids(
+            trending_pool[:60], 18, f'trending:{bucket}', anchor=6,
+        )
+        used.update(trend_ids)
+    else:
+        trend_ids = _pick_ids(
+            base.order_by('-plays', '-release_date', '-created_at'), 18,
+            f'trending:{bucket}', used,
+        )
+    add(
+        'now', 'داغِ همین حالا', 'پرشنونده‌ترین انتخاب‌های ۲۴ ساعت گذشته',
+        RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE, trend_ids,
+    )
+
+    add(
+        'fresh', 'تازه رسیده‌ها', 'ریلیزهای تازه با چیدمانی که مرتب نو می‌شود',
+        RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
+        _pick_ids(base.order_by('-release_date', '-created_at', '-plays'), 18, f'fresh:{bucket}', used),
+    )
+    add(
+        'popular', 'محبوب‌های صداباکس', 'ترک‌های امتحان‌پس‌داده برای یک پخش بی‌وقفه',
+        RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE,
+        _pick_ids(base.order_by('-plays', '-release_date'), 18, f'popular:{bucket}', used),
+    )
+
+    genre_filter = Q(songs__status=Song.STATUS_PUBLISHED)
+    mood_filter = Q(songs__status=Song.STATUS_PUBLISHED)
+    if require_preview:
+        genre_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
+        mood_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
+    genres = list(Genre.objects.filter(genre_filter).annotate(
+        song_total=Count('songs', distinct=True)
+    ).filter(song_total__gte=3).order_by('-song_total', 'name').values('id', 'name')[:8])
+    random.Random(f'genres:{bucket}').shuffle(genres)
+    for index, genre in enumerate(genres[:2], 1):
+        ids = _pick_ids(
+            base.filter(genres__id=genre['id']).distinct().order_by('-plays', '-release_date'),
+            16, f'genre:{genre["id"]}:{bucket}', used,
+        )
+        add(
+            f'genre{index}', f'موج {genre["name"]}',
+            f'یک میکس تازه از فضای {genre["name"]}',
+            RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE, ids,
+        )
+
+    moods = list(Mood.objects.filter(mood_filter).annotate(
+        song_total=Count('songs', distinct=True)
+    ).filter(song_total__gte=3).order_by('-song_total', 'name').values('id', 'name')[:8])
+    random.Random(f'moods:{bucket}').shuffle(moods)
+    if moods:
+        mood = moods[0]
+        add(
+            'mood', f'{mood["name"]} برای این لحظه',
+            'یک جریان کوتاه و منسجم برای حال‌وهوای الآن',
+            RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
+            _pick_ids(
+                base.filter(moods__id=mood['id']).distinct().order_by('-plays', '-release_date'),
+                16, f'mood:{mood["id"]}:{bucket}', used,
+            ),
+        )
+
+    add(
+        'discover', 'کشف‌های تازه', 'کمتر تکراری، تازه‌تر و مناسب پیدا کردن صدای بعدی',
+        RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
+        _pick_ids(base.order_by('-created_at', 'plays'), 18, f'discover:{bucket}', used),
+    )
+
+    if claimed:
+        cache_set(key, recipes, 2 * 60 * 60)
+    return recipes
+
+
+def _dynamic_playlist_items(user=None, bucket=None):
+    authenticated = bool(user is not None and getattr(user, 'is_authenticated', False))
+    require_preview = not authenticated
+    bucket = bucket or _time_bucket(15)
+    recipes = _dynamic_playlist_recipes(require_preview, bucket)
+    song_ids = {song_id for recipe in recipes for song_id in recipe['song_ids']}
+    song_map = _home_song_queryset(require_preview).filter(id__in=song_ids).in_bulk()
+    creator_uid = _sedabox_unique_id()
+
+    items = []
+    now = timezone.now()
+    for index, recipe in enumerate(recipes, 1):
+        songs = [song_map[song_id] for song_id in recipe['song_ids'] if song_id in song_map]
+        if len(songs) < 3:
+            continue
+        item = RecommendedPlaylist(
+            id=-(bucket * 100 + index),
+            unique_id=f'freshmix_{bucket}_{recipe["code"]}',
+            title=recipe['title'],
+            description=recipe['description'],
+            playlist_type=recipe['playlist_type'],
+            song_order=[song.id for song in songs],
+            relevance_score=110 - index,
+            match_percentage=max(76, 98 - index * 3),
+            views=0,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(minutes=40),
+        )
+        item._card_songs = songs
+        item._detail_songs = songs
+        item._songs_count = len(songs)
+        item._likes_count = 0
+        item._is_liked = False
+        item._is_saved = False
+        item._is_dynamic = True
+        item._creator_unique_id = creator_uid
+        items.append(item)
+    return items
+
+
+def _user_has_music_activity(user):
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return False
+    key = stable_cache_key('user-music-activity', user.pk, 'v1')
+    cached = cache_get(key)
+    if cached is not None:
+        return bool(cached)
+    active = (
+        SongLike.objects.filter(user=user).exists()
+        or PlayCount.objects.filter(user=user).exists()
+        or UserPlaylist.objects.filter(user=user, songs__isnull=False).exists()
+    )
+    cache_set(key, active, 300 if active else 30)
+    return active
+
+
+def _playlist_recommendation_items(user=None, limit=80):
+    authenticated = bool(user is not None and getattr(user, 'is_authenticated', False))
+    base = _home_playlist_queryset(user)
+    dynamic = _dynamic_playlist_items(user)
+    if authenticated:
+        personal = list(base.filter(user=user).order_by('-relevance_score', '-created_at')[:limit])
+        global_items = list(base.filter(user__isnull=True).order_by('-relevance_score', '-created_at')[:limit])
+        ordered = (
+            personal + dynamic + global_items
+            if personal and _user_has_music_activity(user)
+            else dynamic + global_items + personal
+        )
+    else:
+        global_items = list(base.order_by('-relevance_score', '-created_at')[:limit])
+        ordered = dynamic + global_items
+
+    seen = set()
+    items = []
+    for item in ordered:
+        key = item.unique_id
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _dynamic_playlist_by_unique_id(user, unique_id):
+    match = re.fullmatch(r'freshmix_(\d+)_([a-z0-9]+)', unique_id or '')
+    if not match:
+        return None
+    bucket = int(match.group(1))
+    return next((item for item in _dynamic_playlist_items(user, bucket) if item.unique_id == unique_id), None)
+
+
 
 def _cached_ranked_ids(name, queryset, limit=300, timeout=300, *parts):
     key = stable_cache_key(name, cache_version(CATALOG_VERSION_KEY), *parts)
@@ -3727,7 +4070,7 @@ def _ordered_queryset_items(queryset, ids):
 
 def _attach_recommended_metrics(items, user=None):
     items = list(items)
-    ids = [item.id for item in items]
+    ids = [item.id for item in items if item.id and item.id > 0]
     liked = saved = set()
     if ids and user is not None and getattr(user, 'is_authenticated', False):
         liked = set(RecommendedPlaylist.objects.filter(id__in=ids, liked_by=user).values_list('id', flat=True))
@@ -3766,6 +4109,13 @@ def _slice_items(items, page, size):
 def _song_recommendations(request, limit=10):
     user = request.user
     require_preview = not user.is_authenticated
+    if require_preview:
+        ids = _guest_daily_song_ids(limit)
+        song_map = _home_song_queryset(True).filter(id__in=ids).in_bulk()
+        songs = [song_map[sid] for sid in ids if sid in song_map]
+        hydrate_song_metrics(songs, None)
+        return 'daily_trending', songs
+
     version = cache_version(CATALOG_VERSION_KEY)
     affinity = cache_version(AFFINITY_VERSION_KEY)
     audience = f'user:{user.id}:{affinity}' if user.is_authenticated else 'guest'
@@ -3827,13 +4177,14 @@ class HomeSummaryView(APIView):
             'rec': 'sr_page', 'latest': 'lr_page', 'artists': 'pa_page', 'albums': 'pal_page',
             'playlists': 'pr_page', 'discoveries': 'ds_page',
         }.items()}
-        cache_key = stable_cache_key('home-summary', audience, version, pages, 'v9')
+        cache_key = stable_cache_key('home-summary', audience, version, pages, 'v10')
         cached, claimed = cache_get_or_claim(cache_key) if not user.is_authenticated else (None, False)
         if cached is not None:
             return Response(cached)
 
-        rec_type, rec_songs = _song_recommendations(request, 30)
-        rec_page, rec_next = _slice_items(rec_songs, pages['rec'], 6)
+        rec_size = 12 if not user.is_authenticated else 6
+        rec_type, rec_songs = _song_recommendations(request, 48 if not user.is_authenticated else 30)
+        rec_page, rec_next = _slice_items(rec_songs, pages['rec'], rec_size)
 
         latest_qs = _home_song_queryset(not user.is_authenticated)
         latest_ids = _cached_ranked_ids(
@@ -3856,7 +4207,7 @@ class HomeSummaryView(APIView):
         album_page, album_next = _slice_items(albums, pages['albums'], 6)
         hydrate_album_metrics(album_page, user if user.is_authenticated else None)
 
-        playlists = list(_home_playlist_queryset(user).order_by('-relevance_score', '-created_at')[:80])
+        playlists = _playlist_recommendation_items(user, 80)
         playlist_page, playlist_next = _slice_items(playlists, pages['playlists'], 6)
         _attach_recommended_metrics(playlist_page, user)
 
@@ -3872,7 +4223,7 @@ class HomeSummaryView(APIView):
             'songs_recommendations': {
                 'type': rec_type, 'count': len(rec_page),
                 'next': _next_url(request, 'sr_page', pages['rec'], rec_next),
-                'message': 'منتخب‌های تازه برای شروع شنیدن' if not user.is_authenticated else '',
+                'message': 'پرشنونده‌ترین‌های ۲۴ ساعت گذشته؛ با جایگزین محبوب‌ها اگر داده تازه کم باشد' if not user.is_authenticated else '',
                 'songs': SongStreamSerializer(rec_page, many=True, context={'request': request}).data,
             },
             'latest_releases': {
@@ -3906,11 +4257,11 @@ class UserRecommendationView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        _, size = _page_values(request, 10, 50)
+        _, size = _page_values(request, 20 if not request.user.is_authenticated else 10, 50)
         recommendation_type, songs = _song_recommendations(request, size)
         return Response({
             'type': recommendation_type,
-            'message': 'منتخب‌های تازه برای شروع شنیدن' if not request.user.is_authenticated else '',
+            'message': 'منتخب‌های ۲۴ ساعت گذشته' if not request.user.is_authenticated else '',
             'songs': SongStreamSerializer(songs, many=True, context={'request': request}).data,
         })
 
@@ -4099,8 +4450,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
     serializer_class = RecommendedPlaylistListSerializer
 
     def _ensure_personal(self, user):
-        key = stable_cache_key('ensure-playlist-recs', user.id, cache_version(AFFINITY_VERSION_KEY), 'v2')
+        key = stable_cache_key('ensure-playlist-recs', user.id, cache_version(AFFINITY_VERSION_KEY), 'v3')
         if cache_get(key) is not None or RecommendedPlaylist.objects.filter(user=user, expires_at__gt=timezone.now()).exists():
+            return
+        if not _user_has_music_activity(user):
+            cache_set(key, True, 30)
             return
         interacted = Song.objects.filter(
             Q(liked_by=user) | Q(play_counts__user=user) | Q(user_playlists__user=user),
@@ -4132,8 +4486,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         return _home_playlist_queryset(self.request.user).order_by('-relevance_score', '-created_at')
 
     def list(self, request, *args, **kwargs):
-        page = self.paginate_queryset(self.get_queryset())
-        items = list(page if page is not None else self.get_queryset())
+        if request.user.is_authenticated:
+            self._ensure_personal(request.user)
+        all_items = _playlist_recommendation_items(request.user, 80)
+        page = self.paginate_queryset(all_items)
+        items = list(page if page is not None else all_items)
         _attach_recommended_metrics(items, request.user)
         data = self.get_serializer(items, many=True).data
         return self.get_paginated_response(data) if page is not None else Response(data)
@@ -4164,11 +4521,17 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
         )
 
     def retrieve(self, request, *args, **kwargs):
-        instance = self.get_object()
-        RecommendedPlaylist.objects.filter(pk=instance.pk).update(views=F('views') + 1)
-        instance.views += 1
-        if request.user.is_authenticated:
-            instance.viewed_by.add(request.user)
+        unique_id = kwargs.get(self.lookup_field)
+        instance = self.get_queryset().filter(unique_id=unique_id).first()
+        if instance is None:
+            instance = _dynamic_playlist_by_unique_id(request.user, unique_id)
+        if instance is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if not getattr(instance, '_is_dynamic', False):
+            RecommendedPlaylist.objects.filter(pk=instance.pk).update(views=F('views') + 1)
+            instance.views += 1
+            if request.user.is_authenticated:
+                instance.viewed_by.add(request.user)
         songs = list(getattr(instance, '_detail_songs', []))
         hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
         _attach_recommended_metrics([instance], request.user)

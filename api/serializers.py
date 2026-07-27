@@ -257,8 +257,13 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
         return list(songs if songs is not None else obj.songs.all())
 
     def get_creator_unique_id(self, obj):
+        value = getattr(obj, '_creator_unique_id', None)
+        if value is not None:
+            return value
         if not hasattr(self, '_creator_uid'):
-            self._creator_uid = User.objects.filter(first_name='SedaBox |', last_name='صداباکس').values_list('unique_id', flat=True).first()
+            self._creator_uid = User.objects.filter(
+                Q(unique_id='sedabox') | Q(first_name='SedaBox |', last_name='صداباکس')
+            ).values_list('unique_id', flat=True).first() or 'sedabox'
         return self._creator_uid
 
     def get_genre_names(self, obj):
