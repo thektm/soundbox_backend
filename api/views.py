@@ -3498,21 +3498,32 @@ def _sedabox_unique_id():
     return value
 
 
-def _sedabox_preview_payload(request, user, page_size=3):
-    require_preview = not request.user.is_authenticated
+def _sedabox_normal_playlist_queryset(request):
+    authenticated = request.user.is_authenticated
     song_filter = Q(songs__status=Song.STATUS_PUBLISHED)
-    if require_preview:
+    if not authenticated:
         song_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
-    song_qs = _home_song_queryset(require_preview).order_by('-release_date', '-created_at')
-    playlists = list(Playlist.objects.annotate(
+    song_qs = _home_song_queryset(not authenticated).order_by('-release_date', '-created_at')
+    return Playlist.objects.annotate(
         songs_count_value=Count('songs', filter=song_filter, distinct=True)
     ).filter(songs_count_value__gt=0).prefetch_related(
-        'genres', 'moods', Prefetch('songs', queryset=song_qs, to_attr='_card_songs')
-    ).order_by('-created_at')[:page_size])
-    hydrate_playlist_metrics(playlists, request.user if request.user.is_authenticated else None)
-    for playlist in playlists:
+        'genres', 'moods',
+        Prefetch('songs', queryset=song_qs, to_attr='_card_songs'),
+    ).order_by('-created_at')
+
+
+def _sedabox_preview_payload(request, user, page_size=3):
+    generated_all = _dynamic_playlist_items(request.user)
+    generated = generated_all[:min(2, page_size)]
+    remaining = max(0, page_size - len(generated))
+
+    normal_qs = _sedabox_normal_playlist_queryset(request)
+    normal = list(normal_qs[:remaining]) if remaining else []
+    hydrate_playlist_metrics(normal, request.user if request.user.is_authenticated else None)
+    for playlist in normal:
         playlist._songs_count = playlist.songs_count_value
         playlist._creator_unique_id = 'sedabox'
+    _attach_recommended_metrics(generated, request.user)
 
     image_profile = None
     try:
@@ -3524,6 +3535,14 @@ def _sedabox_preview_payload(request, user, page_size=3):
             }
     except Exception:
         pass
+
+    results = list(PlaylistSummarySerializer(
+        generated, many=True, context={'request': request}
+    ).data)
+    results.extend(SimplePlaylistSerializer(
+        normal, many=True, context={'request': request}
+    ).data)
+    total = normal_qs.count() + _home_playlist_queryset(request.user).count() + len(generated_all)
     return {
         'id': user.id,
         'unique_id': 'sedabox',
@@ -3532,12 +3551,10 @@ def _sedabox_preview_payload(request, user, page_size=3):
         'followers_count': Follow.objects.filter(followed_user=user).count(),
         'image_profile': image_profile,
         'user_playlists': {
-            'count': len(playlists),
-            'total': Playlist.objects.annotate(
-                playable=Count('songs', filter=song_filter, distinct=True)
-            ).filter(playable__gt=0).count(),
+            'count': len(results),
+            'total': total,
             'next': None,
-            'results': SimplePlaylistSerializer(playlists, many=True, context={'request': request}).data,
+            'results': results,
         },
     }
 
@@ -3567,7 +3584,7 @@ class SedaBoxProfileView(APIView):
                 page_size = 3
             key = stable_cache_key(
                 'sedabox-profile-preview', not request.user.is_authenticated, page_size,
-                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v2',
+                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v3',
             )
             cached = cache_get(key) if not request.user.is_authenticated else None
             if cached is not None:
@@ -3577,126 +3594,77 @@ class SedaBoxProfileView(APIView):
                 cache_set(key, payload, 120)
             return Response(payload)
             
-        # Standard user info (handles followers, likes, etc.)
+        # Standard profile fields; playlist results are assembled below.
         user_serializer = UserPublicProfileSerializer(user, context={'request': request})
         profile_data = user_serializer.data
         profile_data['unique_id'] = 'sedabox'
 
-        # Record profile view in history (skip if anonymous or viewing own profile)
         if request.user.is_authenticated and request.user.id != user.id:
             UserHistory.objects.update_or_create(
                 user=request.user,
                 content_type=UserHistory.TYPE_USER,
                 target_user=user,
-                defaults={'updated_at': timezone.now()}
+                defaults={'updated_at': timezone.now()},
             )
-        
-        # Collect all Playlist records (this covers admin/system, search-section and general playlists)
-        all_playlists_qs = Playlist.objects.all().distinct()
 
-        # Ensure we also include any playlists referenced by EventPlaylist (defensive)
-        event_groups = EventPlaylist.objects.prefetch_related('playlists').all()
-        event_inner_playlists = []
-        for eg in event_groups:
-            try:
-                for p in eg.playlists.all():
-                    event_inner_playlists.append(p)
-            except Exception:
-                continue
+        page, page_size = _page_values(request, default_size=20, max_size=100)
+        end = page * page_size
 
-        # Include global recommended playlists and any RecommendedPlaylist
-        # generated for the requesting user (if authenticated)
-        if request.user and getattr(request, 'user').is_authenticated:
-            recommended_playlists = RecommendedPlaylist.objects.filter(
-                Q(user__isnull=True) | Q(user=request.user)
-            ).distinct()
-        else:
-            recommended_playlists = RecommendedPlaylist.objects.filter(
-                user__isnull=True
-            ).distinct()
+        normal_qs = _sedabox_normal_playlist_queryset(request)
+        normal_total = normal_qs.count()
+        normal = list(normal_qs[:end])
+        hydrate_playlist_metrics(normal, request.user if request.user.is_authenticated else None)
+        for playlist in normal:
+            playlist._songs_count = playlist.songs_count_value
+            playlist._creator_unique_id = 'sedabox'
 
-        # Serialize items but keep a sort timestamp for each (use updated_at when available, else created_at)
-        unified_items = []
+        generated = _dynamic_playlist_items(request.user)
+        recommended_qs = _home_playlist_queryset(request.user).order_by('-updated_at', '-created_at')
+        recommended_total = recommended_qs.count()
+        recommended = generated + list(recommended_qs[:end])
+        _attach_recommended_metrics(recommended, request.user)
 
-        # Helper to get timestamp from model instance
-        def _ts(obj):
-            if hasattr(obj, 'updated_at') and getattr(obj, 'updated_at'):
-                return obj.updated_at
-            if hasattr(obj, 'created_at') and getattr(obj, 'created_at'):
-                return obj.created_at
-            return None
+        def sort_time(obj):
+            return getattr(obj, 'updated_at', None) or getattr(obj, 'created_at', None) or timezone.make_aware(
+                timezone.datetime(1970, 1, 1)
+            )
 
-        # Add Playlist model records (summary serializer)
-        for p in all_playlists_qs:
-            try:
-                data = SimplePlaylistSerializer(p, context={'request': request}).data
-                data['_sort_ts'] = _ts(p)
-                # mark type if missing
-                if 'type' not in data:
-                    data['type'] = 'normal-playlist'
-                unified_items.append(data)
-            except Exception:
-                continue
+        records = [('normal', item, sort_time(item)) for item in normal]
+        records.extend(('recommended', item, sort_time(item)) for item in recommended)
+        records.sort(key=lambda item: item[2], reverse=True)
 
-        # Add any event inner playlists not already present (defensive de-dupe by id)
-        for p in event_inner_playlists:
-            try:
-                # skip if already included by id
-                if any((i.get('id') and i.get('id') == p.id) for i in unified_items):
-                    continue
-                data = SimplePlaylistSerializer(p, context={'request': request}).data
-                data['_sort_ts'] = _ts(p)
-                if 'type' not in data:
-                    data['type'] = 'normal-playlist'
-                unified_items.append(data)
-            except Exception:
-                continue
-
-        # Add RecommendedPlaylist items (use PlaylistSummarySerializer to match summary fields)
-        for rp in recommended_playlists:
-            try:
-                data = PlaylistSummarySerializer(rp, context={'request': request}).data
-                data['_sort_ts'] = _ts(rp)
-                if 'type' not in data:
-                    data['type'] = 'recommended'
-                unified_items.append(data)
-            except Exception:
-                continue
-
-        # Deduplicate combined list by (type, id/unique_id)
         seen = set()
-        deduped = []
-        for item in unified_items:
-            key_id = item.get('id') or item.get('unique_id') or ''
-            key = (item.get('type', 'playlist'), str(key_id))
+        unique_records = []
+        for kind, item, timestamp in records:
+            identity = item.unique_id if kind == 'recommended' else item.pk
+            key = (kind, str(identity))
             if key in seen:
                 continue
             seen.add(key)
-            deduped.append(item)
+            unique_records.append((kind, item, timestamp))
 
-        # Sort by timestamp descending (use None as oldest)
-        deduped.sort(key=lambda x: x.get('_sort_ts') or timezone.make_aware(timezone.datetime(1970,1,1)), reverse=True)
+        page_records = unique_records[(page - 1) * page_size:end]
+        normal_page = [item for kind, item, _ in page_records if kind == 'normal']
+        recommended_page = [item for kind, item, _ in page_records if kind == 'recommended']
+        normal_data = {
+            item.pk: data for item, data in zip(
+                normal_page,
+                SimplePlaylistSerializer(normal_page, many=True, context={'request': request}).data,
+            )
+        }
+        recommended_data = {
+            item.unique_id: data for item, data in zip(
+                recommended_page,
+                PlaylistSummarySerializer(recommended_page, many=True, context={'request': request}).data,
+            )
+        }
+        page_items = [
+            normal_data[item.pk] if kind == 'normal' else recommended_data[item.unique_id]
+            for kind, item, _ in page_records
+        ]
 
-        # Remove internal sort field before returning
-        for it in deduped:
-            it.pop('_sort_ts', None)
-
-        # Manual pagination
-        try:
-            page = int(request.query_params.get('page', 1))
-        except (TypeError, ValueError):
-            page = 1
-        try:
-            page_size = int(request.query_params.get('page_size', 20))
-        except (TypeError, ValueError):
-            page_size = 20
-
-        total = len(deduped)
-        start = (page - 1) * page_size
-        end = start + page_size
-        page_items = deduped[start:end]
+        total = normal_total + recommended_total + len(generated)
         has_next = total > end
-
         next_url = None
         if has_next:
             params = request.query_params.copy()
@@ -3708,9 +3676,8 @@ class SedaBoxProfileView(APIView):
             'count': len(page_items),
             'total': total,
             'next': next_url,
-            'results': page_items
+            'results': page_items,
         }
-
         return Response(profile_data)
 
 
