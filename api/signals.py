@@ -1,6 +1,6 @@
-from django.db.models.signals import post_save, m2m_changed, pre_save
+from django.db.models.signals import post_save, post_delete, m2m_changed, pre_save
 from django.dispatch import receiver
-from .models import User, Song, Album, Follow, UserPlaylist, Notification, NotificationSetting
+from .models import User, Song, Album, Artist, Playlist, RecommendedPlaylist, Follow, UserPlaylist, Notification, NotificationSetting, ArtistMonthlyListener
 from django.utils.translation import gettext as _
 from django.utils import timezone
 
@@ -146,3 +146,73 @@ def notify_new_album_published(sender, instance, created, **kwargs):
                         _send_or_update_notification(user, text)
                 except Exception:
                     pass
+
+# Keep cached similarity rankings fresh without caching response payloads.
+from .performance import (
+    AFFINITY_VERSION_KEY,
+    CATALOG_VERSION_KEY,
+    USER_DIRECTORY_VERSION_KEY,
+    cache_increment,
+)
+
+_VERSION_TTL = 7 * 24 * 60 * 60
+
+
+def _bump_catalog(**_kwargs):
+    cache_increment(CATALOG_VERSION_KEY, _VERSION_TTL)
+
+
+def _bump_affinity(**_kwargs):
+    cache_increment(AFFINITY_VERSION_KEY, _VERSION_TTL)
+
+
+def _bump_affinity_on_create(created=False, **_kwargs):
+    if created:
+        _bump_affinity()
+
+
+post_save.connect(_bump_catalog, sender=Song, dispatch_uid="api.song.catalog.save")
+post_delete.connect(_bump_catalog, sender=Song, dispatch_uid="api.song.catalog.delete")
+for field_name in ("genres", "moods", "tags"):
+    m2m_changed.connect(
+        _bump_catalog,
+        sender=getattr(Song, field_name).through,
+        dispatch_uid=f"api.song.catalog.{field_name}",
+    )
+
+post_save.connect(_bump_affinity, sender=Follow, dispatch_uid="api.affinity.follow.save")
+post_delete.connect(_bump_affinity, sender=Follow, dispatch_uid="api.affinity.follow.delete")
+post_save.connect(
+    _bump_affinity_on_create,
+    sender=ArtistMonthlyListener,
+    dispatch_uid="api.affinity.listener.create",
+)
+post_delete.connect(
+    _bump_affinity,
+    sender=ArtistMonthlyListener,
+    dispatch_uid="api.affinity.listener.delete",
+)
+
+
+def _bump_user_directory(**_kwargs):
+    cache_increment(USER_DIRECTORY_VERSION_KEY, _VERSION_TTL)
+
+
+for model in (Artist, Album, Playlist, RecommendedPlaylist):
+    post_save.connect(_bump_catalog, sender=model, dispatch_uid=f"api.catalog.{model.__name__}.save")
+    post_delete.connect(_bump_catalog, sender=model, dispatch_uid=f"api.catalog.{model.__name__}.delete")
+
+for model, fields in (
+    (Album, ('genres', 'sub_genres', 'moods')),
+    (Playlist, ('songs', 'genres', 'sub_genres', 'moods')),
+    (RecommendedPlaylist, ('songs',)),
+):
+    for field_name in fields:
+        m2m_changed.connect(
+            _bump_catalog,
+            sender=getattr(model, field_name).through,
+            dispatch_uid=f"api.catalog.{model.__name__}.{field_name}",
+        )
+
+post_save.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.directory.save')
+post_delete.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.directory.delete')

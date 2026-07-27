@@ -6,16 +6,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('DJANGO_SECRET', 'changeme-in-production')
 
 # Read debug flag from environment (defaults to True for local development)
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in {'1', 'true', 'yes', 'on'}
 
 # Allow setting ALLOWED_HOSTS via comma-separated env var
 
+_DEFAULT_ALLOWED_HOSTS = (
+    '141.11.123.238,141.11.187.161,localhost,127.0.0.1,'
+    'api.sedabox.com,sedabox.com,www.sedabox.com'
+)
 ALLOWED_HOSTS = [
-        '141.11.123.238',
-        'localhost',
-        'api.sedabox.com',
-        'sedabox.com',
-        'www.sedabox.com',
+    host.strip()
+    for host in os.environ.get('ALLOWED_HOSTS', _DEFAULT_ALLOWED_HOSTS).split(',')
+    if host.strip()
 ]
 
 INSTALLED_APPS = [
@@ -73,9 +75,31 @@ DATABASES = {
         'PASSWORD': os.environ.get('DB_PASSWORD', 'postgres'),
         'HOST': os.environ.get('DB_HOST', 'db'),
         'PORT': os.environ.get('DB_PORT', '5432'),
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
     }
 }
 
+
+REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/1')
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': REDIS_URL,
+        'TIMEOUT': 300,
+        'KEY_PREFIX': 'sedabox',
+        'OPTIONS': {
+            'socket_connect_timeout': 1,
+            'socket_timeout': 1,
+        },
+    }
+}
+CACHE_TTL_HOME = int(os.environ.get('CACHE_TTL_HOME', '90'))
+CACHE_TTL_USER_HOME = int(os.environ.get('CACHE_TTL_USER_HOME', '30'))
+CACHE_TTL_PLAYLISTS = int(os.environ.get('CACHE_TTL_PLAYLISTS', '120'))
+CACHE_TTL_SEARCH = int(os.environ.get('CACHE_TTL_SEARCH', '45'))
+CACHE_TTL_USER_SEARCH = int(os.environ.get('CACHE_TTL_USER_SEARCH', '15'))
+CACHE_TTL_DISCOVERY = int(os.environ.get('CACHE_TTL_DISCOVERY', '300'))
+CACHE_TTL_SIMILAR = int(os.environ.get('CACHE_TTL_SIMILAR', '90'))
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -97,6 +121,9 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 STATIC_URL = 'static/'
 # Directory where collectstatic will gather files inside the container
 STATIC_ROOT = os.path.join(BASE_DIR, 'static')
@@ -112,7 +139,7 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.AllowAny',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'api.authentication.OptionalJWTAuthentication',
     ],
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
@@ -133,9 +160,13 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 # CSRF trusted origins for admin panel
 CSRF_TRUSTED_ORIGINS = [
-    'https://api.sedabox.com',
-    'https://www.sedabox.com',
-    'https://sedabox.com',
+    origin.strip()
+    for origin in os.environ.get(
+        'CSRF_TRUSTED_ORIGINS',
+        'https://api.sedabox.com,https://www.sedabox.com,https://sedabox.com,'
+        'http://141.11.187.161,https://141.11.187.161'
+    ).split(',')
+    if origin.strip()
 ]
 
 # Use custom user model

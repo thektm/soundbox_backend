@@ -64,7 +64,10 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Sum, Count, F, IntegerField, Value, Prefetch, DecimalField, CharField, TextField
+from django.db.models import (
+    Sum, Count, F, IntegerField, BigIntegerField, Value, Prefetch, DecimalField, CharField,
+    TextField, OuterRef, Subquery,
+)
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast
 from django.utils import timezone
 from django.conf import settings
@@ -92,6 +95,12 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes, inline_serializer
+from .performance import (
+    AFFINITY_VERSION_KEY, CATALOG_VERSION_KEY, USER_DIRECTORY_VERSION_KEY,
+    cache_delete, cache_get, cache_get_or_claim, cache_set,
+    cache_version, hydrate_album_metrics, hydrate_artist_metrics, hydrate_playlist_metrics,
+    hydrate_song_metrics, stable_cache_key,
+)
 from collections import Counter
 import json
 
@@ -101,6 +110,59 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+
+def _song_card_queryset():
+    return Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related(
+        'artist', 'album', 'uploader'
+    ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+
+
+def _history_queryset(user):
+    return UserHistory.objects.filter(user=user).select_related(
+        'song__artist', 'song__album', 'song__uploader', 'album__artist',
+        'playlist', 'artist', 'target_user', 'target_user__image_profile',
+    ).prefetch_related(
+        'song__featured_artists', 'song__genres', 'song__sub_genres', 'song__moods', 'song__tags',
+        'album__genres', 'album__sub_genres', 'album__moods',
+        'album__songs__artist', 'album__songs__featured_artists', 'album__songs__genres',
+        'album__songs__sub_genres', 'album__songs__moods', 'album__songs__tags',
+        'playlist__songs__artist', 'playlist__songs__featured_artists', 'playlist__songs__genres',
+        'playlist__songs__sub_genres', 'playlist__songs__moods', 'playlist__songs__tags',
+        'artist__social_account_links__platform',
+    ).order_by('-updated_at')
+
+
+def _prepare_history(entries, user):
+    entries = list(entries)
+    songs = [item.song for item in entries if item.song_id]
+    albums = [item.album for item in entries if item.album_id]
+    artists = [item.artist for item in entries if item.artist_id]
+    playlists = [item.playlist for item in entries if item.playlist_id]
+    hydrate_song_metrics(songs, user, False)
+    hydrate_album_metrics(albums, user)
+    hydrate_artist_metrics(artists, user)
+    hydrate_playlist_metrics(playlists, user)
+    target_ids = [item.target_user_id for item in entries if item.target_user_id]
+    followed = set(Follow.objects.filter(
+        follower_user=user, followed_user_id__in=target_ids
+    ).values_list('followed_user_id', flat=True)) if target_ids else set()
+    follower_counts = dict(Follow.objects.filter(followed_user_id__in=target_ids)
+        .values('followed_user_id').annotate(total=Count('id')).values_list('followed_user_id','total'))
+    for entry in entries:
+        if entry.target_user_id:
+            entry.target_user._is_following = entry.target_user_id in followed
+            entry.target_user._followers_count = follower_counts.get(entry.target_user_id, 0)
+    return entries
+
+
+def _page_values(request, default_size=20, max_size=100):
+    try:
+        page = max(1, int(request.query_params.get('page', 1)))
+        size = max(1, min(int(request.query_params.get('page_size', default_size)), max_size))
+        return page, size
+    except (TypeError, ValueError):
+        return 1, default_size
 
 
 # Filename helpers
@@ -646,239 +708,133 @@ class UserFollowView(APIView):
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class LikedSongsView(APIView):
-    """List of songs liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        summary="لیست آهنگ‌های پسندیده شده",
-        description="دریافت لیست آهنگ‌هایی که کاربر لایک کرده است (به ترتیب زمان).",
-        responses={200: LikedSongSerializer(many=True)}
-    )
     def get(self, request):
-        user = request.user
-        # Allow callers (e.g. HomeSummaryView) to force summary serializer selection
-        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
-        qs = SongLike.objects.filter(user=user).order_by('-created_at')
-        
-        paginator = PageNumberPagination()
-        paginator.page_size = 10
-        result_page = paginator.paginate_queryset(qs, request)
-        serializer = LikedSongSerializer(result_page, many=True, context={'request': request})
-        
-        return paginator.get_paginated_response(serializer.data)
+        queryset = SongLike.objects.filter(user=request.user).select_related(
+            'song__artist', 'song__album', 'song__uploader'
+        ).prefetch_related('song__featured_artists', 'song__genres', 'song__sub_genres', 'song__moods', 'song__tags').order_by('-created_at')
+        paginator = PageNumberPagination(); paginator.page_size = 10
+        page = list(paginator.paginate_queryset(queryset, request))
+        hydrate_song_metrics([item.song for item in page], request.user, False)
+        return paginator.get_paginated_response(LikedSongSerializer(page, many=True, context={'request': request}).data)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class LikedAlbumsView(APIView):
-    """List of albums liked by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        summary="لیست آلبوم‌های پسندیده شده",
-        description="دریافت لیست آلبوم‌هایی که کاربر لایک کرده است (به ترتیب زمان).",
-        responses={200: LikedAlbumSerializer(many=True)}
-    )
     def get(self, request):
-        user = request.user
-        qs = AlbumLike.objects.filter(user=user).order_by('-created_at')
-        
-        paginator = PageNumberPagination()
-        paginator.page_size = 10
-        result_page = paginator.paginate_queryset(qs, request)
-        serializer = LikedAlbumSerializer(result_page, many=True, context={'request': request})
-        
-        return paginator.get_paginated_response(serializer.data)
+        songs = _song_card_queryset()
+        queryset = AlbumLike.objects.filter(user=request.user).select_related('album__artist').prefetch_related(
+            'album__genres', 'album__sub_genres', 'album__moods', Prefetch('album__songs', queryset=songs)
+        ).order_by('-created_at')
+        paginator = PageNumberPagination(); paginator.page_size = 10
+        page = list(paginator.paginate_queryset(queryset, request))
+        albums = [item.album for item in page]
+        hydrate_album_metrics(albums, request.user)
+        all_songs = [song for album in albums for song in album.songs.all()]
+        hydrate_song_metrics(all_songs, request.user, False)
+        return paginator.get_paginated_response(LikedAlbumSerializer(page, many=True, context={'request': request}).data)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class LikedPlaylistsView(APIView):
-    """List of playlists liked by the user (Admin, User-created, and Recommended), paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        summary="لیست پلی‌لیست‌های پسندیده شده",
-        description="دریافت لیست پلی‌لیست‌هایی که کاربر لایک کرده است (شامل سیستمی، کاربری و پیشنهادی).",
-        responses={200: SimplePlaylistSerializer(many=True)}
-    )
     def get(self, request):
-        user = request.user
-        
-        # 1. Admin/System Playlists (via PlaylistLike)
-        liked_admin = PlaylistLike.objects.filter(user=user).select_related('playlist').prefetch_related(
-            'playlist__songs', 'playlist__genres', 'playlist__moods'
-        )
-        
-        # 2. User Playlists (Direct M2M)
-        liked_user = UserPlaylist.objects.filter(liked_by=user).prefetch_related('songs')
-        
-        # 3. Recommended Playlists (Direct M2M)
-        liked_rec = RecommendedPlaylist.objects.filter(liked_by=user).prefetch_related('songs')
-        
-        results = []
-        
-        for item in liked_admin:
-            data = SimplePlaylistSerializer(item.playlist, context={'request': request}).data
-            data['liked_at'] = item.created_at
-            results.append(data)
-            
-        for item in liked_user:
-            data = UserPlaylistSerializer(item, context={'request': request}).data
-            data['liked_at'] = item.created_at # Fallback for sorting
-            results.append(data)
-            
-        for item in liked_rec:
-            data = PlaylistSummarySerializer(item, context={'request': request}).data
-            data['liked_at'] = item.created_at # Fallback for sorting
-            results.append(data)
-            
-        # Sort combined results by date descending
-        results.sort(key=lambda x: x.get('liked_at', timezone.now()), reverse=True)
-        
-        paginator = PageNumberPagination()
-        paginator.page_size = 10
-        result_page = paginator.paginate_queryset(results, request)
-        return paginator.get_paginated_response(result_page)
+        page, page_size = _page_values(request, 10, 50)
+        take = page * page_size + 1
+        songs = _song_card_queryset()
+        admin = list(PlaylistLike.objects.filter(user=request.user).select_related('playlist').prefetch_related(
+            'playlist__genres', 'playlist__moods', 'playlist__tags', Prefetch('playlist__songs', queryset=songs)
+        ).order_by('-created_at')[:take])
+        users = list(UserPlaylist.objects.filter(liked_by=request.user).select_related('user').prefetch_related(
+            Prefetch('songs', queryset=songs)
+        ).order_by('-created_at')[:take])
+        recommended = list(RecommendedPlaylist.objects.filter(liked_by=request.user).select_related('playlist_ref').prefetch_related(
+            Prefetch('songs', queryset=songs)
+        ).order_by('-created_at')[:take])
+        merged = [(x.created_at, 'admin', x) for x in admin] + [(x.created_at, 'user', x) for x in users] + [(x.created_at, 'recommended', x) for x in recommended]
+        merged.sort(key=lambda item: item[0], reverse=True)
+        start = (page - 1) * page_size; selected = merged[start:start + page_size]
+        admin_playlists = [item.playlist for _, kind, item in selected if kind == 'admin']
+        hydrate_playlist_metrics(admin_playlists, request.user)
+        recommended_items = [item for _, kind, item in selected if kind == 'recommended']
+        _attach_recommended_metrics(recommended_items, request.user)
+        user_items = [item for _, kind, item in selected if kind == 'user']
+        _prepare_user_playlists(user_items, request.user)
+        payload = []
+        for liked_at, kind, item in selected:
+            if kind == 'admin':
+                data = PlaylistSerializer(item.playlist, context={'request': request}).data
+            elif kind == 'user':
+                data = UserPlaylistSerializer(item, context={'request': request}).data
+            else:
+                data = PlaylistSummarySerializer(item, context={'request': request}).data
+            data['liked_at'] = liked_at
+            payload.append(data)
+        return Response({'count': len(merged), 'next': page + 1 if len(merged) > start + page_size else None,
+                         'previous': page - 1 if page > 1 else None, 'results': payload})
+
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class MyArtistsView(APIView):
-    """List of artists followed by the user, paginated and sorted by date"""
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        summary="لیست هنرمندان دنبال شده",
-        description="دریافت لیست هنرمندانی که کاربر دنبال می‌کند.",
-        responses={200: ArtistSerializer(many=True)}
-    )
     def get(self, request):
-        user = request.user
-        # Filter follows where this user is the follower and the target is an artist
-        qs = Follow.objects.filter(follower_user=user, followed_artist__isnull=False).order_by('-created_at')
-        
-        paginator = PageNumberPagination()
-        paginator.page_size = 10
-        result_page = paginator.paginate_queryset(qs, request)
-        
-        # We want to return the artist data, but we have Follow objects.
-        # We can use a SerializerMethodField or just map them.
-        results = []
-        for follow in result_page:
-            artist_data = ArtistSerializer(follow.followed_artist, context={'request': request}).data
-            artist_data['followed_at'] = follow.created_at
-            results.append(artist_data)
-
-        return paginator.get_paginated_response(results)
+        queryset = Follow.objects.filter(follower_user=request.user, followed_artist__isnull=False).select_related(
+            'followed_artist'
+        ).prefetch_related('followed_artist__social_account_links__platform').order_by('-created_at')
+        paginator = PageNumberPagination(); paginator.page_size = 10
+        page = list(paginator.paginate_queryset(queryset, request))
+        artists = [item.followed_artist for item in page]
+        hydrate_artist_metrics(artists, request.user)
+        data = ArtistSummarySerializer(artists, many=True, context={'request': request}).data
+        for row, follow in zip(data, page): row['followed_at'] = follow.created_at
+        return paginator.get_paginated_response(data)
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
 class MyLibraryView(APIView):
-    """
-    User's library history.
-    Supports 'mix' mode (all types) or specific 'type' param.
-    """
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(
-        summary="تاریخچه کتابخانه کاربر",
-        description="دریافت تاریخچه بازدیدها و فعالیت‌های کاربر در کتابخانه (آهنگ، آلبوم، پلی‌لیست، هنرمند).",
-        parameters=[
-            OpenApiParameter("type", OpenApiTypes.STR, description="نوع محتوا (song, album, playlist, artist, user)"),
-            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
-            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
-        ],
-        responses={
-            200: inline_serializer(
-                name='MyLibraryResponse',
-                fields={
-                    'items': inline_serializer(
-                        name='LibraryItem',
-                        fields={
-                            'id': serializers.IntegerField(),
-                            'type': serializers.CharField(),
-                            'viewed_at': serializers.DateTimeField(),
-                            'item': serializers.DictField(),
-                        },
-                        many=True
-                    ),
-                    'total': serializers.IntegerField(),
-                    'page': serializers.IntegerField(),
-                    'has_next': serializers.BooleanField(),
-                }
-            )
-        }
-    )
     def get(self, request):
         content_type = request.query_params.get('type')
-        page = int(request.query_params.get('page', 1))
-        page_size = int(request.query_params.get('page_size', 20))
-        offset = (page - 1) * page_size
-
-        qs = UserHistory.objects.filter(user=request.user).order_by('-updated_at')
-
-        if content_type:
-            if content_type not in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST, UserHistory.TYPE_USER]:
-                return Response({"detail": "Invalid type."}, status=status.HTTP_400_BAD_REQUEST)
-            qs = qs.filter(content_type=content_type)
-
-        total = qs.count()
-        items = qs[offset:offset + page_size]
-        
-        results = []
-        for entry in items:
-            data = {
-                'id': entry.id,
-                'type': entry.content_type,
-                'viewed_at': entry.updated_at,
-            }
-            
-            if entry.content_type == UserHistory.TYPE_SONG and entry.song:
-                data['item'] = SongSummarySerializer(entry.song, context={'request': request}).data
-            elif entry.content_type == UserHistory.TYPE_ALBUM and entry.album:
-                data['item'] = AlbumSummarySerializer(entry.album, context={'request': request}).data
-            elif entry.content_type == UserHistory.TYPE_PLAYLIST and entry.playlist:
-                data['item'] = SimplePlaylistSerializer(entry.playlist, context={'request': request}).data
-            elif entry.content_type == UserHistory.TYPE_ARTIST and entry.artist:
-                data['item'] = ArtistSummarySerializer(entry.artist, context={'request': request}).data
-            elif entry.content_type == UserHistory.TYPE_USER and entry.target_user:
-                data['item'] = UserSearchSummarySerializer(entry.target_user, context={'request': request}).data
-            else:
-                continue
-                
-            results.append(data)
-
-        return Response({
-            'items': results,
-            'total': total,
-            'page': page,
-            'has_next': total > offset + page_size
-        })
+        allowed = {value for value, _ in UserHistory.TYPE_CHOICES}
+        if content_type and content_type not in allowed:
+            return Response({'detail': 'Invalid type.'}, status=status.HTTP_400_BAD_REQUEST)
+        page, page_size = _page_values(request, 20, 50)
+        queryset = _history_queryset(request.user)
+        if content_type: queryset = queryset.filter(content_type=content_type)
+        total = queryset.count(); offset = (page - 1) * page_size
+        items = _prepare_history(queryset[offset:offset + page_size], request.user)
+        return Response({'items': UserHistorySerializer(items, many=True, context={'request': request}).data,
+                         'total': total, 'page': page, 'has_next': total > offset + page_size})
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
 class UserHistoryView(generics.ListAPIView):
-    """
-    Returns the user's activity history (songs, albums, playlists, artists).
-    Similar to Spotify's library history.
-    """
     serializer_class = UserHistorySerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
 
-    @extend_schema(
-        summary="تاریخچه فعالیت‌های کاربر",
-        description="دریافت لیست فعالیت‌های اخیر کاربر شامل آهنگ‌ها، آلبوم‌ها، پلی‌لیست‌ها، هنرمندان و بازدیدهای پروفایل کاربران. قابلیت فیلتر بر اساس نوع (song, album, playlist, artist, user) را دارد.",
-        parameters=[
-            OpenApiParameter("type", OpenApiTypes.STR, description="فیلتر بر اساس نوع محتوا (song, album, playlist, artist, user)"),
-        ],
-        responses={200: UserHistorySerializer(many=True)}
-    )
     def get_queryset(self):
-        queryset = UserHistory.objects.filter(user=self.request.user).order_by('-updated_at')
+        queryset = _history_queryset(self.request.user)
         content_type = self.request.query_params.get('type')
-        if content_type:
-            if content_type in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST, UserHistory.TYPE_USER]:
-                queryset = queryset.filter(content_type=content_type)
+        if content_type in {value for value, _ in UserHistory.TYPE_CHOICES}:
+            queryset = queryset.filter(content_type=content_type)
+        elif content_type:
+            queryset = queryset.none()
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        items = _prepare_history(page if page is not None else queryset, request.user)
+        data = self.get_serializer(items, many=True).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
@@ -959,78 +915,24 @@ class DownloadHistoryDeleteView(generics.DestroyAPIView):
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
-class UserHistorySearchView(generics.ListAPIView):
-    """
-    Search within the authenticated user's history.
-    Supports filters: `q` (text search), `type` (song|album|playlist|artist), `date_from`, `date_to`.
-    """
-    serializer_class = UserHistorySerializer
-    permission_classes = [IsAuthenticated]
-    pagination_class = StandardResultsSetPagination
-
-    @extend_schema(
-        summary="جستجو در تاریخچه کاربر",
-        description="جستجو و فیلتر در تاریخچه فعالیت‌های کاربر (آهنگ، آلبوم، پلی‌لیست، هنرمند، بازدید پروفایل کاربران).",
-        parameters=[
-            OpenApiParameter('q', OpenApiTypes.STR, description='Query text to search titles/names'),
-            OpenApiParameter('type', OpenApiTypes.STR, description='Filter by content type (song, album, playlist, artist, user)'),
-            OpenApiParameter('date_from', OpenApiTypes.DATE, description='Start date (YYYY-MM-DD)'),
-            OpenApiParameter('date_to', OpenApiTypes.DATE, description='End date (YYYY-MM-DD)'),
-            OpenApiParameter('page', OpenApiTypes.INT, description='Page number'),
-            OpenApiParameter('page_size', OpenApiTypes.INT, description='Page size')
-        ],
-        responses={200: UserHistorySerializer(many=True)}
-    )
+class UserHistorySearchView(UserHistoryView):
     def get_queryset(self):
-        user = self.request.user
-        qs = UserHistory.objects.filter(user=user).order_by('-updated_at')
-
-        # type filter (song/album/playlist/artist)
-        content_type = self.request.query_params.get('type')
-        if content_type and content_type in [UserHistory.TYPE_SONG, UserHistory.TYPE_ALBUM, UserHistory.TYPE_PLAYLIST, UserHistory.TYPE_ARTIST]:
-            qs = qs.filter(content_type=content_type)
-
-        # date range filters
+        queryset = super().get_queryset()
+        query = self.request.query_params.get('q', '').strip()
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
-        try:
-            if date_from:
-                qs = qs.filter(updated_at__date__gte=date_from)
-            if date_to:
-                qs = qs.filter(updated_at__date__lte=date_to)
-        except Exception:
-            pass
-
-        # text search across related titles/names (broadened to include
-        # artist names on songs/albums/playlists and playlist song matches)
-        q = self.request.query_params.get('q')
-        if q:
-            from django.db.models import Q as DJQ
-            text_q = DJQ()
-            # song-related matches (title and song's artist)
-            text_q |= DJQ(song__title__icontains=q)
-            text_q |= DJQ(song__artist__name__icontains=q)
-            text_q |= DJQ(song__artist__artistic_name__icontains=q)
-
-            # album-related matches (title and album's artist)
-            text_q |= DJQ(album__title__icontains=q)
-            text_q |= DJQ(album__artist__name__icontains=q)
-            text_q |= DJQ(album__artist__artistic_name__icontains=q)
-
-            # playlist-related matches (playlist title and its songs / their artists)
-            text_q |= DJQ(playlist__title__icontains=q)
-            text_q |= DJQ(playlist__songs__title__icontains=q)
-            text_q |= DJQ(playlist__songs__artist__name__icontains=q)
-            text_q |= DJQ(playlist__songs__artist__artistic_name__icontains=q)
-
-            # artist-related matches (artist name / stage name)
-            text_q |= DJQ(artist__name__icontains=q)
-            text_q |= DJQ(artist__artistic_name__icontains=q)
-
-            # apply and ensure duplicates from joins are removed
-            qs = qs.filter(text_q).distinct()
-
-        return qs
+        if date_from: queryset = queryset.filter(updated_at__date__gte=date_from)
+        if date_to: queryset = queryset.filter(updated_at__date__lte=date_to)
+        if query:
+            queryset = queryset.filter(
+                Q(song__title__icontains=query) | Q(song__artist__name__icontains=query) |
+                Q(album__title__icontains=query) | Q(album__artist__name__icontains=query) |
+                Q(playlist__title__icontains=query) | Q(playlist__songs__title__icontains=query) |
+                Q(playlist__songs__artist__name__icontains=query) | Q(artist__name__icontains=query) |
+                Q(artist__artistic_name__icontains=query) | Q(target_user__unique_id__icontains=query) |
+                Q(target_user__first_name__icontains=query) | Q(target_user__last_name__icontains=query)
+            ).distinct()
+        return queryset
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
@@ -1372,38 +1274,18 @@ class ArtistListView(APIView):
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlaylistDetailView(APIView):
-    """Retrieve, Update, and Delete Playlist (Admin/System/Audience)"""
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
+    def get_permissions(self): return [AllowAny()] if self.request.method == 'GET' else [IsAuthenticated()]
 
-    def get_object(self, pk):
-        try:
-            return Playlist.objects.get(pk=pk)
-        except Playlist.DoesNotExist:
-            return None
-
-    @extend_schema(
-        summary="جزئیات پلی‌لیست",
-        description="دریافت اطلاعات کامل یک پلی‌لیست به همراه لیست آهنگ‌ها.",
-        responses={200: PlaylistSerializer}
-    )
     def get(self, request, pk):
-        playlist = self.get_object(pk)
-        if not playlist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Record history
+        playlist = Playlist.objects.prefetch_related(
+            'genres', 'moods', 'tags', Prefetch('songs', queryset=_song_card_queryset())
+        ).filter(pk=pk).first()
+        if not playlist: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_PLAYLIST,
-                playlist=playlist,
-                defaults={'updated_at': timezone.now()}
-            )
-        serializer = PlaylistSerializer(playlist, context={'request': request})
-        return Response(serializer.data)
+            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_PLAYLIST,
+                                                 playlist=playlist, defaults={'updated_at': timezone.now()})
+        songs = list(playlist.songs.all()); hydrate_song_metrics(songs, request.user, False); hydrate_playlist_metrics([playlist], request.user)
+        return Response(PlaylistSerializer(playlist, context={'request': request}).data)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
@@ -1635,221 +1517,65 @@ class PlaylistLikeView(APIView):
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class ArtistDetailView(APIView):
-    """Retrieve, Update, and Delete Artist"""
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
+    def get_permissions(self): return [AllowAny()] if self.request.method == 'GET' else [IsAuthenticated()]
 
-    def get_object(self, pk):
-        try:
-            return Artist.objects.get(pk=pk)
-        except Artist.DoesNotExist:
-            return None
-
-    @extend_schema(
-        summary="جزئیات هنرمند",
-        description="دریافت اطلاعات کامل هنرمند به همراه برترین آهنگ‌ها، آلبوم‌ها و آهنگ‌های جدید.",
-        parameters=[
-            OpenApiParameter("type", OpenApiTypes.STR, description="نوع لیست درخواستی (top_songs, albums, latest_songs)"),
-            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
-            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
-        ],
-        responses={
-            200: inline_serializer(
-                name='ArtistDetailResponse',
-                fields={
-                    'artist': ArtistSerializer(),
-                    'top_songs': inline_serializer(
-                        name='ArtistTopSongs',
-                        fields={
-                            'items': SongStreamSerializer(many=True),
-                            'total': serializers.IntegerField(),
-                            'next_page_link': serializers.CharField(allow_null=True),
-                        }
-                    ),
-                    'albums': inline_serializer(
-                        name='ArtistAlbums',
-                        fields={
-                            'items': AlbumSerializer(many=True),
-                            'total': serializers.IntegerField(),
-                            'next_page_link': serializers.CharField(allow_null=True),
-                        }
-                    ),
-                    'latest_songs': inline_serializer(
-                        name='ArtistLatestSongs',
-                        fields={
-                            'items': SongStreamSerializer(many=True),
-                            'total': serializers.IntegerField(),
-                            'next_page_link': serializers.CharField(allow_null=True),
-                        }
-                    ),
-                    'discovered_on': serializers.ListField(child=serializers.DictField()),
-                    'similar_artists': PopularArtistSerializer(many=True),
-                }
-            )
-        }
-    )
     def get(self, request, pk):
-        artist = self.get_object(pk)
-        if not artist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Record history
+        artist = Artist.objects.prefetch_related('social_account_links__platform').filter(pk=pk).first()
+        if not artist: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_ARTIST,
-                artist=artist,
-                defaults={'updated_at': timezone.now()}
-            )
-        
-        # Pagination params
-        page = int(request.query_params.get('page', 1))
-        page_size = int(request.query_params.get('page_size', 10))
-        offset = (page - 1) * page_size
-        
-        # Check if user wants a specific list (paginated)
+            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_ARTIST,
+                                                 artist=artist, defaults={'updated_at': timezone.now()})
+        page, page_size = _page_values(request, 10, 50); offset = (page - 1) * page_size
+        song_base = _song_card_queryset().filter(artist=artist)
+        top = song_base.annotate(total_plays=Coalesce(F('plays'), 0) + Count('play_counts')).order_by('-total_plays', '-created_at')
+        latest = song_base.order_by('-release_date', '-created_at')
+        albums = Album.objects.filter(artist=artist).exclude(Q(title__iexact='single') | Q(title='سینگل')).select_related('artist').prefetch_related(
+            'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=_song_card_queryset())
+        ).order_by('-release_date', '-created_at')
         list_type = request.query_params.get('type')
-        
-        if list_type == 'top_songs':
-            qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).annotate(
-                total_plays=Coalesce(F('plays'), 0) + Count('play_counts')
-            ).order_by('-total_plays')
-            items = qs[offset:offset + page_size]
-            data = SongStreamSerializer(items, many=True, context={'request': request}).data
-            return Response({
-                'items': data,
-                'total': qs.count(),
-                'page': page,
-                'has_next': qs.count() > offset + page_size
-            })
-            
+        if list_type in {'top_songs', 'latest_songs'}:
+            queryset = top if list_type == 'top_songs' else latest; total = queryset.count(); items = list(queryset[offset:offset+page_size])
+            hydrate_song_metrics(items, request.user, False)
+            return Response({'items': SongStreamSerializer(items, many=True, context={'request': request}).data,
+                             'total': total, 'page': page, 'has_next': total > offset + page_size})
         if list_type == 'albums':
-            qs = Album.objects.filter(artist=artist).exclude(
-                Q(title__iexact='single') | Q(title='سینگل')
-            ).order_by('-release_date')
-            items = qs[offset:offset + page_size]
-            data = AlbumSerializer(items, many=True, context={'request': request}).data
-            return Response({
-                'items': data,
-                'total': qs.count(),
-                'page': page,
-                'has_next': qs.count() > offset + page_size
-            })
-            
-        if list_type == 'latest_songs':
-            qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).order_by('-release_date', '-created_at')
-            items = qs[offset:offset + page_size]
-            data = SongStreamSerializer(items, many=True, context={'request': request}).data
-            return Response({
-                'items': data,
-                'total': qs.count(),
-                'page': page,
-                'has_next': qs.count() > offset + page_size
-            })
-
-        # Default: Return full detail view
-        # Record history
-        if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_ARTIST,
-                artist=artist,
-                defaults={'updated_at': timezone.now()}
+            total = albums.count(); items = list(albums[offset:offset+page_size]); hydrate_album_metrics(items, request.user)
+            for album in items: hydrate_song_metrics(list(album.songs.all()), request.user, False)
+            return Response({'items': AlbumSerializer(items, many=True, context={'request': request}).data,
+                             'total': total, 'page': page, 'has_next': total > offset + page_size})
+        top_total, album_total, latest_total = top.count(), albums.count(), latest.count()
+        top_items, album_items, latest_items = list(top[:5]), list(albums[:5]), list(latest[:5])
+        hydrate_song_metrics(top_items + latest_items, request.user, False); hydrate_album_metrics(album_items, request.user); hydrate_artist_metrics([artist], request.user)
+        for album in album_items: hydrate_song_metrics(list(album.songs.all()), request.user, False)
+        discovered = list(Playlist.objects.filter(songs__artist=artist).values('id','title','cover_image','created_by').distinct()[:8])
+        for item in discovered: item.update(type='playlist', image=item.pop('cover_image'), source=item.pop('created_by'))
+        key = stable_cache_key('similar-artists-v7', artist.pk, cache_version(CATALOG_VERSION_KEY), cache_version(AFFINITY_VERSION_KEY))
+        similar_ids, _ = cache_get_or_claim(key)
+        if similar_ids is None:
+            genre_ids = list(song_base.values_list('genres__id', flat=True).exclude(genres__id=None).distinct())
+            mood_ids = list(song_base.values_list('moods__id', flat=True).exclude(moods__id=None).distinct())
+            candidates = Artist.objects.exclude(pk=artist.pk).annotate(
+                genre_overlap=Count('songs__genres', filter=Q(songs__status=Song.STATUS_PUBLISHED, songs__genres__in=genre_ids), distinct=True),
+                mood_overlap=Count('songs__moods', filter=Q(songs__status=Song.STATUS_PUBLISHED, songs__moods__in=mood_ids), distinct=True),
+                shared_followers=Count('follower_artist_relations__follower_user', filter=Q(follower_artist_relations__follower_user__in=Follow.objects.filter(followed_artist=artist).values('follower_user')), distinct=True),
+                shared_listeners=Count('monthly_listener_records__user', filter=Q(monthly_listener_records__user__in=ArtistMonthlyListener.objects.filter(artist=artist).values('user')), distinct=True),
+            ).filter(Q(genre_overlap__gt=0)|Q(mood_overlap__gt=0)|Q(shared_followers__gt=0)|Q(shared_listeners__gt=0)).order_by(
+                '-genre_overlap','-mood_overlap','-shared_followers','-shared_listeners','-verified'
             )
-
-        # Basic artist data
-        artist_data = ArtistSerializer(artist, context={'request': request}).data
-        
-        # 1. Top Songs (preview)
-        top_songs_qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).annotate(
-            total_plays=Coalesce(F('plays'), 0) + Count('play_counts')
-        ).order_by('-total_plays')
-        top_songs_data = SongStreamSerializer(top_songs_qs[:5], many=True, context={'request': request}).data
-        
-        # 2. Albums (preview)
-        albums_qs = Album.objects.filter(artist=artist).exclude(
-            Q(title__iexact='single') | Q(title='سینگل')
-        ).order_by('-release_date')
-        albums_data = AlbumSerializer(albums_qs[:5], many=True, context={'request': request}).data
-        
-        # 3. Latest Songs (preview)
-        latest_songs_qs = Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED).order_by('-release_date', '-created_at')
-        latest_songs_data = SongStreamSerializer(latest_songs_qs[:5], many=True, context={'request': request}).data
-        
-        # 4. Discovered On
-        discovered_on = []
-        
-        # Admin playlists
-        admin_playlists = Playlist.objects.filter(songs__artist=artist, created_by=Playlist.CREATED_BY_ADMIN).distinct()
-        # System/Audience playlists with likes
-        # Playlists that have PlaylistLike records
-        liked_playlist_ids = PlaylistLike.objects.values_list('playlist_id', flat=True).distinct()
-        other_playlists = Playlist.objects.filter(
-            songs__artist=artist,
-            created_by__in=[Playlist.CREATED_BY_SYSTEM, Playlist.CREATED_BY_AUDIENCE],
-            id__in=liked_playlist_ids
-        ).distinct()
-        # Public UserPlaylists with likes
-        user_playlists = UserPlaylist.objects.filter(songs__artist=artist, public=True).annotate(likes_count=Count('liked_by')).filter(likes_count__gt=0).distinct()
-        
-        # Credited songs
-        credited_songs = Song.objects.filter(
-            Q(featured_artists=artist) |
-            Q(producers__icontains=artist.name) |
-            Q(composers__icontains=artist.name) |
-            Q(lyricists__icontains=artist.name)
-        ).exclude(artist=artist).filter(status=Song.STATUS_PUBLISHED).distinct()
-        
-        for p in admin_playlists:
-            discovered_on.append({'type': 'playlist', 'id': p.id, 'title': p.title, 'image': p.cover_image, 'source': 'admin'})
-        for p in other_playlists:
-            discovered_on.append({'type': 'playlist', 'id': p.id, 'title': p.title, 'image': p.cover_image, 'source': p.created_by})
-        for p in user_playlists:
-            discovered_on.append({'type': 'user_playlist', 'id': p.id, 'title': p.title, 'image': None, 'source': 'user'})
-        for s in credited_songs:
-            discovered_on.append({'type': 'song', 'id': s.id, 'title': s.title, 'image': s.cover_image, 'artist': s.artist.name if s.artist else None})
-
-        base_url = request.build_absolute_uri(request.path)
-        # 5. Similar artists: pick artists that have songs with same genre or same mood (genre first if not found, mood)
-        # Gather artist's genre/mood ids from their songs
-        genre_ids = list(Song.objects.filter(artist=artist).values_list('genres__id', flat=True))
-        mood_ids = list(Song.objects.filter(artist=artist).values_list('moods__id', flat=True))
-        genre_ids = [g for g in set(genre_ids) if g]
-        mood_ids = [m for m in set(mood_ids) if m]
-
-        # Use genre and mood overlap, prioritized by genre
-        candidates = Artist.objects.exclude(id=artist.id).annotate(
-            genre_overlap=Count('songs__genres', filter=Q(songs__genres__in=genre_ids), distinct=True),
-            mood_overlap=Count('songs__moods', filter=Q(songs__moods__in=mood_ids), distinct=True),
-        ).filter(
-            Q(genre_overlap__gt=0) | Q(mood_overlap__gt=0)
-        ).order_by('-genre_overlap', '-mood_overlap')[:6]
-
-        similar_artists_data = PopularArtistSerializer(candidates, many=True, context={'request': request}).data
-
-        return Response({
-            'artist': artist_data,
-            'top_songs': {
-                'items': top_songs_data,
-                'total': top_songs_qs.count(),
-                'next_page_link': f"{base_url}?type=top_songs&page=2" if top_songs_qs.count() > 5 else None
-            },
-            'albums': {
-                'items': albums_data,
-                'total': albums_qs.count(),
-                'next_page_link': f"{base_url}?type=albums&page=2" if albums_qs.count() > 5 else None
-            },
-            'latest_songs': {
-                'items': latest_songs_data,
-                'total': latest_songs_qs.count(),
-                'next_page_link': f"{base_url}?type=latest_songs&page=2" if latest_songs_qs.count() > 5 else None
-            },
-            'discovered_on': discovered_on[:10]
-            ,
-            'similar_artists': similar_artists_data
-        })
+            similar_ids = list(candidates.values_list('id', flat=True)[:30])
+            if not similar_ids: similar_ids = list(Artist.objects.exclude(pk=artist.pk).order_by('-verified','name').values_list('id',flat=True)[:30])
+            cache_set(key, similar_ids, getattr(settings,'CACHE_TTL_SIMILAR',90))
+        selected_ids = similar_ids[:6]; rows = Artist.objects.filter(pk__in=selected_ids).prefetch_related('social_account_links__platform')
+        by_id={x.pk:x for x in rows}; similar=[by_id[x] for x in selected_ids if x in by_id]; hydrate_artist_metrics(similar, request.user)
+        base_url=request.build_absolute_uri(request.path)
+        return Response({'artist': ArtistSerializer(artist, context={'request': request}).data,
+            'top_songs': {'items': SongStreamSerializer(top_items,many=True,context={'request':request}).data,'total':top_total,
+                          'next_page_link':f'{base_url}?type=top_songs&page=2' if top_total>5 else None},
+            'albums': {'items':AlbumSerializer(album_items,many=True,context={'request':request}).data,'total':album_total,
+                       'next_page_link':f'{base_url}?type=albums&page=2' if album_total>5 else None},
+            'latest_songs': {'items':SongStreamSerializer(latest_items,many=True,context={'request':request}).data,'total':latest_total,
+                             'next_page_link':f'{base_url}?type=latest_songs&page=2' if latest_total>5 else None},
+            'discovered_on':discovered,'similar_artists':ArtistSummarySerializer(similar,many=True,context={'request':request}).data})
 
    
 
@@ -1978,39 +1704,18 @@ class AlbumListView(APIView):
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class AlbumDetailView(APIView):
-    """Retrieve, Update, and Delete Album"""
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
+    def get_permissions(self): return [AllowAny()] if self.request.method == 'GET' else [IsAuthenticated()]
 
-    def get_object(self, pk):
-        try:
-            return Album.objects.get(pk=pk)
-        except Album.DoesNotExist:
-            return None
-
-    @extend_schema(
-        summary="جزئیات آلبوم",
-        description="دریافت اطلاعات کامل یک آلبوم به همراه لیست آهنگ‌ها.",
-        responses={200: AlbumSerializer}
-    )
     def get(self, request, pk):
-        album = self.get_object(pk)
-        if not album:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Record history
+        album = Album.objects.select_related('artist').prefetch_related(
+            'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=_song_card_queryset(), to_attr='_detail_songs')
+        ).filter(pk=pk).first()
+        if not album: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_ALBUM,
-                album=album,
-                defaults={'updated_at': timezone.now()}
-            )
-            
-        serializer = AlbumSerializer(album, context={'request': request})
-        return Response(serializer.data)
+            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_ALBUM,
+                                                 album=album, defaults={'updated_at': timezone.now()})
+        hydrate_album_metrics([album], request.user); hydrate_song_metrics(album._detail_songs, request.user, False)
+        return Response(AlbumSerializer(album, context={'request': request}).data)
 
    
 
@@ -2493,99 +2198,34 @@ class SongListView(generics.ListCreateAPIView):
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class SongDetailView(APIView):
-    """View for retrieving, updating and deleting a song"""
-    def get_permissions(self):
-        if self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
+    def get_permissions(self): return [AllowAny()] if self.request.method == 'GET' else [IsAuthenticated()]
 
-    def get_object(self, pk):
-        try:
-            song = Song.objects.get(pk=pk)
-            # Non-authenticated or non-staff users only see published songs
-            if not self.request.user.is_authenticated or not self.request.user.is_staff:
-                if song.status != Song.STATUS_PUBLISHED:
-                    return None
-            return song
-        except Song.DoesNotExist:
-            return None
-
-    @extend_schema(
-        summary="جزئیات آهنگ",
-        description="دریافت اطلاعات کامل یک آهنگ به همراه آمار بازدید (برای هنرمند آهنگ).",
-        parameters=[
-            OpenApiParameter("days", OpenApiTypes.INT, description="تعداد روزها برای آمار (پیش‌فرض ۳۰)")
-        ],
-        responses={200: SongSerializer}
-    )
     def get(self, request, pk):
-        song = self.get_object(pk)
-        if not song:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Record history
+        queryset = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        )
+        if not request.user.is_authenticated or not request.user.is_staff:
+            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
+        song = queryset.filter(pk=pk).first()
+        if not song: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_SONG,
-                song=song,
-                defaults={'updated_at': timezone.now()}
-            )
-            
-        serializer = SongSerializer(song, context={'request': request})
-        data = serializer.data
-
-        # If the user is the artist of this song, add detailed analytics
-        is_artist = False
-        if request.user.is_authenticated:
-            try:
-                artist_profile = request.user.artist_profile
-                if song.artist == artist_profile:
-                    is_artist = True
-            except Artist.DoesNotExist:
-                pass
-
-        if is_artist:
-            try:
-                days = int(request.query_params.get('days', 30))
-            except (ValueError, TypeError):
-                days = 30
-            
-            start_date = timezone.now() - timedelta(days=days)
-            period_plays = song.play_counts.filter(created_at__gte=start_date)
-            total_period_plays = period_plays.count()
-            
-            daily_plays = period_plays.annotate(date=TruncDate('created_at')) \
-                .values('date').annotate(count=Count('id')).order_by('date')
-            
-            city_dist = period_plays.values('city').annotate(count=Count('id')).order_by('-count')
-            city_data = []
-            for item in city_dist:
-                percentage = (item['count'] / total_period_plays * 100) if total_period_plays > 0 else 0
-                city_data.append({
-                    'city': item['city'],
-                    'count': item['count'],
-                    'percentage': round(percentage, 2)
-                })
-                
-            country_dist = period_plays.values('country').annotate(count=Count('id')).order_by('-count')
-            country_data = []
-            for item in country_dist:
-                percentage = (item['count'] / total_period_plays * 100) if total_period_plays > 0 else 0
-                country_data.append({
-                    'country': item['country'],
-                    'count': item['count'],
-                    'percentage': round(percentage, 2)
-                })
-                
-            data['analytics'] = {
-                'days': days,
-                'total_period_plays': total_period_plays,
-                'daily_plays': list(daily_plays),
-                'city_distribution': city_data,
-                'country_distribution': country_data
-            }
-
+            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_SONG,
+                                                 song=song, defaults={'updated_at': timezone.now()})
+        hydrate_song_metrics([song], request.user)
+        data = SongSerializer(song, context={'request': request}).data
+        artist_profile = getattr(request.user, 'artist_profile', None) if request.user.is_authenticated else None
+        if artist_profile and song.artist_id == artist_profile.id:
+            try: days = max(1, min(int(request.query_params.get('days', 30)), 365))
+            except (TypeError, ValueError): days = 30
+            plays = song.play_counts.filter(created_at__gte=timezone.now() - timedelta(days=days))
+            total = plays.count()
+            def distribution(field):
+                return [{field: row[field], 'count': row['count'],
+                         'percentage': round(row['count'] * 100 / total, 2) if total else 0}
+                        for row in plays.values(field).annotate(count=Count('id')).order_by('-count')]
+            data['analytics'] = {'days': days, 'total_period_plays': total,
+                'daily_plays': list(plays.annotate(date=TruncDate('created_at')).values('date').annotate(count=Count('id')).order_by('date')),
+                'city_distribution': distribution('city'), 'country_distribution': distribution('country')}
         return Response(data)
 
    
@@ -3484,101 +3124,75 @@ class PlayCountView(APIView):
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
+def _prepare_user_playlists(playlists, user=None, songs_attr='_detail_songs'):
+    items = list(playlists)
+    ids = [item.id for item in items]
+    liked = set()
+    if ids and user is not None and getattr(user, 'is_authenticated', False):
+        liked = set(UserPlaylist.objects.filter(id__in=ids, liked_by=user).values_list('id', flat=True))
+    for item in items:
+        item._songs_count = getattr(item, 'songs_count_value', len(getattr(item, songs_attr, [])))
+        item._likes_count = getattr(item, 'likes_count_value', 0)
+        item._is_liked = item.id in liked
+        hydrate_song_metrics(getattr(item, songs_attr, []), user if getattr(user, 'is_authenticated', False) else None, False)
+    return items
+
+
+def _user_playlist_queryset():
+    return UserPlaylist.objects.select_related('user').annotate(
+        songs_count_value=Count('songs', distinct=True),
+        likes_count_value=Count('liked_by', distinct=True),
+    ).prefetch_related(Prefetch('songs', queryset=_song_card_queryset(), to_attr='_detail_songs'))
+
 class UserPlaylistListCreateView(APIView):
-    """List all user playlists or create a new one"""
     permission_classes = [IsAuthenticated]
-    
-    @extend_schema(
-        summary="لیست و ایجاد پلی‌لیست‌های کاربر",
-        description="دریافت لیست پلی‌لیست‌های شخصی کاربر یا ایجاد یک پلی‌لیست جدید.",
-        request=UserPlaylistCreateSerializer,
-        responses={200: UserPlaylistSerializer(many=True), 201: UserPlaylistSerializer}
-    )
+
     def get(self, request):
-        """List user's playlists"""
-        playlists = UserPlaylist.objects.filter(user=request.user)
-        serializer = UserPlaylistSerializer(playlists, many=True, context={'request': request})
-        return Response(serializer.data)
-    
+        playlists = _prepare_user_playlists(
+            _user_playlist_queryset().filter(user=request.user).order_by('-updated_at'), request.user
+        )
+        return Response(UserPlaylistSerializer(playlists, many=True, context={'request': request}).data)
+
     def post(self, request):
-        """Create a new playlist, optionally with first song"""
         serializer = UserPlaylistCreateSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            playlist = serializer.save()
-            response_serializer = UserPlaylistSerializer(playlist, context={'request': request})
-            return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        playlist = serializer.save()
+        playlist = _prepare_user_playlists(_user_playlist_queryset().filter(pk=playlist.pk), request.user)[0]
+        return Response(UserPlaylistSerializer(playlist, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
 class UserPlaylistDetailView(APIView):
-    """Retrieve, update, or delete a specific user playlist
-
-    - GET: AllowAny — if the playlist is `public` anyone can view it. Owner can also view.
-    - PUT/DELETE: only the owner (authenticated) can modify or delete.
-    """
-
     def get_permissions(self):
-        # Allow unauthenticated access for GET (public playlists), require authentication otherwise
-        if self.request and self.request.method == 'GET':
-            return [AllowAny()]
-        return [IsAuthenticated()]
+        return [AllowAny()] if self.request.method == 'GET' else [IsAuthenticated()]
 
-    def get_object_owner(self, pk, user):
-        try:
-            return UserPlaylist.objects.get(pk=pk, user=user)
-        except UserPlaylist.DoesNotExist:
-            return None
+    def _get(self, pk):
+        return _user_playlist_queryset().filter(pk=pk).first()
 
-    @extend_schema(
-        summary="جزئیات پلی‌لیست کاربر",
-        description="مشاهده، ویرایش یا حذف یک پلی‌لیست شخصی خاص.",
-        responses={200: UserPlaylistSerializer}
-    )
     def get(self, request, pk):
-        """Retrieve a playlist. Public playlists are viewable by anyone."""
-        try:
-            playlist = UserPlaylist.objects.get(pk=pk)
-        except UserPlaylist.DoesNotExist:
+        playlist = self._get(pk)
+        if not playlist or (not playlist.public and (not request.user.is_authenticated or playlist.user_id != request.user.id)):
             return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
+        _prepare_user_playlists([playlist], request.user)
+        return Response(UserPlaylistSerializer(playlist, context={'request': request}).data)
 
-        # If playlist is public allow; otherwise only owner may view
-        if not playlist.public:
-            if not request.user or not request.user.is_authenticated or playlist.user != request.user:
-                return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        serializer = UserPlaylistSerializer(playlist, context={'request': request})
-        return Response(serializer.data)
-    
-    @extend_schema(
-        summary="ویرایش پلی‌لیست کاربر",
-        description="ویرایش اطلاعات پلی‌لیست شخصی (مانند نام یا تصویر).",
-        request=UserPlaylistSerializer,
-        responses={200: UserPlaylistSerializer}
-    )
     def put(self, request, pk):
-        """Update a playlist"""
-        playlist = self.get_object_owner(pk, request.user)
-        if not playlist:
+        playlist = self._get(pk)
+        if not playlist or playlist.user_id != request.user.id:
             return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
         serializer = UserPlaylistSerializer(playlist, data=request.data, partial=True, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    @extend_schema(
-        summary="حذف پلی‌لیست کاربر",
-        description="حذف کامل یک پلی‌لیست شخصی.",
-        responses={204: None}
-    )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        refreshed = _prepare_user_playlists(_user_playlist_queryset().filter(pk=pk), request.user)[0]
+        return Response(UserPlaylistSerializer(refreshed, context={'request': request}).data)
+
     def delete(self, request, pk):
-        """Delete a playlist"""
-        playlist = self.get_object_owner(pk, request.user)
-        if not playlist:
+        deleted, _ = UserPlaylist.objects.filter(pk=pk, user=request.user).delete()
+        if not deleted:
             return Response({'error': 'Playlist not found'}, status=status.HTTP_404_NOT_FOUND)
-        playlist.delete()
-        return Response({'message': 'Playlist deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
@@ -4004,1121 +3618,536 @@ class SedaBoxProfileView(APIView):
         return Response(profile_data)
 
 
+
+def _home_song_queryset(require_preview=False):
+    qs = _song_card_queryset()
+    if require_preview:
+        qs = qs.filter(preview_audio_url__isnull=False).exclude(preview_audio_url='')
+    return qs
+
+
+def _home_album_queryset():
+    song_qs = _home_song_queryset().order_by('-release_date', '-created_at')
+    return Album.objects.select_related('artist').prefetch_related(
+        'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=song_qs, to_attr='_card_songs')
+    )
+
+
+def _home_artist_queryset():
+    return Artist.objects.prefetch_related(
+        Prefetch('social_account_links', queryset=ArtistSocialAccount.objects.select_related('platform'), to_attr='_social_links')
+    )
+
+
+
+def _artist_popularity_queryset():
+    plays = Song.objects.filter(
+        artist_id=OuterRef('pk'), status=Song.STATUS_PUBLISHED
+    ).values('artist_id').annotate(total=Sum('plays')).values('total')[:1]
+    likes = SongLike.objects.filter(song__artist_id=OuterRef('pk')).values(
+        'song__artist_id'
+    ).annotate(total=Count('id')).values('total')[:1]
+    additions = UserPlaylist.songs.through.objects.filter(song__artist_id=OuterRef('pk')).values(
+        'song__artist_id'
+    ).annotate(total=Count('id')).values('total')[:1]
+    return _home_artist_queryset().annotate(
+        total_plays=Coalesce(Subquery(plays, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+        total_likes=Coalesce(Subquery(likes, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+        total_playlist_adds=Coalesce(Subquery(additions, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+    ).annotate(score=F('total_plays') + F('total_likes') + F('total_playlist_adds'))
+
+
+def _album_popularity_queryset():
+    plays = Song.objects.filter(
+        album_id=OuterRef('pk'), status=Song.STATUS_PUBLISHED
+    ).values('album_id').annotate(total=Sum('plays')).values('total')[:1]
+    song_likes = SongLike.objects.filter(song__album_id=OuterRef('pk')).values(
+        'song__album_id'
+    ).annotate(total=Count('id')).values('total')[:1]
+    album_likes = AlbumLike.objects.filter(album_id=OuterRef('pk')).values(
+        'album_id'
+    ).annotate(total=Count('id')).values('total')[:1]
+    additions = UserPlaylist.songs.through.objects.filter(song__album_id=OuterRef('pk')).values(
+        'song__album_id'
+    ).annotate(total=Count('id')).values('total')[:1]
+    return _home_album_queryset().exclude(title__iexact='single').annotate(
+        total_song_plays=Coalesce(Subquery(plays, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+        total_song_likes=Coalesce(Subquery(song_likes, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+        album_likes=Coalesce(Subquery(album_likes, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+        total_playlist_adds=Coalesce(Subquery(additions, output_field=BigIntegerField()), Value(0), output_field=BigIntegerField()),
+    ).annotate(score=F('total_song_plays') + F('total_song_likes') + F('album_likes') + F('total_playlist_adds'))
+
+
+def _home_playlist_queryset(user=None):
+    audience = Q(user__isnull=True)
+    if user is not None and getattr(user, 'is_authenticated', False):
+        audience |= Q(user=user)
+    song_qs = _home_song_queryset().order_by('-release_date', '-created_at')
+    return RecommendedPlaylist.objects.filter(audience).filter(
+        Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+    ).select_related('playlist_ref').annotate(
+        songs_count_value=Count('songs', distinct=True),
+        likes_count_value=Count('liked_by', distinct=True),
+    ).prefetch_related(Prefetch('songs', queryset=song_qs, to_attr='_card_songs'))
+
+
+
+def _cached_ranked_ids(name, queryset, limit=300, timeout=300, *parts):
+    key = stable_cache_key(name, cache_version(CATALOG_VERSION_KEY), *parts)
+    ids = cache_get(key)
+    if ids is None:
+        ids = list(queryset.values_list('id', flat=True)[:limit])
+        cache_set(key, ids, timeout)
+    return ids
+
+
+def _ordered_queryset_items(queryset, ids):
+    objects = queryset.filter(id__in=ids).in_bulk()
+    return [objects[item_id] for item_id in ids if item_id in objects]
+
+
+def _attach_recommended_metrics(items, user=None):
+    items = list(items)
+    ids = [item.id for item in items]
+    liked = saved = set()
+    if ids and user is not None and getattr(user, 'is_authenticated', False):
+        liked = set(RecommendedPlaylist.objects.filter(id__in=ids, liked_by=user).values_list('id', flat=True))
+        saved = set(RecommendedPlaylist.objects.filter(id__in=ids, saved_by=user).values_list('id', flat=True))
+    for item in items:
+        item._songs_count = getattr(item, 'songs_count_value', len(getattr(item, '_card_songs', [])))
+        item._likes_count = getattr(item, 'likes_count_value', 0)
+        item._is_liked = item.id in liked
+        item._is_saved = item.id in saved
+    return items
+
+
+def _rotate_sample(items, limit, seed):
+    items = list(items)
+    if len(items) <= limit:
+        return items
+    rng = random.Random(str(seed))
+    rng.shuffle(items)
+    return items[:limit]
+
+
+def _next_url(request, page_param, page, has_next):
+    if not has_next:
+        return None
+    params = request.query_params.copy()
+    params[page_param] = page + 1
+    return request.build_absolute_uri(request.path) + '?' + params.urlencode()
+
+
+def _slice_items(items, page, size):
+    start = (page - 1) * size
+    chunk = list(items[start:start + size + 1])
+    return chunk[:size], len(chunk) > size
+
+
+def _song_recommendations(request, limit=10):
+    user = request.user
+    require_preview = not user.is_authenticated
+    version = cache_version(CATALOG_VERSION_KEY)
+    affinity = cache_version(AFFINITY_VERSION_KEY)
+    audience = f'user:{user.id}:{affinity}' if user.is_authenticated else 'guest'
+    key = stable_cache_key('home-song-recommendations', audience, version, limit, 'v4')
+    ids = cache_get(key)
+    recommendation_type = 'personalized' if user.is_authenticated else 'guest_discovery'
+
+    if not ids:
+        base = _home_song_queryset(require_preview=require_preview)
+        excluded = set()
+        candidates = base
+        if user.is_authenticated:
+            liked = set(SongLike.objects.filter(user=user).values_list('song_id', flat=True))
+            played = set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
+            playlist = set(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
+            excluded = liked | played | playlist
+            interacted = Song.objects.filter(id__in=excluded)
+            genre_ids = list(interacted.exclude(genres__id=None).values('genres__id').annotate(n=Count('id')).order_by('-n').values_list('genres__id', flat=True)[:4])
+            mood_ids = list(interacted.exclude(moods__id=None).values('moods__id').annotate(n=Count('id')).order_by('-n').values_list('moods__id', flat=True)[:3])
+            artist_ids = list(interacted.values('artist_id').annotate(n=Count('id')).order_by('-n').values_list('artist_id', flat=True)[:4])
+            if genre_ids or mood_ids or artist_ids:
+                candidates = base.exclude(id__in=excluded).filter(
+                    Q(genres__id__in=genre_ids) | Q(moods__id__in=mood_ids) | Q(artist_id__in=artist_ids)
+                ).distinct()
+            else:
+                recommendation_type = 'trending'
+        pool = list(candidates.order_by('-plays', '-release_date', '-created_at')[:120])
+        if len(pool) < limit:
+            seen = excluded | {song.id for song in pool}
+            pool.extend(base.exclude(id__in=seen).order_by('-plays', '-release_date')[:limit - len(pool)])
+        songs = _rotate_sample(pool, limit, f'{audience}:{timezone.now():%Y-%m-%d-%H}')
+        ids = [song.id for song in songs]
+        cache_set(key, ids, getattr(settings, 'CACHE_TTL_USER_HOME', 30) if user.is_authenticated else getattr(settings, 'CACHE_TTL_HOME', 90))
+    song_map = _home_song_queryset(require_preview=require_preview).filter(id__in=ids).in_bulk()
+    songs = [song_map[sid] for sid in ids if sid in song_map]
+    hydrate_song_metrics(songs, user if user.is_authenticated else None)
+    return recommendation_type, songs
+
+
+def _paginated_payload(request, items, page_param, page, size, serializer):
+    page_items, has_next = _slice_items(items, page, size)
+    return {
+        'count': len(page_items),
+        'next': _next_url(request, page_param, page, has_next),
+        'previous': None,
+        'results': serializer(page_items, many=True, context={'request': request}).data,
+    }
+
+
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class HomeSummaryView(APIView):
-    """
-    Aggregated view for the home page summary.
-    Contains recommendations, latest releases, popular artists, popular albums, and playlist recommendations.
-    Optimized for speed and minimal JSON size.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
-    def get_paginated_data(self, queryset, page_param, page_size, serializer_class, request):
-        try:
-            page = int(request.query_params.get(page_param, 1))
-        except (ValueError, TypeError):
-            page = 1
-        
-        start = (page - 1) * page_size
-        end = start + page_size
-        
-        # Fetch one extra to check for next page
-        results = list(queryset[start:end + 1])
-        has_next = len(results) > page_size
-        
-        if has_next:
-            results = results[:page_size]
-            params = request.query_params.copy()
-            params[page_param] = page + 1
-            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
-        else:
-            next_url = None
-            
-        return {
-            'count': len(results),
-            'next': next_url,
-            'results': serializer_class(results, many=True, context={'request': request}).data
-        }
-
-    @extend_schema(
-        summary="خلاصه صفحه اصلی (بهینه شده)",
-        description="دریافت مجموعه‌ای از پیشنهادات، جدیدترین‌ها، هنرمندان و آلبوم‌های محبوب و پلی‌لیست‌های پیشنهادی در یک درخواست با حجم کم و سرعت بالا.",
-        parameters=[
-            OpenApiParameter("sr_page", OpenApiTypes.INT, description="صفحه پیشنهادات آهنگ"),
-            OpenApiParameter("lr_page", OpenApiTypes.INT, description="صفحه جدیدترین‌ها"),
-            OpenApiParameter("pa_page", OpenApiTypes.INT, description="صفحه هنرمندان محبوب"),
-            OpenApiParameter("pal_page", OpenApiTypes.INT, description="صفحه آلبوم‌های محبوب"),
-            OpenApiParameter("pr_page", OpenApiTypes.INT, description="صفحه پلی‌لیست‌های پیشنهادی"),
-            OpenApiParameter("ds_page", OpenApiTypes.INT, description="صفحه اکتشافات"),
-        ],
-        responses={
-            200: inline_serializer(
-                name='HomeSummaryResponse',
-                fields={
-                    'sections': serializers.IntegerField(),
-                    'songs_recommendations': inline_serializer(
-                        name='SongsRecSummary',
-                        fields={
-                            'type': serializers.CharField(),
-                            'count': serializers.IntegerField(),
-                            'next': serializers.CharField(allow_null=True),
-                            'songs': SongSummarySerializer(many=True),
-                        }
-                    ),
-                    'latest_releases': inline_serializer(
-                        name='LatestRelSummary',
-                        fields={
-                            'count': serializers.IntegerField(),
-                            'next': serializers.CharField(allow_null=True),
-                            'results': SongSummarySerializer(many=True),
-                        }
-                    ),
-                    'popular_artists': inline_serializer(
-                        name='PopularArtSummary',
-                        fields={
-                            'count': serializers.IntegerField(),
-                            'next': serializers.CharField(allow_null=True),
-                            'results': ArtistSummarySerializer(many=True),
-                        }
-                    ),
-                    'popular_albums': inline_serializer(
-                        name='PopularAlbSummary',
-                        fields={
-                            'count': serializers.IntegerField(),
-                            'next': serializers.CharField(allow_null=True),
-                            'results': AlbumSummarySerializer(many=True),
-                        }
-                    ),
-                    'playlist_recommendations': inline_serializer(
-                        name='PlaylistRecSummary',
-                        fields={
-                            'count': serializers.IntegerField(),
-                            'next': serializers.CharField(allow_null=True),
-                            'results': PlaylistSummarySerializer(many=True),
-                        }
-                    ),
-                    'discoveries': inline_serializer(
-                        name='DiscoveriesSummary',
-                        fields={
-                            'count': serializers.IntegerField(),
-                            'next': serializers.CharField(allow_null=True),
-                            'results': SongSummarySerializer(many=True),
-                        }
-                    ),
-                }
-            )
-        }
-    )
-    def get(self, request, *args, **kwargs):
+    def get(self, request):
         user = request.user
-        data = {}
-        sections_count = 0
+        version = cache_version(CATALOG_VERSION_KEY)
+        audience = f'user:{user.id}:{cache_version(AFFINITY_VERSION_KEY)}' if user.is_authenticated else 'guest'
+        pages = {name: max(1, int(request.query_params.get(param, 1) or 1)) for name, param in {
+            'rec': 'sr_page', 'latest': 'lr_page', 'artists': 'pa_page', 'albums': 'pal_page',
+            'playlists': 'pr_page', 'discoveries': 'ds_page',
+        }.items()}
+        cache_key = stable_cache_key('home-summary', audience, version, pages, 'v9')
+        cached, claimed = cache_get_or_claim(cache_key) if not user.is_authenticated else (None, False)
+        if cached is not None:
+            return Response(cached)
 
-        # 1. Songs Recommendations
-        try:
-            rec_view = UserRecommendationView()
-            # force summary serializer mode on the recommendation view
-            rec_view.force_summary = True
-            # initialize internal view attributes so it behaves like a real DRF view
-            rec_view.request = request
-            rec_view.args = args
-            rec_view.kwargs = kwargs
-            rec_view.format_kwarg = None
+        rec_type, rec_songs = _song_recommendations(request, 30)
+        rec_page, rec_next = _slice_items(rec_songs, pages['rec'], 6)
 
-            # Call the view and handle possible return shapes robustly
-            rec_resp = rec_view.get(rec_view.request)
-
-            # If it's a DRF Response, use .data
-            if hasattr(rec_resp, 'data'):
-                data['songs_recommendations'] = rec_resp.data
-                sections_count += 1
-            # If view returned a plain dict/list, accept it directly
-            elif isinstance(rec_resp, (dict, list)):
-                data['songs_recommendations'] = rec_resp
-                sections_count += 1
-            # If view returned a tuple like (data, status) or (data, status, headers)
-            elif isinstance(rec_resp, tuple) and len(rec_resp) >= 1:
-                data['songs_recommendations'] = rec_resp[0]
-                sections_count += 1
-            else:
-                # Fallback: set an explanatory null to avoid silent None
-                data['songs_recommendations'] = {'error': 'unexpected recommendation response', 'raw': str(rec_resp)}
-        except Exception as e:
-            # Surface exception message to help debug why recommendations are null
-            data['songs_recommendations'] = {'error': str(e)}
-
-        # 2. Latest Releases (10 items)
-        latest_qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-release_date', '-created_at')
-        data['latest_releases'] = self.get_paginated_data(latest_qs, 'lr_page', 10, SongSummarySerializer, request)
-        sections_count += 1
-
-        # 3. Popular Artists (6 items)
-        artist_view = PopularArtistsView()
-        artist_view.request = request
-        artists_qs = artist_view.get_queryset().prefetch_related('follower_artist_relations')
-        data['popular_artists'] = self.get_paginated_data(artists_qs, 'pa_page', 6, ArtistSummarySerializer, request)
-        sections_count += 1
-
-        # 4. Popular Albums (6 items)
-        album_view = PopularAlbumsView()
-        album_view.request = request
-        albums_qs = album_view.get_queryset().select_related('artist').prefetch_related('liked_by', 'genres', 'moods', 'sub_genres')
-        data['popular_albums'] = self.get_paginated_data(albums_qs, 'pal_page', 6, AlbumSummarySerializer, request)
-        sections_count += 1
-
-        # 5. Playlist Recommendations (6 items)
-        playlist_view = PlaylistRecommendationsView()
-        playlist_view.request = request
-        # Generate fresh recommendations on every HomeSummary request so the
-        # playlist section is never empty and feels new to the user.
-        try:
-            playlist_view._generate_recommendations(user, force=True)
-        except Exception:
-            # If generation fails, fall back to returning any existing recommendations
-            pass
-        playlists_qs = playlist_view.get_queryset().select_related('playlist_ref').prefetch_related(
-            'songs', 'songs__genres', 'songs__moods', 'liked_by'
+        latest_qs = _home_song_queryset(not user.is_authenticated)
+        latest_ids = _cached_ranked_ids(
+            'home-latest', latest_qs.order_by('-release_date', '-created_at'), 80, 180,
+            not user.is_authenticated,
         )
+        latest = _ordered_queryset_items(latest_qs, latest_ids)
+        latest_page, latest_next = _slice_items(latest, pages['latest'], 6)
+        hydrate_song_metrics(latest_page, user if user.is_authenticated else None)
 
-        # Custom pagination + per-request shuffling and ephemeral cover selection
-        try:
-            page = int(request.query_params.get('pr_page', 1))
-        except (ValueError, TypeError):
-            page = 1
-        page_size = 6
-        start = (page - 1) * page_size
-        end = start + page_size
+        artist_qs = _artist_popularity_queryset()
+        artist_ids = _cached_ranked_ids('home-popular-artists', artist_qs.order_by('-score', '-verified', 'name'), 80, 300)
+        artists = _ordered_queryset_items(artist_qs, artist_ids)
+        artist_page, artist_next = _slice_items(artists, pages['artists'], 6)
+        hydrate_artist_metrics(artist_page, user if user.is_authenticated else None)
 
-        # fetch one extra to detect next
-        results_qs = list(playlists_qs[start:end + 1])
-        has_next = len(results_qs) > page_size
-        if has_next:
-            results_list = results_qs[:page_size]
-        else:
-            results_list = results_qs
+        album_qs = _album_popularity_queryset()
+        album_ids = _cached_ranked_ids('home-popular-albums', album_qs.order_by('-score', '-release_date'), 80, 300)
+        albums = _ordered_queryset_items(album_qs, album_ids)
+        album_page, album_next = _slice_items(albums, pages['albums'], 6)
+        hydrate_album_metrics(album_page, user if user.is_authenticated else None)
 
-        # Shuffle playlist order (so each request sees different sequence)
-        try:
-            random.shuffle(results_list)
-        except Exception:
-            pass
+        playlists = list(_home_playlist_queryset(user).order_by('-relevance_score', '-created_at')[:80])
+        playlist_page, playlist_next = _slice_items(playlists, pages['playlists'], 6)
+        _attach_recommended_metrics(playlist_page, user)
 
-        # For each recommended playlist, reshuffle song order (persist if possible)
-        for rec in results_list:
-            try:
-                songs = list(rec.songs.all())
-                if not songs:
-                    continue
+        discovery_base = _home_song_queryset(not user.is_authenticated)
+        excluded = {song.id for song in latest[:30]} | {song.id for song in rec_songs}
+        discovery_pool = list(discovery_base.exclude(id__in=excluded).order_by('-created_at')[:120])
+        discoveries = _rotate_sample(discovery_pool, 60, f'{audience}:{timezone.now():%Y-%m-%d-%H}')
+        discovery_page, discovery_next = _slice_items(discoveries, pages['discoveries'], 6)
+        hydrate_song_metrics(discovery_page, user if user.is_authenticated else None)
 
-                # score songs by popularity (plays + likes*50) then randomize ties
-                scored = []
-                for s in songs:
-                    likes = s.liked_by.count() if hasattr(s, 'liked_by') else 0
-                    score = (getattr(s, 'plays', 0) or 0) + likes * 50
-                    scored.append((s, score))
-                scored.sort(key=lambda tup: (-tup[1], random.random()))
-                new_order_ids = [s.id for s, _ in scored]
-
-                if rec.song_order and rec.song_order == new_order_ids:
-                    tmp = new_order_ids[:]
-                    random.shuffle(tmp)
-                    new_order_ids = tmp
-
-                rec.song_order = new_order_ids
-                try:
-                    rec.save(update_fields=['song_order'])
-                except Exception:
-                    pass
-            except Exception:
-                continue
-
-        # Serialize
-        serialized = PlaylistSummarySerializer(results_list, many=True, context={'request': request}).data
-
-        # Post-process serialized to select an ephemeral cover image from songs (different each request)
-        import time
-        now_seed = int(time.time() * 1000)
-        rec_map = {str(r.unique_id): r for r in results_list}
-        for i, item in enumerate(serialized):
-            try:
-                rec_obj = rec_map.get(item.get('unique_id'))
-                if not rec_obj:
-                    continue
-                songs = list(rec_obj.songs.all())
-                candidates = []
-                for s in songs:
-                    cover = getattr(s, 'cover_image', None) or (getattr(s, 'album', None) and getattr(s.album, 'cover_image', None))
-                    if cover:
-                        candidates.append(cover)
-                if candidates:
-                    idx = (abs(hash(str(rec_obj.unique_id))) + now_seed + i) % len(candidates)
-                    item['cover_image'] = candidates[idx]
-            except Exception:
-                continue
-
-        next_url = None
-        if has_next:
-            params = request.query_params.copy()
-            params['pr_page'] = page + 1
-            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
-
-        data['playlist_recommendations'] = {
-            'count': len(serialized),
-            'next': next_url,
-            'results': serialized
+        payload = {
+            'sections': 6,
+            'songs_recommendations': {
+                'type': rec_type, 'count': len(rec_page),
+                'next': _next_url(request, 'sr_page', pages['rec'], rec_next),
+                'message': 'منتخب‌های تازه برای شروع شنیدن' if not user.is_authenticated else '',
+                'songs': SongStreamSerializer(rec_page, many=True, context={'request': request}).data,
+            },
+            'latest_releases': {
+                'count': len(latest_page), 'next': _next_url(request, 'lr_page', pages['latest'], latest_next),
+                'results': SongSummarySerializer(latest_page, many=True, context={'request': request}).data,
+            },
+            'popular_artists': {
+                'count': len(artist_page), 'next': _next_url(request, 'pa_page', pages['artists'], artist_next),
+                'results': ArtistSummarySerializer(artist_page, many=True, context={'request': request}).data,
+            },
+            'popular_albums': {
+                'count': len(album_page), 'next': _next_url(request, 'pal_page', pages['albums'], album_next),
+                'results': AlbumSummarySerializer(album_page, many=True, context={'request': request}).data,
+            },
+            'playlist_recommendations': {
+                'count': len(playlist_page), 'next': _next_url(request, 'pr_page', pages['playlists'], playlist_next),
+                'results': PlaylistSummarySerializer(playlist_page, many=True, context={'request': request}).data,
+            },
+            'discoveries': {
+                'count': len(discovery_page), 'next': _next_url(request, 'ds_page', pages['discoveries'], discovery_next),
+                'results': SongSummarySerializer(discovery_page, many=True, context={'request': request}).data,
+            },
         }
-        sections_count += 1
+        if claimed and not user.is_authenticated:
+            cache_set(cache_key, payload, getattr(settings, 'CACHE_TTL_HOME', 90))
+        return Response(payload)
 
-        # 6. Discoveries (6 items)
-        try:
-            ds_view = DiscoveriesView()
-            ds_view.force_summary = True
-            ds_view.request = request
-            ds_view.args = args
-            ds_view.kwargs = kwargs
-            ds_view.format_kwarg = None
-            
-            # We want 6 items for the summary
-            # But DiscoveriesView.get uses ds_page and page_size=10 by default.
-            # I'll modify DiscoveriesView to accept a page_size or just call it and slice.
-            # Actually, I'll just use get_paginated_data logic here if I can, 
-            # but DiscoveriesView has complex exclusion logic.
-            
-            # Let's just call the view and it will return 10 items by default.
-            # The user asked for 6 items for each section based on how heavy it is.
-            # I'll adjust DiscoveriesView to use 6 items if called from here or just generally.
-            
-            ds_resp = ds_view.get(ds_view.request)
-            if hasattr(ds_resp, 'data'):
-                data['discoveries'] = ds_resp.data
-                # Slice to 6 if it returned more
-                if len(data['discoveries'].get('results', [])) > 6:
-                    data['discoveries']['results'] = data['discoveries']['results'][:6]
-                    data['discoveries']['count'] = 6
-                sections_count += 1
-        except Exception as e:
-            data['discoveries'] = {'error': str(e)}
-
-        data['sections'] = sections_count
-        return Response(data)
 
 
 class UserRecommendationView(APIView):
-    """
-    Spotify-level recommendation engine.
-    Provides 10 songs based on user history (likes, plays, playlists)
-    and metadata similarity.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
-    @extend_schema(
-        summary="پیشنهادات هوشمند (مشابه اسپاتیفای)",
-        description="دریافت ۱۰ آهنگ پیشنهادی بر اساس تاریخچه شنیداری، لایک‌ها و پلی‌لیست‌های کاربر با استفاده از الگوریتم شباهت.",
-        responses={
-            200: inline_serializer(
-                name='UserRecommendationResponse',
-                fields={
-                    'type': serializers.CharField(),
-                    'songs': SongSerializer(many=True),
-                    'message': serializers.CharField(required=False),
-                }
-            )
-        }
-    )
     def get(self, request):
-        user = request.user
-        # Allow callers (e.g. HomeSummaryView) to force summary serializer selection
-        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
-        
-        try:
-            page = int(request.query_params.get('sr_page', request.query_params.get('page', 1)))
-        except (ValueError, TypeError):
-            page = 1
-        page_size = 10
-        start = (page - 1) * page_size
-        end = start + page_size
-
-        # 1. Get user's interaction history
-        liked_song_ids = set(Song.objects.filter(liked_by=user).values_list('id', flat=True))
-        played_song_ids = set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
-        playlist_song_ids = set(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
-        
-        all_interacted_ids = liked_song_ids | played_song_ids | playlist_song_ids
-        
-        # If no history, return trending songs
-        if not all_interacted_ids:
-            trending_songs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts').order_by('-plays')[start:end]
-            
-            serializer_class = SongSummarySerializer if summary_mode else SongSerializer
-            serializer = serializer_class(trending_songs, many=True, context={'request': request})
-            
-            # Check if there's more
-            has_next = Song.objects.filter(status=Song.STATUS_PUBLISHED).count() > end
-            next_url = None
-            if has_next:
-                params = request.query_params.copy()
-                params['sr_page'] = page + 1
-                next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
-
-            return Response({
-                'type': 'trending',
-                'message': 'Start listening to get personalized recommendations!',
-                'count': len(trending_songs),
-                'next': next_url,
-                'songs': serializer.data
-            })
-
-        # 2. Extract preferences
-        interacted_songs = Song.objects.filter(id__in=all_interacted_ids)
-        
-        top_genres = interacted_songs.values('genres').annotate(count=Count('genres')).order_by('-count')[:3]
-        top_moods = interacted_songs.values('moods').annotate(count=Count('moods')).order_by('-count')[:3]
-        top_artists = interacted_songs.values('artist').annotate(count=Count('artist')).order_by('-count')[:3]
-        top_languages = interacted_songs.values('language').annotate(count=Count('language')).order_by('-count')[:2]
-        
-        genre_ids = [g['genres'] for g in top_genres if g['genres']]
-        mood_ids = [m['moods'] for m in top_moods if m['moods']]
-        artist_ids = [a['artist'] for a in top_artists if a['artist']]
-        preferred_languages = [l['language'] for l in top_languages if l['language']]
-        
-        # Average audio features
-        avg_features = interacted_songs.aggregate(
-            avg_energy=Avg('energy'),
-            avg_dance=Avg('danceability'),
-            avg_valence=Avg('valence'),
-            avg_tempo=Avg('tempo')
-        )
-
-        # 3. Candidate Generation
-        # Find songs that match top genres, moods, artists, or languages but haven't been interacted with
-        candidates = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED
-        ).exclude(
-            id__in=all_interacted_ids
-        ).filter(
-            Q(genres__in=genre_ids) | 
-            Q(moods__in=mood_ids) | 
-            Q(artist__in=artist_ids) |
-            Q(language__in=preferred_languages)
-        ).distinct().select_related('artist', 'album').prefetch_related('genres', 'moods', 'tags', 'sub_genres', 'liked_by')
-
-        # 4. Scoring & Ranking
-        # We'll use a simple weighted scoring system in Python for better control
-        scored_candidates = []
-        
-        for song in candidates[:300]: # Increased to 300 candidates for performance and pagination
-            score = 0
-            
-            # Metadata matching
-            song_genres = {g.id for g in song.genres.all()}
-            song_moods = {m.id for m in song.moods.all()}
-            
-            score += len(song_genres.intersection(genre_ids)) * 3
-            score += len(song_moods.intersection(mood_ids)) * 2
-            if song.artist_id in artist_ids:
-                score += 5
-            if song.language in preferred_languages:
-                score += 4  # Language match: 4 points (strong preference signal)
-                
-            # Audio feature similarity (inverse distance)
-            if avg_features['avg_energy'] and song.energy:
-                score += (100 - abs(song.energy - avg_features['avg_energy'])) / 10
-            if avg_features['avg_dance'] and song.danceability:
-                score += (100 - abs(song.danceability - avg_features['avg_dance'])) / 10
-                
-            scored_candidates.append((song, score))
-            
-        # Sort by score descending
-        scored_candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        # Take top 10 for the current page
-        recommended_songs = [item[0] for item in scored_candidates[start:end]]
-        
-        # If we don't have enough recommendations, fill with trending
-        if len(recommended_songs) < page_size:
-            needed = page_size - len(recommended_songs)
-            trending_start = max(0, start - len(scored_candidates))
-            trending = Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(
-                id__in=all_interacted_ids
-            ).exclude(
-                id__in=[s.id for s in recommended_songs]
-            ).order_by('-plays')[trending_start:trending_start + needed]
-            recommended_songs.extend(list(trending))
-
-        # Check if there's more
-        has_next = len(scored_candidates) > end or Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(id__in=all_interacted_ids).count() > end
-        next_url = None
-        if has_next:
-            params = request.query_params.copy()
-            params['sr_page'] = page + 1
-            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
-
-        serializer_class = SongSummarySerializer if summary_mode else SongSerializer
-        serializer = serializer_class(recommended_songs, many=True, context={'request': request})
+        _, size = _page_values(request, 10, 50)
+        recommendation_type, songs = _song_recommendations(request, size)
         return Response({
-            'type': 'personalized',
-            'count': len(recommended_songs),
-            'next': next_url,
-            'songs': serializer.data
+            'type': recommendation_type,
+            'message': 'منتخب‌های تازه برای شروع شنیدن' if not request.user.is_authenticated else '',
+            'songs': SongStreamSerializer(songs, many=True, context={'request': request}).data,
         })
+
 
 
 class DiscoveriesView(APIView):
-    """
-    Discovery engine for songs the user hasn't interacted with and aren't in the main summary lists.
-    Provides fresh content to explore.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
-    @extend_schema(
-        summary="اکتشافات (آهنگ‌های جدید)",
-        description="دریافت لیست آهنگ‌هایی که کاربر تا به حال نشنیده و در لیست‌های اصلی صفحه اول نیستند.",
-        responses={
-            200: inline_serializer(
-                name='DiscoveriesResponse',
-                fields={
-                    'count': serializers.IntegerField(),
-                    'next': serializers.CharField(allow_null=True),
-                    'results': SongSummarySerializer(many=True),
-                }
-            )
-        }
-    )
     def get(self, request):
+        page, size = _page_values(request, 20, 50)
         user = request.user
-        summary_mode = getattr(self, 'force_summary', False) or (request.query_params.get('summary') == 'true')
-        
-        try:
-            page = int(request.query_params.get('ds_page', request.query_params.get('page', 1)))
-        except (ValueError, TypeError):
-            page = 1
-        page_size = 6
-        start = (page - 1) * page_size
-        end = start + page_size
-
-        # 1. Exclude user history
-        liked_song_ids = Song.objects.filter(liked_by=user).values_list('id', flat=True)
-        played_song_ids = PlayCount.objects.filter(user=user).values_list('songs__id', flat=True)
-        
-        # 2. Exclude "Mainstream" / Summary content
-        # Latest 50
-        latest_ids = Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-release_date', '-created_at')[:50].values_list('id', flat=True)
-        # Top 50 popular
-        popular_ids = Song.objects.filter(status=Song.STATUS_PUBLISHED).order_by('-plays')[:50].values_list('id', flat=True)
-        
-        exclude_ids = set(liked_song_ids) | set(played_song_ids) | set(latest_ids) | set(popular_ids)
-        
-        # 3. Query for discoveries
-        # We use random ordering to ensure it always feels fresh.
-        queryset = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED
-        ).exclude(
-            id__in=exclude_ids
-        )
-        
-        # If no songs left after strict exclusion, fallback to all published songs to avoid empty section
-        if not queryset.exists():
-            queryset = Song.objects.filter(status=Song.STATUS_PUBLISHED)
-            
-        queryset = queryset.select_related('artist', 'album').prefetch_related('liked_by', 'genres', 'tags', 'moods', 'sub_genres').order_by('?') # Random for discovery
-        
-        # Manual pagination for random queryset
-        results = list(queryset[start:end + 1])
-        has_next = len(results) > page_size
-        if has_next:
-            results = results[:page_size]
-            params = request.query_params.copy()
-            params['ds_page'] = page + 1
-            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
-        else:
-            next_url = None
-
-        serializer_class = SongSummarySerializer if summary_mode else SongSerializer
-        serializer = serializer_class(results, many=True, context={'request': request})
-        
+        version = cache_version(CATALOG_VERSION_KEY)
+        audience = f'user:{user.id}:{cache_version(AFFINITY_VERSION_KEY)}' if user.is_authenticated else 'guest'
+        key = stable_cache_key('discoveries', audience, version, timezone.now().strftime('%Y-%m-%d-%H'), 'v4')
+        ids = cache_get(key)
+        if not ids:
+            qs = _home_song_queryset(not user.is_authenticated)
+            excluded = set()
+            if user.is_authenticated:
+                excluded |= set(SongLike.objects.filter(user=user).values_list('song_id', flat=True))
+                excluded |= set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
+            pool = list(qs.exclude(id__in=excluded).order_by('-created_at')[:240])
+            if not pool:
+                pool = list(qs.order_by('-created_at')[:240])
+            pool = _rotate_sample(pool, len(pool), key)
+            ids = [song.id for song in pool]
+            cache_set(key, ids, getattr(settings, 'CACHE_TTL_DISCOVERY', 300))
+        page_ids, has_next = _slice_items(ids, page, size)
+        song_map = _home_song_queryset(not user.is_authenticated).filter(id__in=page_ids).in_bulk()
+        songs = [song_map[sid] for sid in page_ids if sid in song_map]
+        hydrate_song_metrics(songs, user if user.is_authenticated else None)
+        serializer = SongSummarySerializer if request.query_params.get('summary') == 'true' else SongStreamSerializer
         return Response({
-            'count': len(results),
-            'next': next_url,
-            'results': serializer.data
+            'count': len(songs), 'next': _next_url(request, 'page', page, has_next), 'previous': None,
+            'results': serializer(songs, many=True, context={'request': request}).data,
         })
+
 
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class LatestReleasesView(generics.ListAPIView):
-    """Return songs ordered by release date (newest first), paginated with next link."""
-    serializer_class = SongSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [AllowAny]
     pagination_class = StandardResultsSetPagination
-
-    @extend_schema(
-        summary="جدیدترین آهنگ‌ها",
-        description="دریافت لیست جدیدترین آهنگ‌های منتشر شده به ترتیب تاریخ انتشار.",
-        responses={200: SongSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_permissions(self):
-        # Allow unauthenticated GET access similar to other song endpoints
-        if self.request.method == 'GET':
-            return [permissions.AllowAny()]
-        return super().get_permissions()
+    serializer_class = SongStreamSerializer
 
     def get_queryset(self):
-        queryset = Song.objects.all()
-        # Non-authenticated or non-staff users only see published songs
-        if not self.request.user.is_authenticated or not self.request.user.is_staff:
-            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
+        return _home_song_queryset(not self.request.user.is_authenticated).order_by('-release_date', '-created_at')
 
-        # Order by release_date newest first, fall back to created_at for tie-breaker
-        # Use NULLS LAST behavior where supported by the DB driver
-        try:
-            from django.db.models import F
-            # annotate won't change ordering for nulls handling across DBs reliably,
-            # so default to simple ordering which is acceptable in many setups
-            queryset = queryset.order_by(F('release_date').desc(nulls_last=True), '-created_at')
-        except Exception:
-            queryset = queryset.order_by('-release_date', '-created_at')
+    def list(self, request, *args, **kwargs):
+        page = self.paginate_queryset(self.get_queryset())
+        items = list(page if page is not None else self.get_queryset())
+        hydrate_song_metrics(items, request.user if request.user.is_authenticated else None)
+        data = self.get_serializer(items, many=True).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
-        return queryset.distinct()
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class PopularArtistsView(generics.ListAPIView):
-    """Return artists ordered by a popularity score (plays + likes + playlist adds)."""
-    permission_classes = [permissions.IsAuthenticated]
-    pagination_class = StandardResultsSetPagination
-    serializer_class = PopularArtistSerializer
+class PopularArtistsView(APIView):
+    permission_classes = [AllowAny]
 
-    @extend_schema(
-        summary="هنرمندان محبوب",
-        description="دریافت لیست هنرمندان بر اساس امتیاز محبوبیت (مجموع پخش، لایک و پلی‌لیست‌ها).",
-        responses={200: PopularArtistSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
+    def get(self, request):
+        page, size = _page_values(request, 20, 100)
+        queryset = _artist_popularity_queryset()
+        ids = _cached_ranked_ids('popular-artists', queryset.order_by('-score', '-verified'), 500, 300)
+        page_ids, has_next = _slice_items(ids, page, size)
+        items = _ordered_queryset_items(queryset, page_ids)
+        hydrate_artist_metrics(items, request.user if request.user.is_authenticated else None)
+        return Response({
+            'count': len(ids), 'next': _next_url(request, 'page', page, has_next), 'previous': None,
+            'results': PopularArtistSerializer(items, many=True, context={'request': request}).data,
+        })
 
-    def get_permissions(self):
-        # Allow public GET access similar to other endpoints
-        if self.request.method == 'GET':
-            return [permissions.AllowAny()]
-        return super().get_permissions()
 
-    def get_queryset(self):
-        # Annotate artists with summed metrics across their songs
-        queryset = Artist.objects.all()
-
-        # total plays across songs
-        queryset = queryset.annotate(
-            total_plays=Coalesce(Sum('songs__plays'), 0)
-        )
-
-        # total likes across songs (may count each like instance)
-        queryset = queryset.annotate(
-            total_likes=Coalesce(Count('songs__liked_by'), 0)
-        )
-
-        # items added to playlists: count occurrences in both Playlist and UserPlaylist
-        queryset = queryset.annotate(
-            playlists_count=Coalesce(Count('songs__playlists'), 0),
-            user_playlists_count=Coalesce(Count('songs__user_playlists'), 0),
-        ).annotate(
-            total_playlist_adds=F('playlists_count') + F('user_playlists_count')
-        )
-
-        # combined score (simple sum) and order by it
-        queryset = queryset.annotate(
-            score=F('total_plays') + F('total_likes') + F('total_playlist_adds')
-        ).order_by('-score', '-total_plays')
-
-        return queryset
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class PopularAlbumsView(generics.ListAPIView):
-    """Return albums ordered by combined popularity (album likes + song likes + song plays).
+class PopularAlbumsView(APIView):
+    permission_classes = [AllowAny]
 
-    Each album includes the first 3 song cover URLs (ordered by release_date, created_at).
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    pagination_class = StandardResultsSetPagination
-    from .serializers import PopularAlbumSerializer
-    serializer_class = PopularAlbumSerializer
+    def get(self, request):
+        page, size = _page_values(request, 20, 100)
+        queryset = _album_popularity_queryset()
+        ids = _cached_ranked_ids('popular-albums', queryset.order_by('-score', '-release_date'), 500, 300)
+        page_ids, has_next = _slice_items(ids, page, size)
+        items = _ordered_queryset_items(queryset, page_ids)
+        hydrate_album_metrics(items, request.user if request.user.is_authenticated else None)
+        return Response({
+            'count': len(ids), 'next': _next_url(request, 'page', page, has_next), 'previous': None,
+            'results': PopularAlbumSerializer(items, many=True, context={'request': request}).data,
+        })
 
-    @extend_schema(
-        summary="آلبوم‌های محبوب",
-        description="دریافت لیست آلبوم‌های محبوب بر اساس مجموع لایک‌ها و پخش آهنگ‌های آن‌ها.",
-        responses={200: PopularAlbumSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
 
-    def get_permissions(self):
-        # Public GET access
-        if self.request.method == 'GET':
-            return [permissions.AllowAny()]
-        return super().get_permissions()
-
-    def get_queryset(self):
-        # Annotate album with song-level aggregates
-        # Exclude albums literally titled "single" or "سینگل" (case-insensitive where applicable)
-        queryset = Album.objects.all().exclude(
-            Q(title__iexact='single') | Q(title='سینگل')
-        )
-
-        queryset = queryset.annotate(
-            total_song_plays=Coalesce(Sum('songs__plays'), 0),
-            total_song_likes=Coalesce(Count('songs__liked_by'), 0),
-            # album model currently has no direct likes field; set to 0 (no model changes)
-            album_likes=Value(0, output_field=IntegerField()),
-            playlists_count=Coalesce(Count('songs__playlists'), 0),
-            user_playlists_count=Coalesce(Count('songs__user_playlists'), 0),
-        ).annotate(
-            total_playlist_adds=F('playlists_count') + F('user_playlists_count')
-        ).annotate(
-            score=F('total_song_plays') + F('total_song_likes') + F('album_likes') + F('total_playlist_adds')
-        ).order_by('-score', '-total_song_plays')
-
-        # Prefetch songs with their metadata ordered so serializer can quickly access first 3 covers and aggregate tags
-        song_prefetch = Prefetch(
-            'songs', 
-            queryset=Song.objects.prefetch_related('genres', 'moods', 'sub_genres').order_by('-release_date', '-created_at')
-        )
-        queryset = queryset.prefetch_related(song_prefetch)
-
-        return queryset
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class DailyTopSongsView(generics.ListAPIView):
-    """Return songs ordered by play count in the last 24 hours (Global)."""
-    serializer_class = SongSummarySerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
+class _GlobalChartView(APIView):
+    permission_classes = [AllowAny]
+    entity = 'song'
+    days = 1
 
-    @extend_schema(
-        summary="برترین آهنگ‌های روز",
-        description="لیست آهنگ‌هایی که بیشترین پخش را در ۲۴ ساعت گذشته داشته‌اند.",
-        responses={200: SongSummarySerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
+    def get(self, request):
+        page, size = _page_values(request, 20, 100)
+        cutoff = timezone.now() - timedelta(days=self.days)
+        version = cache_version(CATALOG_VERSION_KEY)
+        key = stable_cache_key('global-chart', self.entity, self.days, version, timezone.now().strftime('%Y-%m-%d-%H'), 'v3')
+        ids = cache_get(key)
+        if not ids:
+            through = Song.play_counts.through
+            links = through.objects.filter(playcount__created_at__gte=cutoff)
+            if self.entity == 'song':
+                rows = links.values('song_id').annotate(total=Count('playcount_id')).order_by('-total')[:300]
+                ids = [row['song_id'] for row in rows]
+            elif self.entity == 'artist':
+                rows = links.values('song__artist_id').annotate(total=Count('playcount_id')).order_by('-total')[:300]
+                ids = [row['song__artist_id'] for row in rows]
+            else:
+                rows = links.exclude(song__album_id=None).values('song__album_id').annotate(total=Count('playcount_id')).order_by('-total')[:300]
+                ids = [row['song__album_id'] for row in rows]
+            cache_set(key, ids, 300)
+        page_ids, has_next = _slice_items(ids, page, size)
+        if self.entity == 'song':
+            objects = _home_song_queryset(not request.user.is_authenticated).filter(id__in=page_ids).in_bulk()
+            items = [objects[x] for x in page_ids if x in objects]
+            hydrate_song_metrics(items, request.user if request.user.is_authenticated else None)
+            serializer = SongStreamSerializer
+        elif self.entity == 'artist':
+            objects = _home_artist_queryset().filter(id__in=page_ids).in_bulk()
+            items = [objects[x] for x in page_ids if x in objects]
+            hydrate_artist_metrics(items, request.user if request.user.is_authenticated else None)
+            serializer = ArtistSummarySerializer
+        else:
+            objects = _home_album_queryset().filter(id__in=page_ids).in_bulk()
+            items = [objects[x] for x in page_ids if x in objects]
+            hydrate_album_metrics(items, request.user if request.user.is_authenticated else None)
+            serializer = AlbumSummarySerializer
+        return Response({'count': len(items), 'next': _next_url(request, 'page', page, has_next), 'previous': None,
+                         'results': serializer(items, many=True, context={'request': request}).data})
 
-    def get_queryset(self):
-        last_24h = timezone.now() - timedelta(hours=24)
-        queryset = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED
-        ).annotate(
-            daily_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=last_24h))
-        ).filter(
-            daily_plays__gt=0
-        ).select_related('artist', 'album').prefetch_related(
-            'liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts'
-        ).order_by('-daily_plays', '-plays')
-        
-        return queryset.distinct()
+class DailyTopSongsView(_GlobalChartView):
+    entity = 'song'
+    days = 1
 
-
-@extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class DailyTopArtistsView(generics.ListAPIView):
-    """Return artists ordered by total play count of their songs in the last 24 hours (Global)."""
-    serializer_class = PopularArtistSerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
-
-    @extend_schema(
-        summary="برترین هنرمندان روز",
-        description="لیست هنرمندانی که آثارشان بیشترین پخش را در ۲۴ ساعت گذشته داشته است.",
-        responses={200: PopularArtistSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_queryset(self):
-        last_24h = timezone.now() - timedelta(hours=24)
-        queryset = Artist.objects.annotate(
-            daily_plays=Count(
-                'songs__play_counts', 
-                filter=Q(songs__play_counts__created_at__gte=last_24h)
-            )
-        ).filter(
-            daily_plays__gt=0
-        ).order_by('-daily_plays')
-        
-        return queryset.distinct()
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class DailyTopAlbumsView(generics.ListAPIView):
-    """Return albums ordered by total play count of their songs in the last 24 hours (Global)."""
-    serializer_class = PopularAlbumSerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
+class DailyTopArtistsView(_GlobalChartView):
+    entity = 'artist'
+    days = 1
 
-    @extend_schema(
-        summary="برترین آلبوم‌های روز",
-        description="لیست آلبوم‌هایی که آهنگ‌های آن‌ها بیشترین پخش را در ۲۴ ساعت گذشته داشته‌اند.",
-        responses={200: PopularAlbumSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_queryset(self):
-        last_24h = timezone.now() - timedelta(hours=24)
-        queryset = Album.objects.exclude(
-            Q(title__iexact='single') | Q(title='سینگل')
-        ).annotate(
-            daily_plays=Count(
-                'songs__play_counts', 
-                filter=Q(songs__play_counts__created_at__gte=last_24h)
-            )
-        ).filter(
-            daily_plays__gt=0
-        ).order_by('-daily_plays')
-        
-        # Prefetch songs to avoid N+1 queries when falling back to song cover image
-        song_prefetch = Prefetch(
-            'songs',
-            queryset=Song.objects.only('id', 'album_id', 'cover_image').order_by('-release_date', '-created_at')
-        )
-        queryset = queryset.prefetch_related(song_prefetch)
-        
-        return queryset.distinct()
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class WeeklyTopSongsView(generics.ListAPIView):
-    """Return songs ordered by play count in the last 7 days (Global)."""
-    serializer_class = SongSummarySerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
+class DailyTopAlbumsView(_GlobalChartView):
+    entity = 'album'
+    days = 1
 
-    @extend_schema(
-        summary="برترین آهنگ‌های هفته",
-        description="لیست آهنگ‌هایی که بیشترین پخش را در ۷ روز گذشته داشته‌اند.",
-        responses={200: SongSummarySerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_queryset(self):
-        last_week = timezone.now() - timedelta(days=7)
-        # Filter songs that have at least one play in the last week
-        # and annotate with the count of plays in that period
-        queryset = Song.objects.filter(
-            status=Song.STATUS_PUBLISHED
-        ).annotate(
-            weekly_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=last_week))
-        ).filter(
-            weekly_plays__gt=0
-        ).select_related('artist', 'album').prefetch_related(
-            'liked_by', 'genres', 'tags', 'moods', 'sub_genres', 'play_counts'
-        ).order_by('-weekly_plays', '-plays')
-        
-        return queryset.distinct()
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class WeeklyTopArtistsView(generics.ListAPIView):
-    """Return artists ordered by total play count of their songs in the last 7 days (Global)."""
-    serializer_class = PopularArtistSerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
+class WeeklyTopSongsView(_GlobalChartView):
+    entity = 'song'
+    days = 7
 
-    @extend_schema(
-        summary="برترین هنرمندان هفته",
-        description="لیست هنرمندانی که آثارشان بیشترین پخش را در ۷ روز گذشته داشته است.",
-        responses={200: PopularArtistSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_queryset(self):
-        last_week = timezone.now() - timedelta(days=7)
-        # Filter artists whose songs have at least one play in the last week
-        # and annotate with the count of plays in that period
-        queryset = Artist.objects.annotate(
-            weekly_plays=Count(
-                'songs__play_counts', 
-                filter=Q(songs__play_counts__created_at__gte=last_week)
-            )
-        ).filter(
-            weekly_plays__gt=0
-        ).order_by('-weekly_plays')
-        
-        return queryset.distinct()
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
-class WeeklyTopAlbumsView(generics.ListAPIView):
-    """Return albums ordered by total play count of their songs in the last 7 days (Global)."""
-    serializer_class = PopularAlbumSerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
+class WeeklyTopArtistsView(_GlobalChartView):
+    entity = 'artist'
+    days = 7
 
-    @extend_schema(
-        summary="برترین آلبوم‌های هفته",
-        description="لیست آلبوم‌هایی که آهنگ‌های آن‌ها بیشترین پخش را در ۷ روز گذشته داشته‌اند.",
-        responses={200: PopularAlbumSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
 
-    def get_queryset(self):
-        last_week = timezone.now() - timedelta(days=7)
-        # Filter albums whose songs have at least one play in the last week
-        # and annotate with the count of plays in that period
-        queryset = Album.objects.exclude(
-            Q(title__iexact='single') | Q(title='سینگل')
-        ).annotate(
-            weekly_plays=Count(
-                'songs__play_counts', 
-                filter=Q(songs__play_counts__created_at__gte=last_week)
-            )
-        ).filter(
-            weekly_plays__gt=0
-        ).order_by('-weekly_plays')
-        
-        # Prefetch songs to avoid N+1 queries when falling back to song cover image
-        song_prefetch = Prefetch(
-            'songs',
-            queryset=Song.objects.only('id', 'album_id', 'cover_image').order_by('-release_date', '-created_at')
-        )
-        queryset = queryset.prefetch_related(song_prefetch)
-        
-        return queryset.distinct()
+
+@extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
+class WeeklyTopAlbumsView(_GlobalChartView):
+    entity = 'album'
+    days = 7
+
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class PlaylistRecommendationsView(generics.ListAPIView):
-    """
-    Generate and return 7 smart playlists for the user.
-    Refreshed on every request to provide fresh content.
-    """
+    permission_classes = [AllowAny]
+    pagination_class = StandardResultsSetPagination
     serializer_class = RecommendedPlaylistListSerializer
-    permission_classes = [IsAuthenticated]
+
+    def _ensure_personal(self, user):
+        key = stable_cache_key('ensure-playlist-recs', user.id, cache_version(AFFINITY_VERSION_KEY), 'v2')
+        if cache_get(key) is not None or RecommendedPlaylist.objects.filter(user=user, expires_at__gt=timezone.now()).exists():
+            return
+        interacted = Song.objects.filter(
+            Q(liked_by=user) | Q(play_counts__user=user) | Q(user_playlists__user=user),
+            status=Song.STATUS_PUBLISHED,
+        ).distinct()
+        genre_ids = list(interacted.exclude(genres__id=None).values('genres__id').annotate(n=Count('id')).order_by('-n').values_list('genres__id', flat=True)[:3])
+        mood_ids = list(interacted.exclude(moods__id=None).values('moods__id').annotate(n=Count('id')).order_by('-n').values_list('moods__id', flat=True)[:2])
+        configs = [('genre', gid) for gid in genre_ids] + [('mood', mid) for mid in mood_ids]
+        for index, (kind, value) in enumerate(configs[:5], 1):
+            filter_key = {'genres__id': value} if kind == 'genre' else {'moods__id': value}
+            songs = list(_home_song_queryset().filter(**filter_key).order_by('-plays', '-release_date')[:20])
+            if not songs:
+                continue
+            label = Genre.objects.filter(id=value).values_list('name', flat=True).first() if kind == 'genre' else Mood.objects.filter(id=value).values_list('name', flat=True).first()
+            playlist, _ = RecommendedPlaylist.objects.update_or_create(
+                unique_id=f'smart_rec_{user.id}_{index}', defaults={
+                    'user': user, 'title': label or 'برای شما',
+                    'description': 'پیشنهاد تازه براساس سلیقه و شنیده‌های شما',
+                    'playlist_type': RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE if kind == 'genre' else RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
+                    'song_order': [song.id for song in songs], 'relevance_score': 100 - index,
+                    'match_percentage': 95 - index, 'expires_at': timezone.now() + timedelta(days=2),
+                })
+            playlist.songs.set(songs)
+        cache_set(key, True, 900)
 
     def get_queryset(self):
-        return RecommendedPlaylist.objects.filter(user=self.request.user)
+        if self.request.user.is_authenticated:
+            self._ensure_personal(self.request.user)
+        return _home_playlist_queryset(self.request.user).order_by('-relevance_score', '-created_at')
 
-    @extend_schema(
-        summary="پیشنهادات پلی‌لیست",
-        description="دریافت پلی‌لیست‌های پیشنهادی هوشمند بر اساس سلیقه کاربر. شامل ۷ پلی‌لیست متنوع.",
-        responses={200: RecommendedPlaylistListSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        user = request.user
-        
-        # 1. Gather User Activity (Last 20 plays)
-        recent_songs_qs = Song.objects.filter(
-            play_counts__user=user,
-            status=Song.STATUS_PUBLISHED
-        ).prefetch_related('genres', 'moods').order_by('-play_counts__created_at')[:20]
-        
-        recent_songs_20 = list(recent_songs_qs)
-        recent_songs_10 = recent_songs_20[:10]
+    def list(self, request, *args, **kwargs):
+        page = self.paginate_queryset(self.get_queryset())
+        items = list(page if page is not None else self.get_queryset())
+        _attach_recommended_metrics(items, request.user)
+        data = self.get_serializer(items, many=True).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
-        def get_top_entities(songs, field_name, count=5):
-            all_items = []
-            for s in songs:
-                all_items.extend(list(getattr(s, field_name).all()))
-            if not all_items:
-                return []
-            id_to_obj = {item.id: item for item in all_items}
-            item_counts = Counter([item.id for item in all_items])
-            return [id_to_obj[item_id] for item_id, _ in item_counts.most_common(count)]
-
-        user_top_genres = get_top_entities(recent_songs_20, 'genres', 2)
-        user_top_moods = get_top_entities(recent_songs_20, 'moods', 2)
-        
-        activity_genres = set()
-        for s in recent_songs_10:
-            activity_genres.update(s.genres.all())
-        
-        # 1.5 Incorporate InitialCheck preferences
-        try:
-            # check if user has submitted initial preferences
-            initial_check = InitialCheck.objects.filter(user=user).prefetch_related('genres').first()
-            if initial_check:
-                initial_genres = list(initial_check.genres.all())
-                for g in initial_genres:
-                    if g not in user_top_genres:
-                        user_top_genres.append(g)
-                    activity_genres.add(g)
-        except Exception:
-            pass
-
-        used_genres = set()
-        used_moods = set()
-
-        # 2. Prepare Platform Popular
-        platform_top_genres = list(Genre.objects.annotate(
-            usage=Count('songs', filter=Q(songs__status=Song.STATUS_PUBLISHED))
-        ).order_by('-usage')[:20])
-        
-        platform_top_moods = list(Mood.objects.annotate(
-            usage=Count('songs', filter=Q(songs__status=Song.STATUS_PUBLISHED))
-        ).order_by('-usage')[:20])
-
-        recommendations_config = []
-
-        # -- CATEGORY 1: Activity Based Mix --
-        if activity_genres:
-            songs = list(Song.objects.filter(
-                status=Song.STATUS_PUBLISHED, 
-                genres__in=activity_genres
-            ).distinct().order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE,
-                    'title': 'میکس براساس شنیده‌های شما',
-                    'songs': songs
-                })
-
-        # -- CATEGORY 2: Top Genre --
-        if len(user_top_genres) >= 1:
-            g = user_top_genres[0]
-            songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=g).order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
-                    'title': g.name,
-                    'songs': songs
-                })
-                used_genres.add(g)
-
-        # -- CATEGORY 3: Secondary Genre --
-        if len(user_top_genres) >= 2:
-            g = user_top_genres[1]
-            songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=g).order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
-                    'title': g.name,
-                    'songs': songs
-                })
-                used_genres.add(g)
-
-        # -- CATEGORY 4: Top Mood --
-        if len(user_top_moods) >= 1:
-            m = user_top_moods[0]
-            songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=m).order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
-                    'title': m.name,
-                    'songs': songs
-                })
-                used_moods.add(m)
-
-        # -- CATEGORY 5: Secondary Mood --
-        if len(user_top_moods) >= 2:
-            m = user_top_moods[1]
-            songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=m).order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
-                    'title': m.name,
-                    'songs': songs
-                })
-                used_moods.add(m)
-
-        # -- CATEGORY 6: Platform Genre (Fill if needed) --
-        # Also include extra user genres from InitialCheck/Activity if we have more than 2
-        extra_user_genres = [g for g in user_top_genres if g not in used_genres]
-        available_genres = extra_user_genres + [g for g in platform_top_genres if g not in used_genres and g not in extra_user_genres]
-
-        for pg in available_genres:
-            if len(recommendations_config) >= 6: break
-            songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, genres=pg).order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
-                    'title': pg.name,
-                    'songs': songs
-                })
-                used_genres.add(pg)
-
-        # -- CATEGORY 7: Platform Mood (Fill slots until 7) --
-        available_platform_moods = [m for m in platform_top_moods if m not in used_moods]
-        for pm in available_platform_moods:
-            if len(recommendations_config) >= 7: break
-            songs = list(Song.objects.filter(status=Song.STATUS_PUBLISHED, moods=pm).order_by('?')[:15])
-            if songs:
-                recommendations_config.append({
-                    'type': RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
-                    'title': pm.name,
-                    'songs': songs
-                })
-                used_moods.add(pm)
-
-        # Final persistence & response
-        final_playlists = []
-        for i, config in enumerate(recommendations_config[:7], 1):
-            unique_id = f"smart_rec_{user.id}_{i}"
-            # Use update_or_create to keep the same slots for the user
-            playlist, created = RecommendedPlaylist.objects.update_or_create(
-                unique_id=unique_id,
-                user=user,
-                defaults={
-                    'title': config['title'],
-                    'playlist_type': config['type'],
-                    'song_order': [s.id for s in config['songs']],
-                    'description': f"پیشنهاد براساس سبک و حال‌وهوای {config['title']}",
-                    'relevance_score': 100.0 - (i * 2),
-                    'match_percentage': 98.0 - (i * 1.5)
-                }
-            )
-            playlist.songs.set(config['songs'])
-            # Ensure the dynamic slot starts fresh (unliked)
-            playlist.liked_by.clear()
-            final_playlists.append(playlist)
-            
-        serializer = self.get_serializer(final_playlists, many=True)
-        return Response(serializer.data)
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
-    """
-    Detail view for a specific recommended playlist.
-    Shows all songs without stream links.
-    Increments view count.
-    """
-    permission_classes = [IsAuthenticated]
-    from .serializers import RecommendedPlaylistDetailSerializer
+    permission_classes = [AllowAny]
     serializer_class = RecommendedPlaylistDetailSerializer
     lookup_field = 'unique_id'
 
-    @extend_schema(
-        summary="جزئیات پلی‌لیست پیشنهادی",
-        description="مشاهده جزئیات و لیست آهنگ‌های یک پلی‌لیست پیشنهادی خاص.",
-        responses={200: RecommendedPlaylistDetailSerializer}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
     def get_queryset(self):
-        from .models import RecommendedPlaylist
-        return RecommendedPlaylist.objects.all().prefetch_related(
-            'songs__artist',
-            'songs__album',
-            'liked_by',
-            'saved_by'
-        )
+        user = self.request.user
+        audience = Q(user__isnull=True)
+        if user.is_authenticated:
+            audience |= Q(user=user)
+        song_qs = _home_song_queryset().order_by('-release_date', '-created_at')
+        return RecommendedPlaylist.objects.filter(audience).select_related('playlist_ref').annotate(
+            songs_count_value=Count('songs', distinct=True), likes_count_value=Count('liked_by', distinct=True),
+        ).prefetch_related(Prefetch('songs', queryset=song_qs, to_attr='_detail_songs'))
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
-        
-        # Increment view count and record user
+        RecommendedPlaylist.objects.filter(pk=instance.pk).update(views=F('views') + 1)
         instance.views += 1
         if request.user.is_authenticated:
             instance.viewed_by.add(request.user)
-        instance.save(update_fields=['views'])
-        
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
+        songs = list(getattr(instance, '_detail_songs', []))
+        hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
+        _attach_recommended_metrics([instance], request.user)
+        return Response(self.get_serializer(instance).data)
+
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
@@ -5278,236 +4307,96 @@ class PlaylistSaveToggleView(APIView):
 
 @extend_schema(tags=['Search Page Endpoints اندپوینت های صفحه جستجو'])
 class SearchView(APIView):
-    """
-    Unified search endpoint for songs, artists, albums, and playlists.
-    Supports complex matching and mixed results.
-    """
     permission_classes = [AllowAny]
-    
-    @extend_schema(
-        summary="جستجوی جامع",
-        description="جستجو در آهنگ‌ها، هنرمندان، آلبوم‌ها و پلی‌لیست‌ها با قابلیت فیلتر بر اساس سبک و حال و هوا.",
-        parameters=[
-            OpenApiParameter("q", OpenApiTypes.STR, description="متن جستجو"),
-            OpenApiParameter("type", OpenApiTypes.STR, description="نوع جستجو (song, artist, album, playlist, user)"),
-            OpenApiParameter("moods", OpenApiTypes.STR, description="فیلتر بر اساس حال و هوا (آیدی یا اسلاگ)", many=True),
-            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
-            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد در هر صفحه")
-        ],
-        responses={
-            200: inline_serializer(
-                name='SearchResponse',
-                fields={
-                    'results': SearchResultSerializer(many=True),
-                    'page': serializers.IntegerField(),
-                    'page_size': serializers.IntegerField(),
-                    'has_next': serializers.BooleanField(),
-                    'query': serializers.CharField(),
-                    'moods': serializers.ListField(child=serializers.CharField()),
-                    'type': serializers.CharField(),
-                }
-            )
-        }
-    )
+    TYPES = ('song', 'artist', 'album', 'playlist', 'user')
+
     def get(self, request):
-        q = request.query_params.get('q', '').strip()
-        search_type = request.query_params.get('type')
-        moods = request.query_params.getlist('moods')
-        page = int(request.query_params.get('page', 1))
-        page_size = int(request.query_params.get('page_size', 20))
-        
-        offset = (page - 1) * page_size
-        results = []
-        
-        if search_type:
-            # Single type search
-            if search_type == 'song':
-                items = self._search_songs(q, moods)
-            elif search_type == 'artist':
-                items = self._search_artists(q)
-            elif search_type == 'album':
-                items = self._search_albums(q)
-            elif search_type == 'playlist':
-                items = self._search_playlists(q, moods)
-            elif search_type == 'user':
-                items = self._search_users(q)
+        query = request.query_params.get('q', '').strip(); search_type = request.query_params.get('type') or None
+        moods = sorted(request.query_params.getlist('moods')); page, page_size = _page_values(request, 20, 100)
+        if search_type and search_type not in self.TYPES:
+            return Response({'error': 'Invalid type. Must be song, artist, album, playlist, or user.'}, status=400)
+        key = stable_cache_key('search-ids-v9', query.casefold(), search_type or 'mixed', moods, page, page_size, cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY))
+        cached, _ = cache_get_or_claim(key)
+        if cached is None:
+            if search_type:
+                queryset = self._queryset(search_type, query, moods, request)
+                offset=(page-1)*page_size; ids=list(queryset.values_list('id',flat=True)[offset:offset+page_size+1])
+                cached={'refs':[(search_type,x) for x in ids[:page_size]],'has_next':len(ids)>page_size}
             else:
-                return Response({'error': 'Invalid type. Must be song, artist, album, playlist, or user.'}, status=400)
-            
-            paginated_items = items[offset:offset + page_size]
-            results = list(paginated_items)
-            has_next = items.count() > offset + page_size
-        else:
-            # Mixed search (interleaved)
-            per_type = page_size // 4
-            
-            songs = list(self._search_songs(q, moods)[offset:offset + per_type])
-            artists = list(self._search_artists(q)[offset:offset + per_type])
-            albums = list(self._search_albums(q)[offset:offset + per_type])
-            playlists = list(self._search_playlists(q, moods)[offset:offset + per_type])
-            
-            # Interleave results
-            max_len = max(len(songs), len(artists), len(albums), len(playlists))
-            for i in range(max_len):
-                if i < len(songs): results.append(songs[i])
-                if i < len(artists): results.append(artists[i])
-                if i < len(albums): results.append(albums[i])
-                if i < len(playlists): results.append(playlists[i])
-            
-            # For mixed, we assume there's more if we got a full page
-            has_next = len(results) >= page_size
+                per_type=max(1,(page_size+len(self.TYPES)-1)//len(self.TYPES)); type_offset=(page-1)*per_type
+                groups=[]; has_next=False
+                for kind in self.TYPES:
+                    ids=list(self._queryset(kind,query,moods,request).values_list('id',flat=True)[type_offset:type_offset+per_type+1])
+                    has_next = has_next or len(ids)>per_type; groups.append([(kind,x) for x in ids[:per_type]])
+                refs=[]
+                for index in range(max((len(group) for group in groups),default=0)):
+                    for group in groups:
+                        if index<len(group): refs.append(group[index])
+                        if len(refs)>=page_size: break
+                    if len(refs)>=page_size: break
+                cached={'refs':refs,'has_next':has_next}
+            cache_set(key,cached,getattr(settings,'CACHE_TTL_SEARCH',45))
+        results=self._hydrate(cached['refs'],request)
+        return Response({'results':SearchResultSerializer(results,many=True,context={'request':request}).data,
+                         'page':page,'page_size':page_size,'has_next':cached['has_next'],'query':query,
+                         'moods':moods,'type':search_type or 'mixed'})
 
-        serializer = SearchResultSerializer(results, many=True, context={'request': request})
-        
-        return Response({
-            'results': serializer.data,
-            'page': page,
-            'page_size': page_size,
-            'has_next': has_next,
-            'query': q,
-            'moods': moods,
-            'type': search_type or 'mixed'
-        })
+    def _queryset(self, kind, query, moods, request):
+        return {'song':self._search_songs,'artist':self._search_artists,'album':self._search_albums,
+                'playlist':self._search_playlists,'user':self._search_users}[kind](query, moods, request)
 
-    def _search_songs(self, q, moods=None):
-        qs = Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related('artist', 'album')
+    def _search_songs(self,q,moods,request):
+        qs=Song.objects.filter(status=Song.STATUS_PUBLISHED)
         if q:
-            # Complex matching: handle both spaced and non-spaced variants.
-            # Normalizing both query and field by removing spaces/ZWNJ ensures
-            # that "بهنام بانی" matches "بهنامبانی" and vice versa.
-            q_clean = q.replace(' ', '').replace('\u200c', '')
-            
-            qs = qs.annotate(
-                t_clean=Replace(Replace(Cast('title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                a_clean=Replace(Replace(Cast('artist__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                al_clean=Replace(Replace(Cast('album__title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                # Cast JSONFields to TextField before applying string Replace
-                p_clean=Replace(Replace(Cast('producers', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                c_clean=Replace(Replace(Cast('composers', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                l_clean=Replace(Replace(Cast('lyricists', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                fa_name_clean=Replace(Replace(Cast('featured_artists__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                fa_artistic_clean=Replace(Replace(Cast('featured_artists__artistic_name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-            )
-
-            combined = Q(t_clean__icontains=q_clean) | \
-                       Q(a_clean__icontains=q_clean) | \
-                       Q(al_clean__icontains=q_clean) | \
-                       Q(p_clean__icontains=q_clean) | \
-                       Q(c_clean__icontains=q_clean) | \
-                       Q(l_clean__icontains=q_clean) | \
-                       Q(fa_name_clean__icontains=q_clean) | \
-                       Q(fa_artistic_clean__icontains=q_clean) | \
-                       Q(description__icontains=q) | \
-                       Q(lyrics__icontains=q)
-
-            # Also include original variants to be safe
-            q_norm = re.sub(r'\s+', ' ', q).strip()
-            if q_norm != q:
-                combined |= Q(title__icontains=q_norm) | Q(artist__name__icontains=q_norm)
-            
-            qs = qs.filter(combined)
-        
+            clean=q.replace(' ','').replace('\u200c','')
+            qs=qs.annotate(t_clean=Replace(Replace(Cast('title',TextField()),Value(' '),Value('')),Value('\u200c'),Value('')),
+                           a_clean=Replace(Replace(Cast('artist__name',TextField()),Value(' '),Value('')),Value('\u200c'),Value('')))
+            qs=qs.filter(Q(t_clean__icontains=clean)|Q(a_clean__icontains=clean)|Q(title__icontains=q)|Q(artist__name__icontains=q)|
+                         Q(album__title__icontains=q)|Q(description__icontains=q)|Q(lyrics__icontains=q)|Q(producers__icontains=q)|
+                         Q(composers__icontains=q)|Q(lyricists__icontains=q)|Q(featured_artists__name__icontains=q)|Q(featured_artists__artistic_name__icontains=q))
         if moods:
-            # Filter by mood IDs or slugs
-            if all(m.isdigit() for m in moods):
-                qs = qs.filter(moods__id__in=moods).distinct()
-            else:
-                qs = qs.filter(moods__slug__in=moods).distinct()
-                
-        return qs.order_by('-plays', '-created_at')
-
-    def _search_artists(self, q):
-        qs = Artist.objects.all()
-        if q:
-            q_clean = q.replace(' ', '').replace('\u200c', '')
-            qs = qs.annotate(
-                n_clean=Replace(Replace(Cast('name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-            )
-            combined = Q(n_clean__icontains=q_clean) | Q(bio__icontains=q)
-            
-            q_norm = re.sub(r'\s+', ' ', q).strip()
-            if q_norm != q:
-                combined |= Q(name__icontains=q_norm)
-                
-            qs = qs.filter(combined)
-        return qs.order_by('-verified', '-created_at')
-
-    def _search_albums(self, q):
-        qs = Album.objects.all().select_related('artist')
-        if q:
-            q_clean = q.replace(' ', '').replace('\u200c', '')
-            qs = qs.annotate(
-                t_clean=Replace(Replace(Cast('title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                a_clean=Replace(Replace(Cast('artist__name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-            )
-            combined = Q(t_clean__icontains=q_clean) | \
-                       Q(a_clean__icontains=q_clean) | \
-                       Q(description__icontains=q)
-            
-            q_norm = re.sub(r'\s+', ' ', q).strip()
-            if q_norm != q:
-                combined |= Q(title__icontains=q_norm) | Q(artist__name__icontains=q_norm)
-                
-            qs = qs.filter(combined)
-        # Always exclude albums explicitly named "single" (case-insensitive)
-        # and the Persian equivalent "سینگل" from any search results.
-        qs = qs.exclude(title__iexact='single').exclude(title__iexact='سینگل')
-        return qs.order_by('-release_date')
-
-    def _search_playlists(self, q, moods=None):
-        # Combine admin/system playlists and public user playlists
-        admin_qs = Playlist.objects.all()
-        if q:
-            q_clean = q.replace(' ', '').replace('\u200c', '')
-            admin_qs = admin_qs.annotate(
-                t_clean=Replace(Replace(Cast('title', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-            )
-            combined = Q(t_clean__icontains=q_clean) | Q(description__icontains=q)
-            
-            q_norm = re.sub(r'\s+', ' ', q).strip()
-            if q_norm != q:
-                combined |= Q(title__icontains=q_norm)
-                
-            admin_qs = admin_qs.filter(combined)
-        
-        if moods:
-            if all(m.isdigit() for m in moods):
-                admin_qs = admin_qs.filter(moods__id__in=moods).distinct()
-            else:
-                admin_qs = admin_qs.filter(moods__slug__in=moods).distinct()
-                
-        return admin_qs.order_by('-created_at')
-
-    def _search_users(self, q):
-        # Only search among audience (normal users) and they must have a unique_id
-        qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE, unique_id__isnull=False)
-        # exclude the requester if authenticated
-        try:
-            req_user = getattr(self, 'request', None).user
-        except Exception:
-            req_user = None
-        if req_user and getattr(req_user, 'is_authenticated', False):
-            qs = qs.exclude(pk=req_user.pk)
-
-        if q:
-            q_clean = q.replace(' ', '').replace('\u200c', '')
-            qs = qs.annotate(
-                u_clean=Replace(Replace(Cast('unique_id', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                f_clean=Replace(Replace(Cast('first_name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-                l_clean=Replace(Replace(Cast('last_name', TextField()), Value(' '), Value(''), output_field=TextField()), Value('\u200c'), Value(''), output_field=TextField()),
-            )
-            combined = Q(u_clean__icontains=q_clean) | \
-                       Q(f_clean__icontains=q_clean) | \
-                       Q(l_clean__icontains=q_clean)
-            
-            q_norm = re.sub(r'\s+', ' ', q).strip()
-            if q_norm != q:
-                combined |= Q(unique_id__icontains=q_norm) | \
-                            Q(first_name__icontains=q_norm) | \
-                            Q(last_name__icontains=q_norm)
-            
-            qs = qs.filter(combined)
+            qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
+        return qs.distinct().order_by('-plays','-created_at')
+    def _search_artists(self,q,moods,request):
+        qs=Artist.objects.all()
+        if q: qs=qs.filter(Q(name__icontains=q)|Q(artistic_name__icontains=q)|Q(bio__icontains=q)|Q(unique_id__icontains=q))
+        return qs.order_by('-verified','-created_at')
+    def _search_albums(self,q,moods,request):
+        qs=Album.objects.exclude(Q(title__iexact='single')|Q(title='سینگل'))
+        if q: qs=qs.filter(Q(title__icontains=q)|Q(description__icontains=q)|Q(artist__name__icontains=q))
+        return qs.order_by('-release_date','-created_at')
+    def _search_playlists(self,q,moods,request):
+        qs=Playlist.objects.all()
+        if q: qs=qs.filter(Q(title__icontains=q)|Q(description__icontains=q))
+        if moods: qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
+        return qs.distinct().order_by('-created_at')
+    def _search_users(self,q,moods,request):
+        qs=User.objects.filter(is_active=True,is_banned=False,roles__contains=User.ROLE_AUDIENCE).exclude(Q(unique_id__isnull=True)|Q(unique_id=''))
+        if request.user.is_authenticated: qs=qs.exclude(pk=request.user.pk)
+        if q: qs=qs.filter(Q(unique_id__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
         return qs.order_by('-date_joined')
+
+    def _hydrate(self,refs,request):
+        grouped={kind:[] for kind in self.TYPES}
+        for kind,pk in refs: grouped[kind].append(pk)
+        querysets={
+            'song':_song_card_queryset().filter(pk__in=grouped['song']),
+            'artist':Artist.objects.filter(pk__in=grouped['artist']),
+            'album':Album.objects.select_related('artist').filter(pk__in=grouped['album']),
+            'playlist':Playlist.objects.filter(pk__in=grouped['playlist']),
+            'user':User.objects.select_related('image_profile').filter(pk__in=grouped['user']),
+        }
+        maps={kind:{obj.pk:obj for obj in qs} for kind,qs in querysets.items()}
+        results=[maps[kind][pk] for kind,pk in refs if pk in maps[kind]]
+        hydrate_song_metrics([x for x in results if isinstance(x,Song)],request.user,False)
+        hydrate_album_metrics([x for x in results if isinstance(x,Album)],request.user)
+        hydrate_playlist_metrics([x for x in results if isinstance(x,Playlist)],request.user)
+        hydrate_artist_metrics([x for x in results if isinstance(x,Artist)],request.user)
+        user_ids=[x.pk for x in results if isinstance(x,User)]
+        followed=set(Follow.objects.filter(follower_user=request.user,followed_user_id__in=user_ids).values_list('followed_user_id',flat=True)) if request.user.is_authenticated and user_ids else set()
+        for obj in results:
+            if isinstance(obj,User): obj._is_following=obj.pk in followed
+        return results
 
 
 @extend_schema(tags=['Search Page Endpoints اندپوینت های صفحه جستجو'])
