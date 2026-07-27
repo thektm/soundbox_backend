@@ -11,6 +11,22 @@ from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from pydub import AudioSegment
 
+
+def absolute_api_url(request, path):
+    """Build stable API links without trusting proxy Host/X-Forwarded-Host values."""
+    if not path:
+        return None
+    value = str(path)
+    if value.startswith(('http://', 'https://')):
+        return value
+    base = getattr(settings, 'PUBLIC_API_BASE_URL', '').rstrip('/')
+    if base:
+        return f"{base}/{value.lstrip('/')}"
+    try:
+        return request.build_absolute_uri(value) if request else value
+    except Exception:
+        return value
+
 def make_safe_filename(s: str) -> str:
     """Sanitize a filename base by removing problematic characters and collapsing whitespace."""
     if not s:

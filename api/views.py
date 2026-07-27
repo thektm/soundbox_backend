@@ -72,8 +72,8 @@ from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
-    upload_file_to_r2, generate_signed_r2_url, 
-    get_audio_info, convert_to_128kbps
+    absolute_api_url, upload_file_to_r2, generate_signed_r2_url,
+    get_audio_info, convert_to_128kbps,
 )
 from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
@@ -110,6 +110,19 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+    def _page_link(self, number):
+        params = self.request.query_params.copy()
+        params[self.page_query_param] = number
+        query = params.urlencode()
+        path = self.request.path + (f'?{query}' if query else '')
+        return absolute_api_url(self.request, path)
+
+    def get_next_link(self):
+        return self._page_link(self.page.next_page_number()) if self.page.has_next() else None
+
+    def get_previous_link(self):
+        return self._page_link(self.page.previous_page_number()) if self.page.has_previous() else None
 
 
 def _song_card_queryset():
@@ -397,7 +410,7 @@ class UserProfileView(APIView):
         data['image'] = ""
         try:
             if hasattr(request.user, 'image_profile') and request.user.image_profile.status == 'published' and request.user.image_profile.image:
-                data['image'] = request.build_absolute_uri(request.user.image_profile.image.url)
+                data['image'] = absolute_api_url(request, request.user.image_profile.image.url)
         except Exception:
             pass
 
@@ -422,7 +435,7 @@ class UserProfileView(APIView):
                         if item.get('type') == 'user':
                             profile = profiles.get(item.get('id'))
                             if profile and profile.image:
-                                item['image'] = request.build_absolute_uri(profile.image.url)
+                                item['image'] = absolute_api_url(request, profile.image.url)
 
         return Response(data)
 
@@ -1567,7 +1580,7 @@ class ArtistDetailView(APIView):
             cache_set(key, similar_ids, getattr(settings,'CACHE_TTL_SIMILAR',90))
         selected_ids = similar_ids[:6]; rows = Artist.objects.filter(pk__in=selected_ids).prefetch_related('social_account_links__platform')
         by_id={x.pk:x for x in rows}; similar=[by_id[x] for x in selected_ids if x in by_id]; hydrate_artist_metrics(similar, request.user)
-        base_url=request.build_absolute_uri(request.path)
+        base_url=absolute_api_url(request, request.path)
         return Response({'artist': ArtistSerializer(artist, context={'request': request}).data,
             'top_songs': {'items': SongStreamSerializer(top_items,many=True,context={'request':request}).data,'total':top_total,
                           'next_page_link':f'{base_url}?type=top_songs&page=2' if top_total>5 else None},
@@ -2688,7 +2701,7 @@ class StreamShortRedirectView(APIView):
 
                 # Build new short URL
                 new_path = reverse('stream-short', kwargs={'token': short_token})
-                new_url = request.build_absolute_uri(new_path) if hasattr(request, 'build_absolute_uri') else new_path
+                new_url = absolute_api_url(request, new_path)
 
                 # Count unwrapped streams for this user (last 24 hours for fairness)
                 cutoff_time = timezone.now() - timedelta(hours=24)
@@ -2862,7 +2875,7 @@ class StreamShortRedirectView(APIView):
                 )
 
                 new_path = reverse('stream-short', kwargs={'token': short_token})
-                new_url = request.build_absolute_uri(new_path) if hasattr(request, 'build_absolute_uri') else new_path
+                new_url = absolute_api_url(request, new_path)
 
                 return Response({
                     'error': 'Stream link expired or unauthorized for this user',
@@ -3376,7 +3389,7 @@ class UserProfilePublicView(APIView):
                     params = request.query_params.copy()
                     params['f_page'] = str(page + 1)
                     params['f_page_size'] = str(page_size)
-                    next_url = request.build_absolute_uri(base + '?' + params.urlencode())
+                    next_url = absolute_api_url(request, base + '?' + params.urlencode())
 
                 items_data = FollowableEntitySerializer(items, many=True, context={'request': request}).data
                 for i, item_data in enumerate(items_data):
@@ -3384,7 +3397,7 @@ class UserProfilePublicView(APIView):
                         user_obj = items[i]
                         try:
                             if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
-                                item_data['image'] = request.build_absolute_uri(user_obj.image_profile.image.url)
+                                item_data['image'] = absolute_api_url(request, user_obj.image_profile.image.url)
                         except Exception: pass
 
                 result['followers'] = {
@@ -3418,7 +3431,7 @@ class UserProfilePublicView(APIView):
                     params = request.query_params.copy()
                     params['fg_page'] = str(page + 1)
                     params['fg_page_size'] = str(page_size)
-                    next_url = request.build_absolute_uri(base + '?' + params.urlencode())
+                    next_url = absolute_api_url(request, base + '?' + params.urlencode())
 
                 items_data = FollowableEntitySerializer(items, many=True, context={'request': request}).data
                 for i, item_data in enumerate(items_data):
@@ -3426,7 +3439,7 @@ class UserProfilePublicView(APIView):
                         user_obj = items[i]
                         try:
                             if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
-                                item_data['image'] = request.build_absolute_uri(user_obj.image_profile.image.url)
+                                item_data['image'] = absolute_api_url(request, user_obj.image_profile.image.url)
                         except Exception: pass
 
                 result['following'] = {
@@ -3456,7 +3469,7 @@ class UserProfilePublicView(APIView):
         data['image'] = ""
         try:
             if hasattr(user, 'image_profile') and user.image_profile.status == 'published' and user.image_profile.image:
-                data['image'] = request.build_absolute_uri(user.image_profile.image.url)
+                data['image'] = absolute_api_url(request, user.image_profile.image.url)
         except Exception:
             pass
 
@@ -3606,7 +3619,7 @@ class SedaBoxProfileView(APIView):
             params = request.query_params.copy()
             params['page'] = page + 1
             params['page_size'] = page_size
-            next_url = request.build_absolute_uri(request.path) + '?' + params.urlencode()
+            next_url = absolute_api_url(request, request.path) + '?' + params.urlencode()
 
         profile_data['user_playlists'] = {
             'count': len(page_items),
@@ -3679,16 +3692,22 @@ def _album_popularity_queryset():
 
 
 def _home_playlist_queryset(user=None):
+    authenticated = bool(user is not None and getattr(user, 'is_authenticated', False))
     audience = Q(user__isnull=True)
-    if user is not None and getattr(user, 'is_authenticated', False):
+    if authenticated:
         audience |= Q(user=user)
-    song_qs = _home_song_queryset().order_by('-release_date', '-created_at')
+    song_filter = Q(songs__status=Song.STATUS_PUBLISHED)
+    if not authenticated:
+        song_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
+    song_qs = _home_song_queryset(require_preview=not authenticated).order_by('-release_date', '-created_at')
     return RecommendedPlaylist.objects.filter(audience).filter(
         Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
     ).select_related('playlist_ref').annotate(
-        songs_count_value=Count('songs', distinct=True),
+        songs_count_value=Count('songs', filter=song_filter, distinct=True),
         likes_count_value=Count('liked_by', distinct=True),
-    ).prefetch_related(Prefetch('songs', queryset=song_qs, to_attr='_card_songs'))
+    ).filter(songs_count_value__gt=0).prefetch_related(
+        Prefetch('songs', queryset=song_qs, to_attr='_card_songs')
+    )
 
 
 
@@ -3735,7 +3754,7 @@ def _next_url(request, page_param, page, has_next):
         return None
     params = request.query_params.copy()
     params[page_param] = page + 1
-    return request.build_absolute_uri(request.path) + '?' + params.urlencode()
+    return absolute_api_url(request, f"{request.path}?{params.urlencode()}")
 
 
 def _slice_items(items, page, size):
@@ -4129,13 +4148,20 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        authenticated = user.is_authenticated
         audience = Q(user__isnull=True)
-        if user.is_authenticated:
+        if authenticated:
             audience |= Q(user=user)
-        song_qs = _home_song_queryset().order_by('-release_date', '-created_at')
+        song_filter = Q(songs__status=Song.STATUS_PUBLISHED)
+        if not authenticated:
+            song_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
+        song_qs = _home_song_queryset(require_preview=not authenticated).order_by('-release_date', '-created_at')
         return RecommendedPlaylist.objects.filter(audience).select_related('playlist_ref').annotate(
-            songs_count_value=Count('songs', distinct=True), likes_count_value=Count('liked_by', distinct=True),
-        ).prefetch_related(Prefetch('songs', queryset=song_qs, to_attr='_detail_songs'))
+            songs_count_value=Count('songs', filter=song_filter, distinct=True),
+            likes_count_value=Count('liked_by', distinct=True),
+        ).filter(songs_count_value__gt=0).prefetch_related(
+            Prefetch('songs', queryset=song_qs, to_attr='_detail_songs')
+        )
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()

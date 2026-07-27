@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .utils import generate_signed_r2_url
+from .utils import absolute_api_url, generate_signed_r2_url
 from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
@@ -49,7 +49,7 @@ def _stream_wrapper(song, request):
                 unique_otplay_id=__import__('secrets').token_urlsafe(18),
             )
             path = reverse('stream-short', kwargs={'token': access.short_token})
-            return request.build_absolute_uri(path)
+            return absolute_api_url(request, path)
         except IntegrityError:
             continue
     return None
@@ -491,20 +491,7 @@ class UserSerializer(serializers.ModelSerializer):
             params['f_page'] = str(page + 1)
             params['f_page_size'] = str(page_size)
             qs = urlencode(params)
-            try:
-                next_url = request.build_absolute_uri(base + '?' + qs)
-            except Exception:
-                # fallback to settings if available
-                site = getattr(settings, 'SITE_URL', None)
-                if site:
-                    next_url = site.rstrip('/') + base + '?' + qs
-                else:
-                    try:
-                        scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
-                        host = request.get_host()
-                        next_url = f"{scheme}://{host}{base}?{qs}"
-                    except Exception:
-                        next_url = None
+            next_url = absolute_api_url(request, base + '?' + qs)
 
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -538,19 +525,7 @@ class UserSerializer(serializers.ModelSerializer):
             params['fg_page'] = str(page + 1)
             params['fg_page_size'] = str(page_size)
             qs = urlencode(params)
-            try:
-                next_url = request.build_absolute_uri(base + '?' + qs)
-            except Exception:
-                site = getattr(settings, 'SITE_URL', None)
-                if site:
-                    next_url = site.rstrip('/') + base + '?' + qs
-                else:
-                    try:
-                        scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
-                        host = request.get_host()
-                        next_url = f"{scheme}://{host}{base}?{qs}"
-                    except Exception:
-                        next_url = None
+            next_url = absolute_api_url(request, base + '?' + qs)
 
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -613,19 +588,7 @@ class UserSerializer(serializers.ModelSerializer):
             params['rp_page'] = str(page + 1)
             params['rp_page_size'] = str(page_size)
             qs = urlencode(params)
-            try:
-                next_url = request.build_absolute_uri(base + '?' + qs)
-            except Exception:
-                site = getattr(settings, 'SITE_URL', None)
-                if site:
-                    next_url = site.rstrip('/') + base + '?' + qs
-                else:
-                    try:
-                        scheme = 'https' if getattr(request, 'is_secure', lambda: False)() else 'http'
-                        host = request.get_host()
-                        next_url = f"{scheme}://{host}{base}?{qs}"
-                    except Exception:
-                        next_url = None
+            next_url = absolute_api_url(request, base + '?' + qs)
 
         return {
             'items': SongStreamSerializer(songs, many=True, context=self.context).data,
@@ -1232,7 +1195,7 @@ class SongSerializer(serializers.ModelSerializer):
         next_link=None
         if request and start+page_size < len(ranked_ids):
             from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-            parsed=urlparse(request.build_absolute_uri()); query=parse_qs(parsed.query)
+            parsed=urlparse(absolute_api_url(request, request.get_full_path())); query=parse_qs(parsed.query)
             query.update(similar_page=[str(page+1)], similar_page_size=[str(page_size)])
             next_link=urlunparse(parsed._replace(query=urlencode(query,doseq=True)))
         return {'items': SongSummarySerializer(items,many=True,context=self.context).data, 'total':len(ranked_ids),

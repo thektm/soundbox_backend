@@ -171,14 +171,24 @@ def _bump_affinity_on_create(created=False, **_kwargs):
         _bump_affinity()
 
 
+def _connect_m2m_version_bump(model, field_names, prefix):
+    for field_name in field_names:
+        try:
+            field = model._meta.get_field(field_name)
+        except Exception:
+            continue
+        if not getattr(field, 'many_to_many', False):
+            continue
+        m2m_changed.connect(
+            _bump_catalog,
+            sender=field.remote_field.through,
+            dispatch_uid=f"{prefix}.{field_name}",
+        )
+
+
 post_save.connect(_bump_catalog, sender=Song, dispatch_uid="api.song.catalog.save")
 post_delete.connect(_bump_catalog, sender=Song, dispatch_uid="api.song.catalog.delete")
-for field_name in ("genres", "moods", "tags"):
-    m2m_changed.connect(
-        _bump_catalog,
-        sender=getattr(Song, field_name).through,
-        dispatch_uid=f"api.song.catalog.{field_name}",
-    )
+_connect_m2m_version_bump(Song, ("genres", "moods", "tags"), "api.song.catalog")
 
 post_save.connect(_bump_affinity, sender=Follow, dispatch_uid="api.affinity.follow.save")
 post_delete.connect(_bump_affinity, sender=Follow, dispatch_uid="api.affinity.follow.delete")
@@ -207,12 +217,7 @@ for model, fields in (
     (Playlist, ('songs', 'genres', 'moods', 'tags')),
     (RecommendedPlaylist, ('songs',)),
 ):
-    for field_name in fields:
-        m2m_changed.connect(
-            _bump_catalog,
-            sender=getattr(model, field_name).through,
-            dispatch_uid=f"api.catalog.{model.__name__}.{field_name}",
-        )
+    _connect_m2m_version_bump(model, fields, f"api.catalog.{model.__name__}")
 
 post_save.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.directory.save')
 post_delete.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.directory.delete')

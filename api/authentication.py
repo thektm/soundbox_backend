@@ -9,5 +9,5 @@ class OptionalJWTAuthentication(JWTAuthentication):
     def authenticate(self, request):
         try:
             return super().authenticate(request)
-        except (AuthenticationFailed, InvalidToken, TokenError):
+        except (AuthenticationFailed, InvalidToken, TokenError, UnicodeError, TypeError, ValueError):
             return None

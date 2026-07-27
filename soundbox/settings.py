@@ -8,17 +8,18 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET', 'changeme-in-production')
 # Read debug flag from environment (defaults to True for local development)
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in {'1', 'true', 'yes', 'on'}
 
-# Allow setting ALLOWED_HOSTS via comma-separated env var
+# Keep required public and container hosts even when ALLOWED_HOSTS is supplied.
+def _csv_setting(name, default=''):
+    return [value.strip() for value in os.environ.get(name, default).split(',') if value.strip()]
 
-_DEFAULT_ALLOWED_HOSTS = (
-    '141.11.123.238,141.11.187.161,localhost,127.0.0.1,'
-    'api.sedabox.com,sedabox.com,www.sedabox.com'
-)
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.environ.get('ALLOWED_HOSTS', _DEFAULT_ALLOWED_HOSTS).split(',')
-    if host.strip()
+
+_REQUIRED_ALLOWED_HOSTS = [
+    '.sedabox.com', 'api.sedabox.com', 'sedabox.com', 'www.sedabox.com',
+    '141.11.123.238', '141.11.187.161', 'localhost', '127.0.0.1',
+    'web', 'soundbox_web', 'nginx', 'host.docker.internal',
 ]
+ALLOWED_HOSTS = list(dict.fromkeys(_REQUIRED_ALLOWED_HOSTS + _csv_setting('ALLOWED_HOSTS')))
+PUBLIC_API_BASE_URL = os.environ.get('PUBLIC_API_BASE_URL', 'https://api.sedabox.com').rstrip('/')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -121,7 +122,7 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_HOST = os.environ.get('USE_X_FORWARDED_HOST', 'False').lower() in {'1', 'true', 'yes', 'on'}
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 STATIC_URL = 'static/'
@@ -159,15 +160,13 @@ SPECTACULAR_SETTINGS = {
 CORS_ALLOW_ALL_ORIGINS = True
 
 # CSRF trusted origins for admin panel
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get(
-        'CSRF_TRUSTED_ORIGINS',
-        'https://api.sedabox.com,https://www.sedabox.com,https://sedabox.com,'
-        'http://141.11.187.161,https://141.11.187.161'
-    ).split(',')
-    if origin.strip()
+_REQUIRED_CSRF_ORIGINS = [
+    'https://api.sedabox.com', 'https://www.sedabox.com', 'https://sedabox.com',
+    'http://141.11.187.161', 'https://141.11.187.161',
 ]
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(
+    _REQUIRED_CSRF_ORIGINS + _csv_setting('CSRF_TRUSTED_ORIGINS')
+))
 
 # Use custom user model
 AUTH_USER_MODEL = 'api.User'
@@ -204,4 +203,11 @@ LOGGING = {
     'disable_existing_loggers': False,
     'handlers': {'console': {'class': 'logging.StreamHandler'}},
     'root': {'handlers': ['console'], 'level': 'INFO'},
+    'loggers': {
+        'django.security.DisallowedHost': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+    },
 }
