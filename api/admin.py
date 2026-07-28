@@ -17,6 +17,35 @@ from django.utils import timezone
 User = get_user_model()
 
 
+class RequireEnglishTranslationAdminMixin:
+    """Require English counterparts for admin-authored translatable text.
+
+    Programmatic/server generation is unaffected. In Django admin, an English
+    value is required whenever its Farsi source field contains text.
+    """
+
+    translation_pairs = ()
+
+    def get_form(self, request, obj=None, change=False, **kwargs):
+        base_form = super().get_form(request, obj, change, **kwargs)
+        pairs = tuple(self.translation_pairs)
+
+        class TranslationValidatedForm(base_form):
+            def clean(self):
+                cleaned = super().clean()
+                for source_name, english_name in pairs:
+                    source_value = cleaned.get(source_name)
+                    english_value = cleaned.get(english_name)
+                    if source_value and not str(english_value or "").strip():
+                        self.add_error(
+                            english_name,
+                            "Enter the real English equivalent; transliteration/Finglish is not accepted.",
+                        )
+                return cleaned
+
+        return TranslationValidatedForm
+
+
 class ArtistSocialAccountInline(admin.TabularInline):
     model = ArtistSocialAccount
     extra = 0
@@ -206,28 +235,32 @@ class AlbumAdmin(admin.ModelAdmin):
 
 
 @admin.register(Genre)
-class GenreAdmin(admin.ModelAdmin):
+class GenreAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('name', 'name_en'),)
     list_display = ('id', 'name', 'name_en', 'slug')
     search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 
 @admin.register(Mood)
-class MoodAdmin(admin.ModelAdmin):
+class MoodAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('name', 'name_en'),)
     list_display = ('id', 'name', 'name_en', 'slug')
     search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 
 @admin.register(Tag)
-class TagAdmin(admin.ModelAdmin):
+class TagAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('name', 'name_en'),)
     list_display = ('id', 'name', 'name_en', 'slug')
     search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 
 @admin.register(SubGenre)
-class SubGenreAdmin(admin.ModelAdmin):
+class SubGenreAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('name', 'name_en'),)
     list_display = ('id', 'name', 'slug', 'parent_genre')
     list_filter = ('parent_genre',)
     search_fields = ('name', 'name_en', 'slug')
@@ -325,7 +358,8 @@ class SongAdmin(admin.ModelAdmin):
 
 
 @admin.register(Playlist)
-class PlaylistAdmin(admin.ModelAdmin):
+class PlaylistAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     list_display = ('id', 'title', 'cover_image', 'created_by', 'created_at')
     list_filter = ('created_by', 'created_at', 'genres', 'moods')
     search_fields = ('title', 'title_en', 'description', 'description_en')
@@ -443,7 +477,8 @@ class PlaylistLikeAdmin(admin.ModelAdmin):
 
 
 @admin.register(RecommendedPlaylist)
-class RecommendedPlaylistAdmin(admin.ModelAdmin):
+class RecommendedPlaylistAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     list_display = ('id', 'title', 'playlist_type', 'user', 'match_percentage', 'relevance_score', 'views', 'created_at')
     list_filter = ('playlist_type', 'created_at', 'user')
     search_fields = ('title', 'title_en', 'description', 'description_en', 'unique_id', 'user__phone_number')
@@ -470,7 +505,8 @@ class RecommendedPlaylistAdmin(admin.ModelAdmin):
 
 
 @admin.register(EventPlaylist)
-class EventPlaylistAdmin(admin.ModelAdmin):
+class EventPlaylistAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('title', 'title_en'),)
     list_display = ('id', 'title', 'time_of_day', 'playlists_count', 'created_at')
     list_filter = ('time_of_day', 'created_at')
     search_fields = ('title', 'title_en')
@@ -497,7 +533,8 @@ class EventPlaylistAdmin(admin.ModelAdmin):
 
 
 @admin.register(SearchSection)
-class SearchSectionAdmin(admin.ModelAdmin):
+class SearchSectionAdmin(RequireEnglishTranslationAdminMixin, admin.ModelAdmin):
+    translation_pairs = (('title', 'title_en'),)
     list_display = ('id', 'title', 'type', 'item_size', 'created_at', 'created_by')
     list_filter = ('type', 'item_size', 'created_at')
     search_fields = ('title', 'title_en')

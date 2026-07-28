@@ -8,6 +8,31 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
+
+class RequireEnglishTranslationSerializerMixin:
+    """Require explicit English copy for admin-authored visible text.
+
+    This applies to create requests and to updates that touch either side of a
+    translation pair. Unrelated partial updates remain backward compatible.
+    """
+
+    translation_pairs = ()
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        errors = {}
+        is_create = self.instance is None
+        for source_name, english_name in self.translation_pairs:
+            if not is_create and source_name not in attrs and english_name not in attrs:
+                continue
+            source_value = attrs.get(source_name, getattr(self.instance, source_name, None))
+            english_value = attrs.get(english_name, getattr(self.instance, english_name, None))
+            if source_value and not str(english_value or "").strip():
+                errors[english_name] = "Enter the real English equivalent; transliteration/Finglish is not accepted."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
+
 class AdminUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -46,7 +71,8 @@ class AdminEmployeeSerializer(serializers.ModelSerializer):
             user.save()
         return user
 
-class AdminArtistSerializer(serializers.ModelSerializer):
+class AdminArtistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('name', 'name_en'), ('artistic_name', 'artistic_name_en'), ('city', 'city_en'), ('address', 'address_en'), ('bio', 'bio_en'))
     has_user = serializers.SerializerMethodField()
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
 
@@ -72,7 +98,8 @@ class AdminArtistAuthSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
-class AdminSongSerializer(serializers.ModelSerializer):
+class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'), ('description', 'description_en'), ('lyrics', 'lyrics_en'), ('label', 'label_en'), ('credits', 'credits_en'))
     # We use FileField for uploads, but the model stores URLField
     audio_file_upload = serializers.FileField(write_only=True, required=False)
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
@@ -132,7 +159,8 @@ class AdminReportSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'song', 'artist', 'reported_user', 'created_at', 'updated_at']
 
 
-class AdminAlbumSerializer(serializers.ModelSerializer):
+class AdminAlbumSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     songs = AdminSongSerializer(many=True, read_only=True)
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
@@ -164,7 +192,8 @@ class AdminPlayConfigurationSerializer(serializers.ModelSerializer):
         read_only_fields = ['updated_at']
 
 
-class AdminBannerAdSerializer(serializers.ModelSerializer):
+class AdminBannerAdSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'),)
     image_upload = serializers.ImageField(write_only=True, required=False)
 
     class Meta:
@@ -173,7 +202,8 @@ class AdminBannerAdSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'image', 'created_at', 'updated_at']
 
 
-class AdminAudioAdSerializer(serializers.ModelSerializer):
+class AdminAudioAdSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'),)
     audio_upload = serializers.FileField(write_only=True, required=False)
     image_cover_upload = serializers.ImageField(write_only=True, required=False)
     audio_url = serializers.CharField(required=False, allow_blank=True)
@@ -188,7 +218,8 @@ class AdminAudioAdSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class AdminPaymentTransactionSerializer(serializers.ModelSerializer):
+class AdminPaymentTransactionSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('description', 'description_en'),)
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
 
     class Meta:
@@ -206,7 +237,8 @@ class AdminDepositRequestSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'submission_date', 'status_change_date']
 
 
-class AdminPlaylistSerializer(serializers.ModelSerializer):
+class AdminPlaylistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
     
     class Meta:
@@ -215,7 +247,8 @@ class AdminPlaylistSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'cover_image', 'created_at']
 
 
-class AdminSearchSectionSerializer(serializers.ModelSerializer):
+class AdminSearchSectionSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'),)
     icon_logo_upload = serializers.ImageField(write_only=True, required=False)
     
     class Meta:
@@ -227,7 +260,8 @@ class AdminSearchSectionSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'icon_logo', 'created_at', 'updated_at']
 
 
-class AdminEventPlaylistSerializer(serializers.ModelSerializer):
+class AdminEventPlaylistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+    translation_pairs = (('title', 'title_en'),)
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
     
     class Meta:

@@ -13,7 +13,7 @@ from .models import (
     InitialCheck, UserImageProfile
 )
 from .models import BannerAd, BannerAdServeCounter
-from .localization import get_request_language
+from .localization import generated_term_en, get_request_language
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
     RegisterSerializer, 
@@ -3848,7 +3848,7 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
     """Cache lightweight recipes; hydrate current Song rows at response time."""
     bucket = bucket or _time_bucket(15)
     version = cache_version(CATALOG_VERSION_KEY)
-    key = stable_cache_key('fresh-playlist-recipes', require_preview, bucket, version, 'v6')
+    key = stable_cache_key('fresh-playlist-recipes', require_preview, bucket, version, 'v7')
     cached, claimed = cache_get_or_claim(key)
     if cached is not None:
         return cached
@@ -3916,9 +3916,9 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
         )
         add(
             f'genre{index}', f'موج {genre["name"]}',
-            f'{genre.get("name_en") or genre.get("slug", "").replace("-", " " ).title() or genre["name"]} Wave',
+            f'{generated_term_en(genre.get("name"), genre.get("name_en"), generic="Genre")} Wave',
             f'یک میکس تازه از فضای {genre["name"]}',
-            f'A fresh mix inspired by {genre.get("name_en") or genre.get("slug", "").replace("-", " " ).title() or genre["name"]}',
+            f'A fresh mix inspired by {generated_term_en(genre.get("name"), genre.get("name_en"), generic="this genre")}',
             RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE, ids,
         )
 
@@ -3930,7 +3930,7 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
         mood = moods[0]
         add(
             'mood', f'{mood["name"]} برای این لحظه',
-            f'{mood.get("name_en") or mood.get("slug", "").replace("-", " " ).title() or mood["name"]} for This Moment',
+            f'{generated_term_en(mood.get("name"), mood.get("name_en"), generic="A Mood")} for This Moment',
             'یک جریان کوتاه و منسجم برای حال‌وهوای الآن',
             'A short, cohesive flow for your current mood',
             RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
@@ -4457,8 +4457,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
     serializer_class = RecommendedPlaylistListSerializer
 
     def _ensure_personal(self, user):
-        key = stable_cache_key('ensure-playlist-recs', user.id, cache_version(AFFINITY_VERSION_KEY), 'v3')
-        if cache_get(key) is not None or RecommendedPlaylist.objects.filter(user=user, expires_at__gt=timezone.now()).exists():
+        key = stable_cache_key('ensure-playlist-recs', user.id, cache_version(AFFINITY_VERSION_KEY), 'v4')
+        # Do not trust previously generated rows here: older bilingual builds may
+        # have stored romanized/Finglish values in title_en. Regenerating through
+        # update_or_create repairs those rows while preserving the base algorithm.
+        if cache_get(key) is not None:
             return
         if not _user_has_music_activity(user):
             cache_set(key, True, 30)
@@ -4481,7 +4484,11 @@ class PlaylistRecommendationsView(generics.ListAPIView):
                 else Mood.objects.filter(id=value).values('name', 'name_en', 'slug').first()
             ) or {}
             label = label_row.get('name') or 'برای شما'
-            label_en = label_row.get('name_en') or (label_row.get('slug') or '').replace('-', ' ').title() or 'For You'
+            label_en = generated_term_en(
+                label_row.get('name'),
+                label_row.get('name_en'),
+                generic='Genre Mix' if kind == 'genre' else 'Mood Mix',
+            )
             playlist, _ = RecommendedPlaylist.objects.update_or_create(
                 unique_id=f'smart_rec_{user.id}_{index}', defaults={
                     'user': user, 'title': label, 'title_en': label_en,

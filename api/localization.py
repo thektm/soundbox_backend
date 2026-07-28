@@ -78,6 +78,121 @@ GENERATED_TERM_FA_TO_EN = {
     "نوستالژیک": "Nostalgic",
     "الهام‌بخش": "Inspirational",
     "رقص": "Dance",
+    "هیپ هاپ": "Hip-Hop",
+    "هیپ‌هاپ": "Hip-Hop",
+    "آر اند بی": "R&B",
+    "آراندبی": "R&B",
+    "بی کلام": "Instrumental",
+    "بی‌کلام": "Instrumental",
+    "ملایم": "Mellow",
+    "غمگین و احساسی": "Sad & Emotional",
+    # Seeded sub-genres
+    "پاپ ایرانی": "Persian Pop",
+    "پاپ غربی": "Western Pop",
+    "سینث پاپ": "Synth-Pop",
+    "پاپ راک": "Pop Rock",
+    "راک کلاسیک": "Classic Rock",
+    "راک آلترناتیو": "Alternative Rock",
+    "پانک راک": "Punk Rock",
+    "هارد راک": "Hard Rock",
+    "سنتی ایرانی": "Persian Traditional",
+    "مقام": "Maqam",
+    "آواز": "Avaz",
+    "سنتی کردی": "Kurdish Traditional",
+    "رپ ایرانی": "Persian Rap",
+    "ترپ": "Trap",
+    "رپ underground": "Underground Rap",
+    "هاوس": "House",
+    "ترنس": "Trance",
+    "تکنو": "Techno",
+    "EDM": "EDM",
+    "جز کلاسیک": "Classic Jazz",
+    "بیباپ": "Bebop",
+    "جز مدرن": "Modern Jazz",
+    "جز فیوژن": "Jazz Fusion",
+    "بلوز کلاسیک": "Classic Blues",
+    "دلتا بلوز": "Delta Blues",
+    "الکتریک بلوز": "Electric Blues",
+    "بلوز راک": "Blues Rock",
+    "هوی متال": "Heavy Metal",
+    "بلک متال": "Black Metal",
+    "دث متال": "Death Metal",
+    "متال‌کور": "Metalcore",
+    "اپرا": "Opera",
+    "سمفونی": "Symphony",
+    "کنسرتو": "Concerto",
+    "سونات": "Sonata",
+    "فولک ایرانی": "Persian Folk",
+    "فولک آمریکایی": "American Folk",
+    "فولک اروپایی": "European Folk",
+    "فولک مدرن": "Modern Folk",
+    # Seeded tags
+    "تابستانی": "Summer",
+    "زمستانی": "Winter",
+    "بهاری": "Spring",
+    "پاییزی": "Autumn",
+    "جدید": "New",
+    "ویژه": "Special",
+    "پرفروش": "Bestseller",
+    "جدیدترین‌ها": "Latest",
+    "محبوب": "Popular",
+    "وایرال": "Viral",
+    "تیتراژ": "Soundtrack",
+    "تبلیغاتی": "Promotional",
+    "فستیوال": "Festival",
+    "کنسرت": "Concert",
+    "ریمیکس": "Remix",
+    "اصل": "Original",
+    "کاور": "Cover",
+    "لایو": "Live",
+    "استودیویی": "Studio",
+}
+
+
+# Context-specific taxonomy translations. Some Farsi labels are ambiguous
+# across models (for example, «کلاسیک» is "Classical" as a genre but "Classic"
+# as a tag), so schema repair must not use one context-free dictionary.
+TAXONOMY_EN_BY_MODEL = {
+    "Genre": {
+        "پاپ": "Pop", "راک": "Rock", "سنتی": "Traditional", "رپ": "Rap",
+        "الکترونیک": "Electronic", "جز": "Jazz", "بلوز": "Blues",
+        "متال": "Metal", "کلاسیک": "Classical", "فولک": "Folk",
+    },
+    "Mood": {
+        "شاد": "Happy", "غمگین": "Sad", "عاشقانه": "Romantic",
+        "انرژیک": "Energetic", "آرام": "Calm", "هیجان‌انگیز": "Exciting",
+        "مذهبی": "Spiritual", "پارتی": "Party", "تمرکز": "Focus",
+        "خواب": "Sleep", "ورزشی": "Workout", "موتورسواری": "Driving",
+        "نوستالژیک": "Nostalgic", "الهام‌بخش": "Inspirational", "رقص": "Dance",
+    },
+    "SubGenre": {
+        "پاپ ایرانی": "Persian Pop", "پاپ غربی": "Western Pop",
+        "سینث پاپ": "Synth-Pop", "پاپ راک": "Pop Rock",
+        "راک کلاسیک": "Classic Rock", "راک آلترناتیو": "Alternative Rock",
+        "پانک راک": "Punk Rock", "هارد راک": "Hard Rock",
+        "سنتی ایرانی": "Persian Traditional", "مقام": "Maqam", "آواز": "Avaz",
+        "سنتی کردی": "Kurdish Traditional", "رپ ایرانی": "Persian Rap",
+        "ترپ": "Trap", "هیپ هاپ": "Hip-Hop", "رپ underground": "Underground Rap",
+        "هاوس": "House", "ترنس": "Trance", "تکنو": "Techno", "EDM": "EDM",
+        "جز کلاسیک": "Classic Jazz", "بیباپ": "Bebop", "جز مدرن": "Modern Jazz",
+        "جز فیوژن": "Jazz Fusion", "بلوز کلاسیک": "Classic Blues",
+        "دلتا بلوز": "Delta Blues", "الکتریک بلوز": "Electric Blues",
+        "بلوز راک": "Blues Rock", "هوی متال": "Heavy Metal",
+        "بلک متال": "Black Metal", "دث متال": "Death Metal",
+        "متال‌کور": "Metalcore", "اپرا": "Opera", "سمفونی": "Symphony",
+        "کنسرتو": "Concerto", "سونات": "Sonata", "فولک ایرانی": "Persian Folk",
+        "فولک آمریکایی": "American Folk", "فولک اروپایی": "European Folk",
+        "فولک مدرن": "Modern Folk",
+    },
+    "Tag": {
+        "تابستانی": "Summer", "زمستانی": "Winter", "بهاری": "Spring",
+        "پاییزی": "Autumn", "جدید": "New", "کلاسیک": "Classic",
+        "ویژه": "Special", "پرفروش": "Bestseller", "جدیدترین‌ها": "Latest",
+        "محبوب": "Popular", "وایرال": "Viral", "تیتراژ": "Soundtrack",
+        "تبلیغاتی": "Promotional", "فستیوال": "Festival", "کنسرت": "Concert",
+        "ریمیکس": "Remix", "اصل": "Original", "کاور": "Cover",
+        "لایو": "Live", "استودیویی": "Studio",
+    },
 }
 
 
@@ -92,7 +207,23 @@ GENERATED_FA_TO_EN = {
     "کشف‌های تازه": "Fresh Discoveries",
     "کمتر تکراری، تازه‌تر و مناسب پیدا کردن صدای بعدی": "Less repetition, more freshness, and a new sound to discover",
     "یک جریان کوتاه و منسجم برای حال‌وهوای الآن": "A short, cohesive flow for your current mood",
+    "پیشنهاد تازه براساس سلیقه و شنیده‌های شما": "A fresh recommendation based on your taste and listening history",
+    "پیشنهاد تازه بر اساس سلیقه و شنیده‌های شما": "A fresh recommendation based on your taste and listening history",
 }
+
+
+def generated_term_en(fa_value: str | None, en_value: str | None = None, *, generic: str = "Mix") -> str:
+    """Return real English for server-owned genre/mood labels.
+
+    Never romanize Persian and never use database slugs as translation input.
+    Slugs in older SedaBox data are often Finglish, which is not an English
+    equivalent. Unknown terms intentionally fall back to a clear generic label.
+    """
+    clean_en = str(en_value or "").strip()
+    if clean_en:
+        return clean_en
+    clean_fa = str(fa_value or "").strip()
+    return GENERATED_TERM_FA_TO_EN.get(clean_fa, generic)
 
 
 def translate_generated_text(text: str) -> str:
@@ -105,13 +236,13 @@ def translate_generated_text(text: str) -> str:
         return GENERATED_TERM_FA_TO_EN[text]
     if text.startswith("موج "):
         term = text[4:]
-        return f"{GENERATED_TERM_FA_TO_EN.get(term, term)} Wave"
+        return f"{generated_term_en(term, generic='Genre')} Wave"
     if text.startswith("یک میکس تازه از فضای "):
         term = text.removeprefix("یک میکس تازه از فضای ")
-        return f"A fresh mix inspired by {GENERATED_TERM_FA_TO_EN.get(term, term)}"
+        return f"A fresh mix inspired by {generated_term_en(term, generic='this genre')}"
     if text.endswith(" برای این لحظه"):
         term = text.removesuffix(" برای این لحظه")
-        return f"{GENERATED_TERM_FA_TO_EN.get(term, term)} for This Moment"
+        return f"{generated_term_en(term, generic='A Mood')} for This Moment"
 
     # Historical notification rows were created before ``text_en`` existed.
     # Translate only the server-owned sentence template; user/artist names and
