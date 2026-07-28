@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.conf import settings
 from django.db import IntegrityError
 from django.db.models import Q
+from django.db.models.manager import BaseManager
 
 from .localization import get_request_language, localized_value, translate_generated_text
 
@@ -76,8 +77,16 @@ def _resolve_source(instance, source):
         if current is None:
             return None
         current = getattr(current, part, None)
-        if callable(current):
-            current = current()
+        # Reverse relations expose a RelatedManager which is technically
+        # callable, but calling it directly requires Django's private
+        # ``manager=`` keyword. It is an attribute container here, not a
+        # zero-argument serializer source.
+        if callable(current) and not isinstance(current, BaseManager):
+            try:
+                current = current()
+            except TypeError:
+                # Non-zero-argument callables are not safe serializer sources.
+                return None
     return current
 
 
