@@ -5301,8 +5301,30 @@ class SearchView(APIView):
         qs=Song.objects.filter(status=Song.STATUS_PUBLISHED)
         if q:
             clean=q.replace(' ','').replace('\u200c','')
-            qs=qs.annotate(t_clean=Replace(Replace(Cast('title',TextField()),Value(' '),Value('')),Value('\u200c'),Value('')),
-                           a_clean=Replace(Replace(Cast('artist__name',TextField()),Value(' '),Value('')),Value('\u200c'),Value('')))
+            qs=qs.annotate(
+                t_clean=Replace(
+                    Replace(
+                        Cast('title', TextField()),
+                        Value(' '),
+                        Value(''),
+                        output_field=TextField(),
+                    ),
+                    Value('\u200c'),
+                    Value(''),
+                    output_field=TextField(),
+                ),
+                a_clean=Replace(
+                    Replace(
+                        Cast('artist__name', TextField()),
+                        Value(' '),
+                        Value(''),
+                        output_field=TextField(),
+                    ),
+                    Value('\u200c'),
+                    Value(''),
+                    output_field=TextField(),
+                ),
+            )
             qs=qs.filter(Q(t_clean__icontains=clean)|Q(a_clean__icontains=clean)|Q(title__icontains=q)|Q(title_en__icontains=q)|
                          Q(artist__name__icontains=q)|Q(artist__name_en__icontains=q)|Q(album__title__icontains=q)|Q(album__title_en__icontains=q)|
                          Q(description__icontains=q)|Q(description_en__icontains=q)|Q(lyrics__icontains=q)|Q(lyrics_en__icontains=q)|
