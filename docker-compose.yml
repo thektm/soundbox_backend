@@ -13,16 +13,29 @@ services:
       DB_PASSWORD: 'postgres'
       DB_HOST: 'db'
       DB_PORT: '5432'
+      DB_CONN_MAX_AGE: '60'
+      REDIS_URL: 'redis://redis:6379/1'
+      REDIS_CONNECT_TIMEOUT: '1'
+      REDIS_SOCKET_TIMEOUT: '1'
+      REDIS_MAX_CONNECTIONS: '40'
+      REDIS_REQUIRED_ON_STARTUP: '1'
+      REDIS_STARTUP_WAIT_SECONDS: '60'
       ALLOWED_HOSTS: '141.11.123.238,localhost'
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     ports:
-      - "8000:8000"
+      - '8000:8000'
     volumes:
       - static_volume:/app/static
       - media_volume:/app/media
     networks:
       - soundbox_network
+
   db:
     image: postgres:15
     container_name: soundbox_db
@@ -36,15 +49,38 @@ services:
     networks:
       - soundbox_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h 0.0.0.0"]
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1']
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: soundbox_redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --appendfsync
+      - everysec
+    volumes:
+      - redis_data:/data
+    networks:
+      - soundbox_network
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
 volumes:
   static_volume:
   media_volume:
   db_data:
+  redis_data:
 
 networks:
   soundbox_network:
