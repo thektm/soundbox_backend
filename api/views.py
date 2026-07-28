@@ -68,7 +68,7 @@ from rest_framework.pagination import PageNumberPagination
 from django.db import transaction
 from django.db.models import (
     Sum, Count, F, IntegerField, BigIntegerField, Value, Prefetch, DecimalField, CharField,
-    TextField, OuterRef, Subquery,
+    TextField, OuterRef, Subquery, Max,
 )
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast
 from django.utils import timezone
@@ -4551,6 +4551,149 @@ def _paginated_payload(request, items, page_param, page, size, serializer):
     }
 
 
+TRENDING_MIN_SONGS = 6
+TRENDING_MAX_SONGS = 12
+TRENDING_WINDOWS_DAYS = (7, 14, 30, 60, 90, 180, 365)
+
+
+def _trending_song_ids(*, require_preview=False):
+    """Return genuinely played songs from the smallest useful recent window.
+
+    The ranking begins with seven days. When fewer than six distinct eligible
+    songs were played, it progressively widens the period until six are
+    available. The final fallback is all recorded history plus the legacy
+    aggregate ``Song.plays`` counter; songs with zero real plays are never used.
+    Results are globally cacheable because the ranking is not user-specific.
+    """
+    version = cache_version(CATALOG_VERSION_KEY)
+    cache_key = stable_cache_key(
+        'home-trending-songs',
+        'preview' if require_preview else 'full',
+        version,
+        'v1',
+    )
+    cached = cache_get(cache_key)
+    if isinstance(cached, dict) and isinstance(cached.get('ids'), list):
+        return cached
+
+    now = timezone.now()
+    through = Song.play_counts.through
+    link_filter = Q(song__status=Song.STATUS_PUBLISHED)
+    if require_preview:
+        link_filter &= Q(song__preview_audio_url__isnull=False)
+        link_filter &= ~Q(song__preview_audio_url='')
+
+    annotations = {
+        'recorded_plays_all': Count('playcount_id'),
+        'last_play_all': Max('playcount__created_at'),
+    }
+    for days in TRENDING_WINDOWS_DAYS:
+        cutoff = now - timedelta(days=days)
+        annotations[f'recorded_plays_{days}'] = Count(
+            'playcount_id',
+            filter=Q(playcount__created_at__gte=cutoff),
+        )
+        annotations[f'last_play_{days}'] = Max(
+            'playcount__created_at',
+            filter=Q(playcount__created_at__gte=cutoff),
+        )
+
+    rows = list(
+        through.objects.filter(link_filter)
+        .values('song_id')
+        .annotate(**annotations)
+    )
+
+    selected_window = None
+    candidates = []
+    for days in TRENDING_WINDOWS_DAYS:
+        score_field = f'recorded_plays_{days}'
+        period_rows = [row for row in rows if int(row.get(score_field) or 0) > 0]
+        if len(period_rows) >= TRENDING_MIN_SONGS:
+            selected_window = days
+            candidates = period_rows
+            break
+
+    if selected_window is not None:
+        score_field = f'recorded_plays_{selected_window}'
+        last_field = f'last_play_{selected_window}'
+        candidates.sort(
+            key=lambda row: (
+                int(row.get(score_field) or 0),
+                row.get(last_field) or row.get('last_play_all') or now - timedelta(days=36500),
+                int(row.get('recorded_plays_all') or 0),
+                int(row['song_id']),
+            ),
+            reverse=True,
+        )
+        result = {
+            'ids': [int(row['song_id']) for row in candidates[:TRENDING_MAX_SONGS]],
+            'window_days': selected_window,
+            'is_all_time': False,
+        }
+    else:
+        # Some older installations only populated Song.plays. Include that real
+        # all-time counter only after every timestamped window has been exhausted.
+        row_by_song = {int(row['song_id']): row for row in rows}
+        song_filter = Q(status=Song.STATUS_PUBLISHED)
+        if require_preview:
+            song_filter &= Q(preview_audio_url__isnull=False)
+            song_filter &= ~Q(preview_audio_url='')
+        legacy_rows = Song.objects.filter(song_filter).filter(
+            Q(plays__gt=0) | Q(id__in=row_by_song.keys())
+        ).values('id', 'plays')
+
+        all_time = []
+        for song_row in legacy_rows:
+            song_id = int(song_row['id'])
+            event_row = row_by_song.get(song_id, {})
+            recorded = int(event_row.get('recorded_plays_all') or 0)
+            legacy = int(song_row.get('plays') or 0)
+            total = recorded + legacy
+            if total <= 0:
+                continue
+            all_time.append({
+                'song_id': song_id,
+                'score': total,
+                'recorded': recorded,
+                'last_play': event_row.get('last_play_all'),
+            })
+
+        all_time.sort(
+            key=lambda row: (
+                row['score'],
+                row['last_play'] or now - timedelta(days=36500),
+                row['recorded'],
+                row['song_id'],
+            ),
+            reverse=True,
+        )
+        result = {
+            'ids': [row['song_id'] for row in all_time[:TRENDING_MAX_SONGS]],
+            'window_days': None,
+            'is_all_time': True,
+        }
+
+    # Short TTL keeps the section responsive to new plays without executing the
+    # aggregate query on every home request. Redis shares it across workers.
+    cache_set(cache_key, result, 180)
+    return result
+
+
+def _trending_songs(request):
+    ranking = _trending_song_ids(require_preview=not request.user.is_authenticated)
+    ids = ranking['ids']
+    song_map = _home_song_queryset(not request.user.is_authenticated).filter(
+        id__in=ids
+    ).in_bulk()
+    songs = [song_map[song_id] for song_id in ids if song_id in song_map]
+    hydrate_song_metrics(
+        songs,
+        request.user if request.user.is_authenticated else None,
+    )
+    return ranking, songs
+
+
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
 class HomeSummaryView(APIView):
     permission_classes = [AllowAny]
@@ -4563,7 +4706,7 @@ class HomeSummaryView(APIView):
             'rec': 'sr_page', 'latest': 'lr_page', 'artists': 'pa_page', 'albums': 'pal_page',
             'playlists': 'pr_page', 'discoveries': 'ds_page',
         }.items()}
-        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, 'v11')
+        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, 'v12')
         cached, claimed = cache_get_or_claim(cache_key) if not user.is_authenticated else (None, False)
         if cached is not None:
             return Response(cached)
@@ -4617,8 +4760,10 @@ class HomeSummaryView(APIView):
         discovery_page, discovery_next = _slice_items(discoveries, pages['discoveries'], 6)
         hydrate_song_metrics(discovery_page, user if user.is_authenticated else None)
 
+        trending_ranking, trending_songs = _trending_songs(request)
+
         payload = {
-            'sections': 6,
+            'sections': 7,
             'songs_recommendations': {
                 'type': rec_type, 'count': len(rec_page),
                 'next': _next_url(request, 'sr_page', pages['rec'], rec_next),
@@ -4650,6 +4795,15 @@ class HomeSummaryView(APIView):
             'discoveries': {
                 'count': len(discovery_page), 'next': _next_url(request, 'ds_page', pages['discoveries'], discovery_next),
                 'results': SongSummarySerializer(discovery_page, many=True, context={'request': request}).data,
+            },
+            'trending': {
+                'count': len(trending_songs),
+                'window_days': trending_ranking['window_days'],
+                'is_all_time': trending_ranking['is_all_time'],
+                'minimum_met': len(trending_songs) >= TRENDING_MIN_SONGS,
+                'results': SongSummarySerializer(
+                    trending_songs, many=True, context={'request': request}
+                ).data,
             },
         }
         if claimed and not user.is_authenticated:
