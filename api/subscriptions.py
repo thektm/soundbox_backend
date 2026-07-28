@@ -7,8 +7,7 @@ checkout does not require a schema migration or alter unrelated tables.
 
 from __future__ import annotations
 
-import calendar
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from django.db import transaction
@@ -20,6 +19,7 @@ from .models import User
 PREMIUM_EXPIRY_KEY = "premium_expires_at"
 PREMIUM_ACTIVATED_KEY = "premium_activated_at"
 PREMIUM_GATEWAY_KEY = "premium_gateway"
+PREMIUM_DURATION = timedelta(days=30)
 
 
 def _coerce_aware(value: object) -> Optional[datetime]:
@@ -37,43 +37,49 @@ def _coerce_aware(value: object) -> Optional[datetime]:
 
 
 def premium_expires_at(user: User) -> Optional[datetime]:
-    settings_data = user.settings if isinstance(user.settings, dict) else {}
-    return _coerce_aware(settings_data.get(PREMIUM_EXPIRY_KEY))
+    """Return the canonical server expiry for a timed Premium subscription.
 
-
-def _add_calendar_month(value: datetime) -> datetime:
-    """Return the same wall-clock time one calendar month later.
-
-    End-of-month dates are clamped to the final valid day in the destination
-    month (for example, January 31 becomes February 28/29).
+    Older checkout code could stack calendar months when the activation endpoint
+    was called repeatedly. Checkout-created subscriptions are capped to exactly
+    30 days from their latest recorded activation so already-affected accounts
+    are corrected on their next authenticated request.
     """
 
-    next_month_index = value.month + 1
-    year = value.year + (next_month_index - 1) // 12
-    month = (next_month_index - 1) % 12 + 1
-    day = min(value.day, calendar.monthrange(year, month)[1])
-    return value.replace(year=year, month=month, day=day)
+    settings_data = user.settings if isinstance(user.settings, dict) else {}
+    expiry = _coerce_aware(settings_data.get(PREMIUM_EXPIRY_KEY))
+    activated_at = _coerce_aware(settings_data.get(PREMIUM_ACTIVATED_KEY))
+    gateway = str(settings_data.get(PREMIUM_GATEWAY_KEY) or "").strip()
+    if expiry is not None and activated_at is not None and gateway:
+        return min(expiry, activated_at + PREMIUM_DURATION)
+    return expiry
 
 
 def normalize_expired_premium(user: User, *, now: Optional[datetime] = None) -> bool:
-    """Downgrade an expired timed subscription and return active status.
+    """Normalize timed Premium metadata and return whether Premium is active.
 
-    Legacy premium accounts without expiry metadata remain premium; only plans
-    created by the timed checkout flow are automatically expired.
+    Legacy Premium accounts without expiry metadata remain Premium. Timed
+    checkout subscriptions are corrected to a maximum of 30 days from the most
+    recent activation, then downgraded when that canonical expiry has passed.
     """
 
     if user.plan != User.PLAN_PREMIUM:
         return False
 
+    settings_data = dict(user.settings or {})
+    raw_expiry = _coerce_aware(settings_data.get(PREMIUM_EXPIRY_KEY))
     expiry = premium_expires_at(user)
     if expiry is None:
         return True
 
+    expiry_was_corrected = raw_expiry is not None and expiry != raw_expiry
     current = now or timezone.now()
     if expiry > current:
+        if expiry_was_corrected:
+            settings_data[PREMIUM_EXPIRY_KEY] = expiry.isoformat()
+            user.settings = settings_data
+            user.save(update_fields=["settings"])
         return True
 
-    settings_data = dict(user.settings or {})
     settings_data.pop(PREMIUM_EXPIRY_KEY, None)
     settings_data.pop(PREMIUM_GATEWAY_KEY, None)
     user.plan = User.PLAN_FREE
@@ -83,12 +89,10 @@ def normalize_expired_premium(user: User, *, now: Optional[datetime] = None) -> 
 
 
 def activate_one_month_premium(user: User, *, gateway: str = "zarinpal") -> datetime:
-    """Activate Premium until exactly one calendar month from this request."""
+    """Reset Premium to exactly 30 days from this successful payment."""
 
     now = timezone.now()
-    current_expiry = premium_expires_at(user)
-    base = current_expiry if current_expiry and current_expiry > now else now
-    expiry = _add_calendar_month(base)
+    expiry = now + PREMIUM_DURATION
     settings_data = dict(user.settings or {})
     settings_data.update(
         {

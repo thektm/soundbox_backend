@@ -3846,7 +3846,7 @@ def _sedabox_normal_playlist_queryset(request):
     ).order_by('-created_at')
 
 
-def _sedabox_preview_payload(request, user, page_size=3):
+def _sedabox_preview_payload(request, user, page_size=10):
     generated_all = _dynamic_playlist_items(request.user)
     generated = generated_all[:min(2, page_size)]
     remaining = max(0, page_size - len(generated))
@@ -3913,12 +3913,12 @@ class SedaBoxProfileView(APIView):
             return Response({"error": "SedaBox user not found"}, status=status.HTTP_404_NOT_FOUND)
         if str(request.query_params.get('preview', '')).lower() in {'1', 'true', 'yes'}:
             try:
-                page_size = max(1, min(int(request.query_params.get('page_size', 3)), 4))
+                page_size = max(1, min(int(request.query_params.get('page_size', 10)), 10))
             except (TypeError, ValueError):
-                page_size = 3
+                page_size = 10
             key = stable_cache_key(
                 'sedabox-profile-preview', get_request_language(request), not request.user.is_authenticated, page_size,
-                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v3',
+                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v4',
             )
             cached = cache_get(key) if not request.user.is_authenticated else None
             if cached is not None:
@@ -8074,7 +8074,7 @@ class PremiumPlanPriceView(APIView):
 
 @extend_schema(
     summary="Complete simulated premium checkout",
-    description="Activates Premium for exactly one calendar month for the authenticated audience account.",
+    description="Resets Premium to exactly 30 days from the successful payment time for the authenticated audience account.",
     request=inline_serializer(
         name='PremiumCheckoutRequest',
         fields={'gateway': serializers.ChoiceField(choices=['zarinpal'])},
