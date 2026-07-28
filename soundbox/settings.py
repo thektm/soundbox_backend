@@ -87,7 +87,7 @@ DATABASES = {
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/1')
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'BACKEND': 'api.cache_backend.ResilientRedisCache',
         'LOCATION': REDIS_URL,
         'TIMEOUT': 300,
         'KEY_PREFIX': 'sedabox',
@@ -113,6 +113,7 @@ GENERATED_PLAYLIST_CLEANUP_BATCH = int(os.environ.get('GENERATED_PLAYLIST_CLEANU
 REDIS_CONNECT_TIMEOUT = float(os.environ.get('REDIS_CONNECT_TIMEOUT', '1'))
 REDIS_SOCKET_TIMEOUT = float(os.environ.get('REDIS_SOCKET_TIMEOUT', '1'))
 REDIS_MAX_CONNECTIONS = int(os.environ.get('REDIS_MAX_CONNECTIONS', '40'))
+REDIS_RETRY_SECONDS = float(os.environ.get('REDIS_RETRY_SECONDS', '5'))
 OTP_SEND_COOLDOWN_SECONDS = int(os.environ.get('OTP_SEND_COOLDOWN_SECONDS', '60'))
 OTP_REQUEST_TIMEOUT_CONNECT = float(os.environ.get('OTP_REQUEST_TIMEOUT_CONNECT', '1.5'))
 OTP_REQUEST_TIMEOUT_READ = float(os.environ.get('OTP_REQUEST_TIMEOUT_READ', '3.5'))

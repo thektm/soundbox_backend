@@ -28,6 +28,8 @@ T = TypeVar("T")
 
 _REDIS_CLIENT = None
 _REDIS_CLIENT_LOCK = threading.Lock()
+_REDIS_RETRY_AFTER = 0.0
+_REDIS_LAST_WARNING_AT = 0.0
 _MAINTENANCE_STARTED = False
 _MAINTENANCE_LOCK = threading.Lock()
 _LOCAL_FRESH_COUNTERS: dict[str, int] = {}
@@ -40,17 +42,29 @@ _PERIODIC_DUE = "sedabox:generated-playlists:periodic-due"
 
 
 def get_redis_client():
-    """Return one pooled Redis client per process, or ``None`` on failure."""
-    global _REDIS_CLIENT
+    """Return one pooled Redis client per process, or ``None`` on failure.
+
+    Failed connections are retried with a short backoff and warning logs are
+    rate-limited, so a Redis/DNS outage cannot flood logs or delay every request.
+    """
+    global _REDIS_CLIENT, _REDIS_RETRY_AFTER, _REDIS_LAST_WARNING_AT
     if _REDIS_CLIENT is not None:
         return _REDIS_CLIENT
+
+    now = time.monotonic()
+    if now < _REDIS_RETRY_AFTER:
+        return None
+
     with _REDIS_CLIENT_LOCK:
         if _REDIS_CLIENT is not None:
             return _REDIS_CLIENT
+        now = time.monotonic()
+        if now < _REDIS_RETRY_AFTER:
+            return None
         try:
             import redis
 
-            _REDIS_CLIENT = redis.Redis.from_url(
+            client = redis.Redis.from_url(
                 getattr(settings, "REDIS_URL", "redis://redis:6379/1"),
                 decode_responses=True,
                 socket_connect_timeout=float(getattr(settings, "REDIS_CONNECT_TIMEOUT", 1.0)),
@@ -59,10 +73,15 @@ def get_redis_client():
                 retry_on_timeout=True,
                 max_connections=int(getattr(settings, "REDIS_MAX_CONNECTIONS", 40)),
             )
-            _REDIS_CLIENT.ping()
+            client.ping()
+            _REDIS_CLIENT = client
+            _REDIS_RETRY_AFTER = 0.0
         except Exception as exc:  # Redis failure must never take down API reads.
-            logger.warning("Redis runtime helpers unavailable: %s", exc)
             _REDIS_CLIENT = None
+            _REDIS_RETRY_AFTER = now + max(1.0, float(getattr(settings, "REDIS_RETRY_SECONDS", 5.0)))
+            if now - _REDIS_LAST_WARNING_AT >= 60.0:
+                logger.warning("Redis runtime helpers unavailable; retrying in background: %s", exc)
+                _REDIS_LAST_WARNING_AT = now
         return _REDIS_CLIENT
 
 

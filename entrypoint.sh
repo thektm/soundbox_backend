@@ -46,12 +46,12 @@ if redis_url:
             'redis',
             redis_host,
             redis_port,
-            int(os.getenv('REDIS_STARTUP_WAIT_SECONDS', '60')),
+            int(os.getenv('REDIS_STARTUP_WAIT_SECONDS', '5')),
         )
-    except SystemExit:
+    except SystemExit as exc:
         if redis_required:
             raise
-        print('Redis is unavailable; continuing in degraded mode', flush=True)
+        print(f'{exc}; continuing with resilient local cache fallback', flush=True)
 PY
 
 python manage.py ensure_guest_preview_schema

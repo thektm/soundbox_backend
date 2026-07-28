@@ -18,14 +18,13 @@ services:
       REDIS_CONNECT_TIMEOUT: '1'
       REDIS_SOCKET_TIMEOUT: '1'
       REDIS_MAX_CONNECTIONS: '40'
-      REDIS_REQUIRED_ON_STARTUP: '1'
-      REDIS_STARTUP_WAIT_SECONDS: '60'
+      REDIS_RETRY_SECONDS: '5'
+      REDIS_REQUIRED_ON_STARTUP: '0'
+      REDIS_STARTUP_WAIT_SECONDS: '5'
       ALLOWED_HOSTS: '141.11.123.238,localhost'
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - db
+      - redis
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     ports:
