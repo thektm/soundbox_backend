@@ -68,9 +68,9 @@ from rest_framework.pagination import PageNumberPagination
 from django.db import transaction
 from django.db.models import (
     Sum, Count, F, IntegerField, BigIntegerField, Value, Prefetch, DecimalField, CharField,
-    TextField, OuterRef, Subquery, Max,
+    TextField, OuterRef, Subquery, Max, Case, When,
 )
-from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast
+from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast, Concat
 from django.utils import timezone
 from django.conf import settings
 from .utils import (
@@ -5257,6 +5257,65 @@ class PlaylistSaveToggleView(APIView):
             return Response({'status': 'saved'}, status=status.HTTP_200_OK)
 
 
+_SEARCH_FILTER_MARKS_RE = re.compile(r"[\u064B-\u065F\u0670\u06D6-\u06ED\u0640\u200C\s]+")
+_SEARCH_CHAR_TRANSLATION = str.maketrans({
+    'ي': 'ی',
+    'ى': 'ی',
+    'ك': 'ک',
+    'ة': 'ه',
+    'ۀ': 'ه',
+})
+_SEARCH_DB_REPLACEMENTS = (
+    ('ي', 'ی'),
+    ('ى', 'ی'),
+    ('ك', 'ک'),
+    ('ة', 'ه'),
+    ('ۀ', 'ه'),
+    (' ', ''),
+    ('\u200c', ''),
+    ('\u0640', ''),
+    ('\t', ''),
+    ('\n', ''),
+    ('\r', ''),
+) + tuple((chr(codepoint), '') for codepoint in (
+    *range(0x064B, 0x0660),
+    0x0670,
+    *range(0x06D6, 0x06EE),
+))
+
+
+def _normalize_directory_search(value):
+    """Normalize Persian/Arabic names and identifiers for directory search."""
+    normalized = str(value or '').translate(_SEARCH_CHAR_TRANSLATION).casefold()
+    return _SEARCH_FILTER_MARKS_RE.sub('', normalized)
+
+
+def _normalized_directory_expression(*field_names):
+    """Build one typed normalized SQL expression shared by artists and users."""
+    pieces = []
+    separator = Value(' ', output_field=TextField())
+    empty = Value('', output_field=TextField())
+    for index, field_name in enumerate(field_names):
+        if index:
+            pieces.append(separator)
+        pieces.append(
+            Coalesce(
+                Cast(F(field_name), TextField()),
+                empty,
+                output_field=TextField(),
+            )
+        )
+    expression = Concat(*pieces, output_field=TextField())
+    for source, target in _SEARCH_DB_REPLACEMENTS:
+        expression = Replace(
+            expression,
+            Value(source, output_field=TextField()),
+            Value(target, output_field=TextField()),
+            output_field=TextField(),
+        )
+    return expression
+
+
 @extend_schema(tags=['Search Page Endpoints اندپوینت های صفحه جستجو'])
 class SearchView(APIView):
     permission_classes = [AllowAny]
@@ -5267,7 +5326,7 @@ class SearchView(APIView):
         moods = sorted(request.query_params.getlist('moods')); page, page_size = _page_values(request, 20, 100)
         if search_type and search_type not in self.TYPES:
             return Response({'error': 'Invalid type. Must be song, artist, album, playlist, or user.'}, status=400)
-        key = stable_cache_key('search-ids-v10', query.casefold(), search_type or 'mixed', moods, page, page_size, cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY))
+        key = stable_cache_key('search-ids-v11', query.casefold(), search_type or 'mixed', moods, page, page_size, cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY))
         cached, _ = cache_get_or_claim(key)
         if cached is None:
             if search_type:
@@ -5337,7 +5396,18 @@ class SearchView(APIView):
         return qs.distinct().order_by('-plays','-created_at')
     def _search_artists(self,q,moods,request):
         qs=Artist.objects.all()
-        if q: qs=qs.filter(Q(name__icontains=q)|Q(name_en__icontains=q)|Q(artistic_name__icontains=q)|Q(artistic_name_en__icontains=q)|Q(bio__icontains=q)|Q(bio_en__icontains=q)|Q(unique_id__icontains=q))
+        if q:
+            normalized = _normalize_directory_search(q)
+            qs = qs.annotate(
+                directory_search=_normalized_directory_expression(
+                    'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id'
+                )
+            ).filter(
+                Q(name__icontains=q)|Q(name_en__icontains=q)|
+                Q(artistic_name__icontains=q)|Q(artistic_name_en__icontains=q)|
+                Q(bio__icontains=q)|Q(bio_en__icontains=q)|Q(unique_id__icontains=q)|
+                (Q(directory_search__icontains=normalized) if normalized else Q())
+            )
         return qs.order_by('-verified','-created_at')
     def _search_albums(self,q,moods,request):
         qs=Album.objects.exclude(Q(title__iexact='single')|Q(title='سینگل'))
@@ -5349,9 +5419,31 @@ class SearchView(APIView):
         if moods: qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
         return qs.distinct().order_by('-created_at')
     def _search_users(self,q,moods,request):
-        qs=User.objects.filter(is_active=True,is_banned=False,roles__contains=User.ROLE_AUDIENCE).exclude(Q(unique_id__isnull=True)|Q(unique_id=''))
-        if request.user.is_authenticated: qs=qs.exclude(pk=request.user.pk)
-        if q: qs=qs.filter(Q(unique_id__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
+        qs=User.objects.filter(
+            is_active=True,
+            is_banned=False,
+            roles__contains=User.ROLE_AUDIENCE,
+        ).exclude(Q(unique_id__isnull=True)|Q(unique_id=''))
+        if request.user.is_authenticated:
+            qs=qs.exclude(pk=request.user.pk)
+        if q:
+            normalized = _normalize_directory_search(q)
+            qs = qs.annotate(
+                directory_search=_normalized_directory_expression(
+                    'first_name', 'last_name', 'unique_id'
+                ),
+                search_rank=Case(
+                    When(unique_id__iexact=q, then=Value(0)),
+                    When(first_name__iexact=q, then=Value(1)),
+                    When(last_name__iexact=q, then=Value(1)),
+                    default=Value(2),
+                    output_field=IntegerField(),
+                ),
+            ).filter(
+                Q(unique_id__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q)|
+                (Q(directory_search__icontains=normalized) if normalized else Q())
+            )
+            return qs.order_by('search_rank', '-date_joined')
         return qs.order_by('-date_joined')
 
     def _hydrate(self,refs,request):
