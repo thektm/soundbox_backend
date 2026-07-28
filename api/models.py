@@ -241,15 +241,20 @@ class RefreshToken(models.Model):
 class Artist(models.Model):
     """Artist model - can be linked to a user account or standalone"""
     name = models.CharField(max_length=255, unique=True)
+    name_en = models.CharField(max_length=255, blank=True, default="", help_text="English artist name")
     artistic_name = models.CharField(max_length=255, blank=True, help_text="Artistic/stage name")
+    artistic_name_en = models.CharField(max_length=255, blank=True, default="", help_text="English artistic/stage name")
     unique_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
     email = models.EmailField(blank=True, null=True)
     city = models.CharField(max_length=200, blank=True)
+    city_en = models.CharField(max_length=200, blank=True, default="")
     date_of_birth = models.DateField(null=True, blank=True)
     address = models.TextField(blank=True)
+    address_en = models.TextField(blank=True, default="")
     id_number = models.CharField(max_length=100, blank=True)
     user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='artist_profile')
     bio = models.TextField(blank=True)
+    bio_en = models.TextField(blank=True, default="")
     profile_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for profile image")
     banner_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for banner image")
     verified = models.BooleanField(default=False)
@@ -281,6 +286,7 @@ class Artist(models.Model):
 class SocialPlatform(models.Model):
     """Represents a supported social platform (Instagram, Twitter, YouTube, Telegram)."""
     name = models.CharField(max_length=100, unique=True)
+    name_en = models.CharField(max_length=100, blank=True, default="")
     slug = models.SlugField(max_length=100, unique=True)
     base_url = models.URLField(max_length=255, blank=True, help_text="Canonical base URL for the platform, e.g. https://instagram.com/")
 
@@ -420,10 +426,12 @@ class ArtistMonthlyListener(models.Model):
 class Album(models.Model):
     """Album model for grouping songs"""
     title = models.CharField(max_length=400)
+    title_en = models.CharField(max_length=400, blank=True, default="")
     artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name="albums")
     cover_image = models.URLField(max_length=500, blank=True, help_text="R2 CDN URL for album cover")
     release_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
+    description_en = models.TextField(blank=True, default="")
     # Classification: albums can also be tagged with genres, sub-genres and moods
     genres = models.ManyToManyField('Genre', blank=True, related_name="albums")
     sub_genres = models.ManyToManyField('SubGenre', blank=True, related_name="albums")
@@ -453,6 +461,7 @@ class AlbumLike(models.Model):
 class Genre(models.Model):
     """Music genre classification"""
     name = models.CharField(max_length=100, unique=True)
+    name_en = models.CharField(max_length=100, blank=True, default="")
     slug = models.SlugField(max_length=100, unique=True)
     
     class Meta:
@@ -465,6 +474,7 @@ class Genre(models.Model):
 class Mood(models.Model):
     """Mood/vibe classification for songs"""
     name = models.CharField(max_length=100, unique=True)
+    name_en = models.CharField(max_length=100, blank=True, default="")
     slug = models.SlugField(max_length=100, unique=True)
     
     class Meta:
@@ -477,6 +487,7 @@ class Mood(models.Model):
 class Tag(models.Model):
     """Generic tags for songs"""
     name = models.CharField(max_length=100, unique=True)
+    name_en = models.CharField(max_length=100, blank=True, default="")
     slug = models.SlugField(max_length=100, unique=True)
     
     class Meta:
@@ -489,6 +500,7 @@ class Tag(models.Model):
 class SubGenre(models.Model):
     """Sub-genre classification for songs"""
     name = models.CharField(max_length=100, unique=True)
+    name_en = models.CharField(max_length=100, blank=True, default="")
     slug = models.SlugField(max_length=100, unique=True)
     parent_genre = models.ForeignKey(Genre, on_delete=models.CASCADE, related_name='sub_genres', null=True, blank=True)
     
@@ -519,6 +531,7 @@ class Song(models.Model):
     
     # Basic info
     title = models.CharField(max_length=400)
+    title_en = models.CharField(max_length=400, blank=True, default="")
     artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name="songs")
     featured_artists = models.ManyToManyField(Artist, blank=True, related_name="featured_songs", help_text="Artists featured on this song")
     album = models.ForeignKey(Album, on_delete=models.SET_NULL, null=True, blank=True, related_name="songs")
@@ -554,7 +567,9 @@ class Song(models.Model):
 
     # Description & lyrics
     description = models.TextField(blank=True)
+    description_en = models.TextField(blank=True, default="")
     lyrics = models.TextField(blank=True)
+    lyrics_en = models.TextField(blank=True, default="")
 
     # Audio features (0-100 or boolean)
     tempo = models.PositiveSmallIntegerField(null=True, blank=True, help_text="BPM")
@@ -568,10 +583,15 @@ class Song(models.Model):
 
     # Legal / credits
     label = models.CharField(max_length=255, blank=True)
+    label_en = models.CharField(max_length=255, blank=True, default="")
     producers = models.JSONField(default=list, blank=True, help_text="List of producer names")
+    producers_en = models.JSONField(default=list, blank=True, help_text="English producer names")
     composers = models.JSONField(default=list, blank=True, help_text="List of composer names")
+    composers_en = models.JSONField(default=list, blank=True, help_text="English composer names")
     lyricists = models.JSONField(default=list, blank=True, help_text="List of lyricist names")
+    lyricists_en = models.JSONField(default=list, blank=True, help_text="English lyricist names")
     credits = models.TextField(blank=True)
+    credits_en = models.TextField(blank=True, default="")
 
     # Ownership + audit
     uploader = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="uploaded_songs", help_text="User who uploaded the song")
@@ -658,7 +678,9 @@ class Playlist(models.Model):
     ]
 
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True)
+    description_en = models.TextField(blank=True, default="")
     cover_image = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for playlist cover")
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.CharField(max_length=30, choices=CREATED_BY_CHOICES, default=CREATED_BY_AUDIENCE,
@@ -809,7 +831,9 @@ class RecommendedPlaylist(models.Model):
 
     # Playlist metadata
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True)
+    description_en = models.TextField(blank=True, default="")
     playlist_type = models.CharField(max_length=50, choices=TYPE_CHOICES, default=PLAYLIST_TYPE_SIMILAR_TASTE)
     
     # Songs in the playlist (ordered)
@@ -860,6 +884,7 @@ class EventPlaylist(models.Model):
     ]
     
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     time_of_day = models.CharField(max_length=20, choices=TIME_CHOICES)
     cover_image = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for event playlist cover")
     playlists = models.ManyToManyField(Playlist, related_name='event_playlists', blank=True)
@@ -897,6 +922,7 @@ class SearchSection(models.Model):
 
     type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     icon_logo = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for icon logo")
     item_size = models.CharField(max_length=20, choices=SIZE_CHOICES, default=SIZE_MEDIUM)
     
@@ -984,7 +1010,9 @@ class DownloadHistory(models.Model):
 
 class Rules(models.Model):
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     content = models.TextField()
+    content_en = models.TextField(blank=True, default="")
     version = models.CharField(max_length=20, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -1103,6 +1131,7 @@ class PaymentTransaction(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     payment_method = models.CharField(max_length=100, blank=True, null=True)
     description = models.TextField(blank=True)
+    description_en = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1115,6 +1144,7 @@ class PaymentTransaction(models.Model):
 class BannerAd(models.Model):
     """Banner advertisements for the app."""
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     image = models.URLField(max_length=500, help_text="R2 CDN URL for banner image")
     navigate_link = models.URLField(max_length=500, blank=True, null=True)
     # Number of times this banner has been served via the public banner endpoint
@@ -1150,6 +1180,7 @@ class BannerAdServeCounter(models.Model):
 class AudioAd(models.Model):
     """Audio advertisements played during streams."""
     title = models.CharField(max_length=255)
+    title_en = models.CharField(max_length=255, blank=True, default="")
     audio_url = models.URLField(max_length=500, help_text="R2 CDN URL for audio file")
     image_cover = models.URLField(max_length=500, blank=True, null=True, help_text="R2 CDN URL for ad cover image")
     navigate_link = models.URLField(max_length=500, blank=True, null=True)
@@ -1171,6 +1202,7 @@ class Notification(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
     artist = models.ForeignKey('Artist', on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
     text = models.TextField()
+    text_en = models.TextField(blank=True, default="")
     has_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 

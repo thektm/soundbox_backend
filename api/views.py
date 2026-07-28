@@ -13,6 +13,7 @@ from .models import (
     InitialCheck, UserImageProfile
 )
 from .models import BannerAd, BannerAdServeCounter
+from .localization import get_request_language
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
     RegisterSerializer, 
@@ -938,11 +939,16 @@ class UserHistorySearchView(UserHistoryView):
         if date_to: queryset = queryset.filter(updated_at__date__lte=date_to)
         if query:
             queryset = queryset.filter(
-                Q(song__title__icontains=query) | Q(song__artist__name__icontains=query) |
-                Q(album__title__icontains=query) | Q(album__artist__name__icontains=query) |
-                Q(playlist__title__icontains=query) | Q(playlist__songs__title__icontains=query) |
-                Q(playlist__songs__artist__name__icontains=query) | Q(artist__name__icontains=query) |
-                Q(artist__artistic_name__icontains=query) | Q(target_user__unique_id__icontains=query) |
+                Q(song__title__icontains=query) | Q(song__title_en__icontains=query) |
+                Q(song__artist__name__icontains=query) | Q(song__artist__name_en__icontains=query) |
+                Q(album__title__icontains=query) | Q(album__title_en__icontains=query) |
+                Q(album__artist__name__icontains=query) | Q(album__artist__name_en__icontains=query) |
+                Q(playlist__title__icontains=query) | Q(playlist__title_en__icontains=query) |
+                Q(playlist__songs__title__icontains=query) | Q(playlist__songs__title_en__icontains=query) |
+                Q(playlist__songs__artist__name__icontains=query) | Q(playlist__songs__artist__name_en__icontains=query) |
+                Q(artist__name__icontains=query) | Q(artist__name_en__icontains=query) |
+                Q(artist__artistic_name__icontains=query) | Q(artist__artistic_name_en__icontains=query) |
+                Q(target_user__unique_id__icontains=query) |
                 Q(target_user__first_name__icontains=query) | Q(target_user__last_name__icontains=query)
             ).distinct()
         return queryset
@@ -1147,6 +1153,7 @@ class SongUploadView(APIView):
             # featured_artists is handled via M2M later
             song_data = {
                 'title': title,
+                'title_en': data.get('title_en', ''),
                 'artist': artist,
                 'audio_file': audio_url,
                 'converted_audio_url': converted_audio_url,
@@ -1158,7 +1165,9 @@ class SongUploadView(APIView):
                 'release_date': data.get('release_date'),
                 'language': data.get('language', 'fa'),
                 'description': data.get('description', ''),
+                'description_en': data.get('description_en', ''),
                 'lyrics': data.get('lyrics', ''),
+                'lyrics_en': data.get('lyrics_en', ''),
                 'tempo': data.get('tempo'),
                 'energy': data.get('energy'),
                 'danceability': data.get('danceability'),
@@ -1168,10 +1177,15 @@ class SongUploadView(APIView):
                 'speechiness': data.get('speechiness'),
                 'live_performed': data.get('live_performed', False),
                 'label': data.get('label', ''),
+                'label_en': data.get('label_en', ''),
                 'producers': data.get('producers', []),
+                'producers_en': data.get('producers_en', []),
                 'composers': data.get('composers', []),
+                'composers_en': data.get('composers_en', []),
                 'lyricists': data.get('lyricists', []),
+                'lyricists_en': data.get('lyricists_en', []),
                 'credits': data.get('credits', ''),
+                'credits_en': data.get('credits_en', ''),
             }
             print(f"DEBUG: SongUploadView: Final song_data: {song_data}")
             
@@ -1195,7 +1209,7 @@ class SongUploadView(APIView):
                 song.tags.set(Tag.objects.filter(id__in=data['tag_ids']))
             
             return Response(
-                SongSerializer(song).data,
+                SongSerializer(song, context={'request': request}).data,
                 status=status.HTTP_201_CREATED
             )
             
@@ -1341,12 +1355,12 @@ class LikedSongsSearchView(APIView):
             clean_token = token.replace(' ', '').replace('\u200c', '')
             
             token_q = (
-                Q(song__title__icontains=token) |
-                Q(song__artist__name__icontains=token) |
-                Q(song__album__title__icontains=token) |
-                Q(song__tags__name__icontains=token) |
-                Q(song__lyrics__icontains=token) |
-                Q(song__description__icontains=token)
+                Q(song__title__icontains=token) | Q(song__title_en__icontains=token) |
+                Q(song__artist__name__icontains=token) | Q(song__artist__name_en__icontains=token) |
+                Q(song__album__title__icontains=token) | Q(song__album__title_en__icontains=token) |
+                Q(song__tags__name__icontains=token) | Q(song__tags__name_en__icontains=token) |
+                Q(song__lyrics__icontains=token) | Q(song__lyrics_en__icontains=token) |
+                Q(song__description__icontains=token) | Q(song__description_en__icontains=token)
             )
             
             # Added more comprehensive normalized checks
@@ -1406,12 +1420,12 @@ class LikedAlbumsSearchView(APIView):
             clean_token = token.replace(' ', '').replace('\u200c', '')
             
             token_q = (
-                Q(album__title__icontains=token) |
-                Q(album__artist__name__icontains=token) |
-                Q(album__description__icontains=token) |
-                Q(album__genres__name__icontains=token) |
-                Q(album__sub_genres__name__icontains=token) |
-                Q(album__moods__name__icontains=token) |
+                Q(album__title__icontains=token) | Q(album__title_en__icontains=token) |
+                Q(album__artist__name__icontains=token) | Q(album__artist__name_en__icontains=token) |
+                Q(album__description__icontains=token) | Q(album__description_en__icontains=token) |
+                Q(album__genres__name__icontains=token) | Q(album__genres__name_en__icontains=token) |
+                Q(album__sub_genres__name__icontains=token) | Q(album__sub_genres__name_en__icontains=token) |
+                Q(album__moods__name__icontains=token) | Q(album__moods__name_en__icontains=token) |
                 Q(at_clean__icontains=clean_token) |
                 Q(aa_clean__icontains=clean_token)
             )
@@ -1451,7 +1465,7 @@ class LikedPlaylistsSearchView(APIView):
         for token in parts:
             token = token.strip()
             if not token: continue
-            q = Q(title__icontains=token) | Q(description__icontains=token) | Q(songs__title__icontains=token) | Q(songs__artist__name__icontains=token)
+            q = (Q(title__icontains=token) | Q(title_en__icontains=token) | Q(description__icontains=token) | Q(description_en__icontains=token) | Q(songs__title__icontains=token) | Q(songs__title_en__icontains=token) | Q(songs__artist__name__icontains=token) | Q(songs__artist__name_en__icontains=token))
             p_qs = p_qs.filter(q)
         
         # 2. User Playlists
@@ -1459,7 +1473,7 @@ class LikedPlaylistsSearchView(APIView):
         for token in parts:
             token = token.strip()
             if not token: continue
-            q = Q(title__icontains=token) | Q(songs__title__icontains=token) | Q(songs__artist__name__icontains=token)
+            q = Q(title__icontains=token) | Q(songs__title__icontains=token) | Q(songs__title_en__icontains=token) | Q(songs__artist__name__icontains=token) | Q(songs__artist__name_en__icontains=token)
             up_qs = up_qs.filter(q)
             
         # 3. Recommended Playlists
@@ -1467,7 +1481,7 @@ class LikedPlaylistsSearchView(APIView):
         for token in parts:
             token = token.strip()
             if not token: continue
-            q = Q(title__icontains=token) | Q(description__icontains=token) | Q(songs__title__icontains=token) | Q(songs__artist__name__icontains=token)
+            q = (Q(title__icontains=token) | Q(title_en__icontains=token) | Q(description__icontains=token) | Q(description_en__icontains=token) | Q(songs__title__icontains=token) | Q(songs__title_en__icontains=token) | Q(songs__artist__name__icontains=token) | Q(songs__artist__name_en__icontains=token))
             rp_qs = rp_qs.filter(q)
 
         # Collect and serialize
@@ -3583,7 +3597,7 @@ class SedaBoxProfileView(APIView):
             except (TypeError, ValueError):
                 page_size = 3
             key = stable_cache_key(
-                'sedabox-profile-preview', not request.user.is_authenticated, page_size,
+                'sedabox-profile-preview', get_request_language(request), not request.user.is_authenticated, page_size,
                 cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v3',
             )
             cached = cache_get(key) if not request.user.is_authenticated else None
@@ -3843,13 +3857,15 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
     used = set()
     recipes = []
 
-    def add(code, title, description, playlist_type, ids):
+    def add(code, title, title_en, description, description_en, playlist_type, ids):
         if len(ids) < 3:
             return
         recipes.append({
             'code': code,
             'title': title,
+            'title_en': title_en,
             'description': description,
+            'description_en': description_en,
             'playlist_type': playlist_type,
             'song_ids': ids,
         })
@@ -3866,17 +3882,20 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
             f'trending:{bucket}', used,
         )
     add(
-        'now', 'داغِ همین حالا', 'پرشنونده‌ترین انتخاب‌های ۲۴ ساعت گذشته',
+        'now', 'داغِ همین حالا', 'Trending Right Now',
+        'پرشنونده‌ترین انتخاب‌های ۲۴ ساعت گذشته', 'Most-played picks from the last 24 hours',
         RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE, trend_ids,
     )
 
     add(
-        'fresh', 'تازه رسیده‌ها', 'ریلیزهای تازه با چیدمانی که مرتب نو می‌شود',
+        'fresh', 'تازه رسیده‌ها', 'Fresh Arrivals',
+        'ریلیزهای تازه با چیدمانی که مرتب نو می‌شود', 'Fresh releases in a regularly refreshed mix',
         RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
         _pick_ids(base.order_by('-release_date', '-created_at', '-plays'), 18, f'fresh:{bucket}', used),
     )
     add(
-        'popular', 'محبوب‌های صداباکس', 'ترک‌های امتحان‌پس‌داده برای یک پخش بی‌وقفه',
+        'popular', 'محبوب‌های صداباکس', 'SedaBox Favorites',
+        'ترک‌های امتحان‌پس‌داده برای یک پخش بی‌وقفه', 'Proven favorites for uninterrupted listening',
         RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE,
         _pick_ids(base.order_by('-plays', '-release_date'), 18, f'popular:{bucket}', used),
     )
@@ -3888,7 +3907,7 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
         mood_filter &= Q(songs__preview_audio_url__isnull=False) & ~Q(songs__preview_audio_url='')
     genres = list(Genre.objects.filter(genre_filter).annotate(
         song_total=Count('songs', distinct=True)
-    ).filter(song_total__gte=3).order_by('-song_total', 'name').values('id', 'name')[:8])
+    ).filter(song_total__gte=3).order_by('-song_total', 'name').values('id', 'name', 'name_en', 'slug')[:8])
     random.Random(f'genres:{bucket}').shuffle(genres)
     for index, genre in enumerate(genres[:2], 1):
         ids = _pick_ids(
@@ -3897,19 +3916,23 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
         )
         add(
             f'genre{index}', f'موج {genre["name"]}',
+            f'{genre.get("name_en") or genre.get("slug", "").replace("-", " " ).title() or genre["name"]} Wave',
             f'یک میکس تازه از فضای {genre["name"]}',
+            f'A fresh mix inspired by {genre.get("name_en") or genre.get("slug", "").replace("-", " " ).title() or genre["name"]}',
             RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE, ids,
         )
 
     moods = list(Mood.objects.filter(mood_filter).annotate(
         song_total=Count('songs', distinct=True)
-    ).filter(song_total__gte=3).order_by('-song_total', 'name').values('id', 'name')[:8])
+    ).filter(song_total__gte=3).order_by('-song_total', 'name').values('id', 'name', 'name_en', 'slug')[:8])
     random.Random(f'moods:{bucket}').shuffle(moods)
     if moods:
         mood = moods[0]
         add(
             'mood', f'{mood["name"]} برای این لحظه',
+            f'{mood.get("name_en") or mood.get("slug", "").replace("-", " " ).title() or mood["name"]} for This Moment',
             'یک جریان کوتاه و منسجم برای حال‌وهوای الآن',
+            'A short, cohesive flow for your current mood',
             RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
             _pick_ids(
                 base.filter(moods__id=mood['id']).distinct().order_by('-plays', '-release_date'),
@@ -3918,7 +3941,9 @@ def _dynamic_playlist_recipes(require_preview=False, bucket=None):
         )
 
     add(
-        'discover', 'کشف‌های تازه', 'کمتر تکراری، تازه‌تر و مناسب پیدا کردن صدای بعدی',
+        'discover', 'کشف‌های تازه', 'Fresh Discoveries',
+        'کمتر تکراری، تازه‌تر و مناسب پیدا کردن صدای بعدی',
+        'Less repetition, more freshness, and a new sound to discover',
         RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE,
         _pick_ids(base.order_by('-created_at', 'plays'), 18, f'discover:{bucket}', used),
     )
@@ -3947,7 +3972,9 @@ def _dynamic_playlist_items(user=None, bucket=None):
             id=-(bucket * 100 + index),
             unique_id=f'freshmix_{bucket}_{recipe["code"]}',
             title=recipe['title'],
+            title_en=recipe['title_en'],
             description=recipe['description'],
+            description_en=recipe['description_en'],
             playlist_type=recipe['playlist_type'],
             song_order=[song.id for song in songs],
             relevance_score=110 - index,
@@ -4146,7 +4173,7 @@ class HomeSummaryView(APIView):
             'rec': 'sr_page', 'latest': 'lr_page', 'artists': 'pa_page', 'albums': 'pal_page',
             'playlists': 'pr_page', 'discoveries': 'ds_page',
         }.items()}
-        cache_key = stable_cache_key('home-summary', audience, version, pages, 'v10')
+        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, 'v11')
         cached, claimed = cache_get_or_claim(cache_key) if not user.is_authenticated else (None, False)
         if cached is not None:
             return Response(cached)
@@ -4192,7 +4219,13 @@ class HomeSummaryView(APIView):
             'songs_recommendations': {
                 'type': rec_type, 'count': len(rec_page),
                 'next': _next_url(request, 'sr_page', pages['rec'], rec_next),
-                'message': 'پرشنونده‌ترین‌های ۲۴ ساعت گذشته؛ با جایگزین محبوب‌ها اگر داده تازه کم باشد' if not user.is_authenticated else '',
+                'message': (
+                    'Most-played tracks from the last 24 hours, supplemented with popular picks'
+                    if get_request_language(request) == 'en' else
+                    'پرشنونده‌ترین‌های ۲۴ ساعت گذشته؛ با جایگزین محبوب‌ها اگر داده تازه کم باشد'
+                ) if not user.is_authenticated else '',
+                'message_fa': 'پرشنونده‌ترین‌های ۲۴ ساعت گذشته؛ با جایگزین محبوب‌ها اگر داده تازه کم باشد' if not user.is_authenticated else '',
+                'message_en': 'Most-played tracks from the last 24 hours, supplemented with popular picks' if not user.is_authenticated else '',
                 'songs': SongStreamSerializer(rec_page, many=True, context={'request': request}).data,
             },
             'latest_releases': {
@@ -4230,7 +4263,12 @@ class UserRecommendationView(APIView):
         recommendation_type, songs = _song_recommendations(request, size)
         return Response({
             'type': recommendation_type,
-            'message': 'منتخب‌های ۲۴ ساعت گذشته' if not request.user.is_authenticated else '',
+            'message': (
+                'Top picks from the last 24 hours'
+                if get_request_language(request) == 'en' else 'منتخب‌های ۲۴ ساعت گذشته'
+            ) if not request.user.is_authenticated else '',
+            'message_fa': 'منتخب‌های ۲۴ ساعت گذشته' if not request.user.is_authenticated else '',
+            'message_en': 'Top picks from the last 24 hours' if not request.user.is_authenticated else '',
             'songs': SongStreamSerializer(songs, many=True, context={'request': request}).data,
         })
 
@@ -4437,11 +4475,18 @@ class PlaylistRecommendationsView(generics.ListAPIView):
             songs = list(_home_song_queryset().filter(**filter_key).order_by('-plays', '-release_date')[:20])
             if not songs:
                 continue
-            label = Genre.objects.filter(id=value).values_list('name', flat=True).first() if kind == 'genre' else Mood.objects.filter(id=value).values_list('name', flat=True).first()
+            label_row = (
+                Genre.objects.filter(id=value).values('name', 'name_en', 'slug').first()
+                if kind == 'genre'
+                else Mood.objects.filter(id=value).values('name', 'name_en', 'slug').first()
+            ) or {}
+            label = label_row.get('name') or 'برای شما'
+            label_en = label_row.get('name_en') or (label_row.get('slug') or '').replace('-', ' ').title() or 'For You'
             playlist, _ = RecommendedPlaylist.objects.update_or_create(
                 unique_id=f'smart_rec_{user.id}_{index}', defaults={
-                    'user': user, 'title': label or 'برای شما',
+                    'user': user, 'title': label, 'title_en': label_en,
                     'description': 'پیشنهاد تازه براساس سلیقه و شنیده‌های شما',
+                    'description_en': 'A fresh recommendation based on your taste and listening history',
                     'playlist_type': RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE if kind == 'genre' else RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
                     'song_order': [song.id for song in songs], 'relevance_score': 100 - index,
                     'match_percentage': 95 - index, 'expires_at': timezone.now() + timedelta(days=2),
@@ -4564,7 +4609,9 @@ class PlaylistRecommendationLikeView(APIView):
                     user=user,
                     playlist_ref=playlist.playlist_ref,
                     title=playlist.title,
+                    title_en=playlist.title_en,
                     description=playlist.description,
+                    description_en=playlist.description_en,
                     playlist_type=playlist.playlist_type,
                     song_order=playlist.song_order,
                     relevance_score=playlist.relevance_score,
@@ -4673,7 +4720,7 @@ class SearchView(APIView):
         moods = sorted(request.query_params.getlist('moods')); page, page_size = _page_values(request, 20, 100)
         if search_type and search_type not in self.TYPES:
             return Response({'error': 'Invalid type. Must be song, artist, album, playlist, or user.'}, status=400)
-        key = stable_cache_key('search-ids-v9', query.casefold(), search_type or 'mixed', moods, page, page_size, cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY))
+        key = stable_cache_key('search-ids-v10', query.casefold(), search_type or 'mixed', moods, page, page_size, cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY))
         cached, _ = cache_get_or_claim(key)
         if cached is None:
             if search_type:
@@ -4709,23 +4756,27 @@ class SearchView(APIView):
             clean=q.replace(' ','').replace('\u200c','')
             qs=qs.annotate(t_clean=Replace(Replace(Cast('title',TextField()),Value(' '),Value('')),Value('\u200c'),Value('')),
                            a_clean=Replace(Replace(Cast('artist__name',TextField()),Value(' '),Value('')),Value('\u200c'),Value('')))
-            qs=qs.filter(Q(t_clean__icontains=clean)|Q(a_clean__icontains=clean)|Q(title__icontains=q)|Q(artist__name__icontains=q)|
-                         Q(album__title__icontains=q)|Q(description__icontains=q)|Q(lyrics__icontains=q)|Q(producers__icontains=q)|
-                         Q(composers__icontains=q)|Q(lyricists__icontains=q)|Q(featured_artists__name__icontains=q)|Q(featured_artists__artistic_name__icontains=q))
+            qs=qs.filter(Q(t_clean__icontains=clean)|Q(a_clean__icontains=clean)|Q(title__icontains=q)|Q(title_en__icontains=q)|
+                         Q(artist__name__icontains=q)|Q(artist__name_en__icontains=q)|Q(album__title__icontains=q)|Q(album__title_en__icontains=q)|
+                         Q(description__icontains=q)|Q(description_en__icontains=q)|Q(lyrics__icontains=q)|Q(lyrics_en__icontains=q)|
+                         Q(label__icontains=q)|Q(label_en__icontains=q)|Q(producers__icontains=q)|Q(producers_en__icontains=q)|
+                         Q(composers__icontains=q)|Q(composers_en__icontains=q)|Q(lyricists__icontains=q)|Q(lyricists_en__icontains=q)|
+                         Q(featured_artists__name__icontains=q)|Q(featured_artists__name_en__icontains=q)|
+                         Q(featured_artists__artistic_name__icontains=q)|Q(featured_artists__artistic_name_en__icontains=q))
         if moods:
             qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
         return qs.distinct().order_by('-plays','-created_at')
     def _search_artists(self,q,moods,request):
         qs=Artist.objects.all()
-        if q: qs=qs.filter(Q(name__icontains=q)|Q(artistic_name__icontains=q)|Q(bio__icontains=q)|Q(unique_id__icontains=q))
+        if q: qs=qs.filter(Q(name__icontains=q)|Q(name_en__icontains=q)|Q(artistic_name__icontains=q)|Q(artistic_name_en__icontains=q)|Q(bio__icontains=q)|Q(bio_en__icontains=q)|Q(unique_id__icontains=q))
         return qs.order_by('-verified','-created_at')
     def _search_albums(self,q,moods,request):
         qs=Album.objects.exclude(Q(title__iexact='single')|Q(title='سینگل'))
-        if q: qs=qs.filter(Q(title__icontains=q)|Q(description__icontains=q)|Q(artist__name__icontains=q))
+        if q: qs=qs.filter(Q(title__icontains=q)|Q(title_en__icontains=q)|Q(description__icontains=q)|Q(description_en__icontains=q)|Q(artist__name__icontains=q)|Q(artist__name_en__icontains=q))
         return qs.order_by('-release_date','-created_at')
     def _search_playlists(self,q,moods,request):
         qs=Playlist.objects.all()
-        if q: qs=qs.filter(Q(title__icontains=q)|Q(description__icontains=q))
+        if q: qs=qs.filter(Q(title__icontains=q)|Q(title_en__icontains=q)|Q(description__icontains=q)|Q(description_en__icontains=q))
         if moods: qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
         return qs.distinct().order_by('-created_at')
     def _search_users(self,q,moods,request):

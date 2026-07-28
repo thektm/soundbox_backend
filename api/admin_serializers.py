@@ -53,8 +53,8 @@ class AdminArtistSerializer(serializers.ModelSerializer):
     class Meta:
         model = Artist
         fields = [
-            'id', 'name', 'artistic_name', 'email', 'city', 'date_of_birth',
-            'address', 'id_number', 'user', 'user_phone', 'bio', 'profile_image',
+            'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'email', 'city', 'city_en', 'date_of_birth',
+            'address', 'address_en', 'id_number', 'user', 'user_phone', 'bio', 'bio_en', 'profile_image',
             'banner_image', 'verified', 'created_at', 'has_user'
         ]
         read_only_fields = ['id', 'created_at']
@@ -96,19 +96,22 @@ class AdminSongSerializer(serializers.ModelSerializer):
 
     # JSON fields as ListFields for better form-data handling
     producers = serializers.ListField(child=serializers.CharField(), required=False)
+    producers_en = serializers.ListField(child=serializers.CharField(), required=False)
     composers = serializers.ListField(child=serializers.CharField(), required=False)
+    composers_en = serializers.ListField(child=serializers.CharField(), required=False)
     lyricists = serializers.ListField(child=serializers.CharField(), required=False)
+    lyricists_en = serializers.ListField(child=serializers.CharField(), required=False)
 
     class Meta:
         model = Song
         fields = [
-            'id', 'title', 'artist', 'artist_name', 'featured_artists', 'featured_artist_ids', 'album', 'album_title',
+            'id', 'title', 'title_en', 'artist', 'artist_name', 'featured_artists', 'featured_artist_ids', 'album', 'album_title',
             'is_single', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
             'duration_seconds', 'plays', 'status', 'release_date', 'language',
-            'genres', 'sub_genres', 'moods', 'tags', 'description', 'lyrics',
+            'genres', 'sub_genres', 'moods', 'tags', 'description', 'description_en', 'lyrics', 'lyrics_en',
             'tempo', 'energy', 'danceability', 'valence', 'acousticness',
-            'instrumentalness', 'live_performed', 'speechiness', 'label',
-            'producers', 'composers', 'lyricists', 'credits', 'uploader',
+            'instrumentalness', 'live_performed', 'speechiness', 'label', 'label_en',
+            'producers', 'producers_en', 'composers', 'composers_en', 'lyricists', 'lyricists_en', 'credits', 'credits_en', 'uploader',
             'created_at', 'updated_at', 'audio_file_upload', 'cover_image_upload'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'plays']
@@ -142,8 +145,8 @@ class AdminAlbumSerializer(serializers.ModelSerializer):
     class Meta:
         model = Album
         fields = [
-            'id', 'title', 'artist', 'artist_name', 'cover_image', 'cover_image_upload',
-            'release_date', 'description', 'genres', 'sub_genres', 'moods',
+            'id', 'title', 'title_en', 'artist', 'artist_name', 'cover_image', 'cover_image_upload',
+            'release_date', 'description', 'description_en', 'genres', 'sub_genres', 'moods',
             'created_at', 'songs'
         ]
         read_only_fields = ['id', 'cover_image', 'created_at']
@@ -166,7 +169,7 @@ class AdminBannerAdSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BannerAd
-        fields = ['id', 'title', 'image', 'image_upload', 'navigate_link', 'is_active', 'created_at', 'updated_at']
+        fields = ['id', 'title', 'title_en', 'image', 'image_upload', 'navigate_link', 'is_active', 'created_at', 'updated_at']
         read_only_fields = ['id', 'image', 'created_at', 'updated_at']
 
 
@@ -179,7 +182,7 @@ class AdminAudioAdSerializer(serializers.ModelSerializer):
     class Meta:
         model = AudioAd
         fields = [
-            'id', 'title', 'audio_url', 'audio_upload', 'image_cover', 'image_cover_upload',
+            'id', 'title', 'title_en', 'audio_url', 'audio_upload', 'image_cover', 'image_cover_upload',
             'navigate_link', 'duration', 'skippable_after', 'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -190,7 +193,7 @@ class AdminPaymentTransactionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PaymentTransaction
-        fields = ['id', 'user', 'user_phone', 'transaction_id', 'amount', 'status', 'payment_method', 'description', 'created_at']
+        fields = ['id', 'user', 'user_phone', 'transaction_id', 'amount', 'status', 'payment_method', 'description', 'description_en', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
@@ -208,7 +211,7 @@ class AdminPlaylistSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'cover_image_upload', 'created_by', 'created_at']
+        fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'cover_image_upload', 'created_by', 'created_at']
         read_only_fields = ['id', 'cover_image', 'created_at']
 
 
@@ -218,7 +221,7 @@ class AdminSearchSectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = SearchSection
         fields = [
-            'id', 'type', 'title', 'icon_logo', 'icon_logo_upload', 'item_size',
+            'id', 'type', 'title', 'title_en', 'icon_logo', 'icon_logo_upload', 'item_size',
             'songs', 'albums', 'playlists', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'icon_logo', 'created_at', 'updated_at']
@@ -229,6 +232,6 @@ class AdminEventPlaylistSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'cover_image', 'cover_image_upload', 'playlists', 'created_at', 'updated_at']
+        fields = ['id', 'title', 'title_en', 'time_of_day', 'cover_image', 'cover_image_upload', 'playlists', 'created_at', 'updated_at']
         read_only_fields = ['id', 'cover_image', 'created_at', 'updated_at']
 

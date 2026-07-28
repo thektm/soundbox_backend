@@ -16,6 +16,8 @@ from django.conf import settings
 from django.db import IntegrityError
 from django.db.models import Q
 
+from .localization import get_request_language, localized_value, translate_generated_text
+
 from .performance import (
     CATALOG_VERSION_KEY, cache_get_or_claim, cache_set, cache_version,
     hydrate_album_metrics, hydrate_song_metrics, relation_ids, stable_cache_key,
@@ -60,7 +62,80 @@ def _metric(obj, attr, fallback):
     return fallback() if value is None else value
 
 
-class SongSummarySerializer(serializers.ModelSerializer):
+
+
+def _relative_day_label(days, request=None):
+    language = get_request_language(request)
+    if days == 0:
+        return "Today" if language == "en" else "امروز"
+    return f"{days} days ago" if language == "en" else f"{days} روز پیش"
+
+def _resolve_source(instance, source):
+    current = instance
+    for part in source.split('.'):
+        if current is None:
+            return None
+        current = getattr(current, part, None)
+        if callable(current):
+            current = current()
+    return current
+
+
+class LocalizedModelSerializer(serializers.ModelSerializer):
+    """Localize translatable fields while preserving explicit fa/en values.
+
+    Existing Farsi columns remain canonical. A request for English changes the
+    normal field value to its ``*_en`` sibling and every translated field also
+    exposes ``*_fa`` and ``*_en`` for clients that need both versions.
+    """
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        language = get_request_language(request)
+        model = getattr(getattr(self, 'Meta', None), 'model', None)
+
+        if model is not None:
+            model_fields = {field.name for field in model._meta.get_fields()}
+            for english_field in sorted(name for name in model_fields if name.endswith('_en')):
+                base_field = english_field[:-3]
+                if base_field not in model_fields or base_field not in data:
+                    continue
+                fa_value = getattr(instance, base_field, None)
+                en_value = getattr(instance, english_field, None)
+                if en_value in (None, '', [], {}):
+                    en_value = translate_generated_text(fa_value) if isinstance(fa_value, str) else fa_value
+                data[f'{base_field}_fa'] = fa_value
+                data[f'{base_field}_en'] = en_value
+                data[base_field] = en_value if language == 'en' and en_value not in (None, '', [], {}) else fa_value
+
+        # Localize declared fields sourced from related objects, such as
+        # ``artist_name = CharField(source='artist.name')``.
+        for output_name, serializer_field in self.fields.items():
+            source = getattr(serializer_field, 'source', None)
+            if not source or source == '*' or output_name not in data:
+                continue
+            source_parts = source.split('.')
+            if len(source_parts) == 1:
+                parent = instance
+                leaf = source_parts[0]
+            else:
+                parent = _resolve_source(instance, '.'.join(source_parts[:-1]))
+                leaf = source_parts[-1]
+            if parent is None or not hasattr(parent, f'{leaf}_en'):
+                continue
+            fa_value = getattr(parent, leaf, None)
+            en_value = getattr(parent, f'{leaf}_en', None)
+            if en_value in (None, '', [], {}):
+                en_value = translate_generated_text(fa_value) if isinstance(fa_value, str) else fa_value
+            data[f'{output_name}_fa'] = fa_value
+            data[f'{output_name}_en'] = en_value
+            data[output_name] = en_value if language == 'en' and en_value not in (None, '', [], {}) else fa_value
+
+        return data
+
+
+class SongSummarySerializer(LocalizedModelSerializer):
     """Compact song payload used by cards, queues and nested detail responses."""
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
@@ -94,15 +169,27 @@ class SongSummarySerializer(serializers.ModelSerializer):
         ]
 
     def get_featured_artists(self, obj):
-        return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
+        request = self.context.get('request')
+        return [
+            {
+                'id': a.id,
+                'name': localized_value(a, 'name', request),
+                'name_fa': a.name,
+                'name_en': a.name_en or a.name,
+                'artistic_name': localized_value(a, 'artistic_name', request),
+                'artistic_name_fa': a.artistic_name,
+                'artistic_name_en': a.artistic_name_en or a.artistic_name,
+            }
+            for a in obj.featured_artists.all()
+        ]
 
     def _items(self, obj, relation):
         return list(getattr(obj, relation).all())
 
-    def get_genre_names(self, obj): return [x.name for x in self._items(obj, 'genres')]
-    def get_tag_names(self, obj): return [x.name for x in self._items(obj, 'tags')]
-    def get_mood_names(self, obj): return [x.name for x in self._items(obj, 'moods')]
-    def get_sub_genre_names(self, obj): return [x.name for x in self._items(obj, 'sub_genres')]
+    def get_genre_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'genres')]
+    def get_tag_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'tags')]
+    def get_mood_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'moods')]
+    def get_sub_genre_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'sub_genres')]
     def get_genre_ids(self, obj): return [x.id for x in self._items(obj, 'genres')]
     def get_tag_ids(self, obj): return [x.id for x in self._items(obj, 'tags')]
     def get_mood_ids(self, obj): return [x.id for x in self._items(obj, 'moods')]
@@ -126,11 +213,11 @@ class SongSummarySerializer(serializers.ModelSerializer):
         return data
 
 
-class BannerAdSerializer(serializers.ModelSerializer):
+class BannerAdSerializer(LocalizedModelSerializer):
     """Public serializer for banner ads returned to audience clients."""
     class Meta:
         model = BannerAd
-        fields = ['id', 'title', 'image', 'navigate_link', 'view_count']
+        fields = ['id', 'title', 'title_en', 'image', 'navigate_link', 'view_count']
         read_only_fields = ['id', 'image', 'view_count']
 
     def to_representation(self, instance):
@@ -143,7 +230,7 @@ class BannerAdSerializer(serializers.ModelSerializer):
     
 
 
-class ArtistSummarySerializer(serializers.ModelSerializer):
+class ArtistSummarySerializer(LocalizedModelSerializer):
     is_following = serializers.SerializerMethodField()
     followers_count = serializers.SerializerMethodField()
     followings_count = serializers.SerializerMethodField()
@@ -183,7 +270,7 @@ class ArtistSummarySerializer(serializers.ModelSerializer):
             links = getattr(obj, '_prefetched_objects_cache', {}).get('social_account_links')
         if links is None:
             links = obj.social_account_links.select_related('platform').all()
-        return ArtistSocialAccountSerializer(links, many=True).data
+        return ArtistSocialAccountSerializer(links, many=True, context=self.context).data
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -193,7 +280,7 @@ class ArtistSummarySerializer(serializers.ModelSerializer):
 
 
 
-class AlbumSummarySerializer(serializers.ModelSerializer):
+class AlbumSummarySerializer(LocalizedModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
@@ -212,9 +299,10 @@ class AlbumSummarySerializer(serializers.ModelSerializer):
         return list(songs if songs is not None else obj.songs.all())
 
     def _combined(self, obj, relation):
-        values = {x.name for x in getattr(obj, relation).all()}
+        request = self.context.get('request')
+        values = {localized_value(x, 'name', request) for x in getattr(obj, relation).all()}
         for song in self._songs(obj):
-            values.update(x.name for x in getattr(song, relation).all())
+            values.update(localized_value(x, 'name', request) for x in getattr(song, relation).all())
         return sorted(values)
 
     def get_genre_names(self, obj): return self._combined(obj, 'genres')
@@ -231,7 +319,7 @@ class AlbumSummarySerializer(serializers.ModelSerializer):
         return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and AlbumLike.objects.filter(user=request.user, album=obj).exists()))
 
 
-class PlaylistSummarySerializer(serializers.ModelSerializer):
+class PlaylistSummarySerializer(LocalizedModelSerializer):
     songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     cover_image = serializers.SerializerMethodField()
@@ -267,10 +355,10 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
         return self._creator_uid
 
     def get_genre_names(self, obj):
-        return sorted({g.name for song in self._songs(obj) for g in song.genres.all()})
+        return sorted({localized_value(g, 'name', self.context.get('request')) for song in self._songs(obj) for g in song.genres.all()})
 
     def get_mood_names(self, obj):
-        return sorted({m.name for song in self._songs(obj) for m in song.moods.all()})
+        return sorted({localized_value(m, 'name', self.context.get('request')) for song in self._songs(obj) for m in song.moods.all()})
 
     def get_top_three_song_covers(self, obj):
         song_map = {song.id: song for song in self._songs(obj)}
@@ -293,7 +381,7 @@ class PlaylistSummarySerializer(serializers.ModelSerializer):
 
 
 
-class SimplePlaylistSerializer(serializers.ModelSerializer):
+class SimplePlaylistSerializer(LocalizedModelSerializer):
     songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
@@ -330,8 +418,8 @@ class SimplePlaylistSerializer(serializers.ModelSerializer):
             self._creator_uid = User.objects.filter(first_name='SedaBox |', last_name='صداباکس').values_list('unique_id', flat=True).first()
         return self._creator_uid
 
-    def get_genre_names(self, obj): return [g.name for g in obj.genres.all()]
-    def get_mood_names(self, obj): return [m.name for m in obj.moods.all()]
+    def get_genre_names(self, obj): return [localized_value(g, 'name', self.context.get('request')) for g in obj.genres.all()]
+    def get_mood_names(self, obj): return [localized_value(m, 'name', self.context.get('request')) for m in obj.moods.all()]
 
     def get_top_three_song_covers(self, obj):
         return [_signed_url(song.cover_image or getattr(song.album, 'cover_image', None)) for song in self._songs(obj)[:3] if song.cover_image or getattr(song.album, 'cover_image', None)]
@@ -375,7 +463,7 @@ class FollowableEntitySerializer(serializers.Serializer):
 
     def get_name(self, obj):
         if isinstance(obj, Artist):
-            return obj.name
+            return localized_value(obj, 'name', self.context.get('request'))
         name = f"{obj.first_name} {obj.last_name}".strip()
         return name if name else obj.phone_number
 
@@ -424,7 +512,7 @@ class FollowRequestSerializer(serializers.Serializer):
         return data
 
 
-class NotificationSettingSerializer(serializers.ModelSerializer):
+class NotificationSettingSerializer(LocalizedModelSerializer):
     class Meta:
         model = NotificationSetting
         fields = [
@@ -433,14 +521,14 @@ class NotificationSettingSerializer(serializers.ModelSerializer):
         ]
 
 
-class UserImageProfileSerializer(serializers.ModelSerializer):
+class UserImageProfileSerializer(LocalizedModelSerializer):
     class Meta:
         model = UserImageProfile
         fields = ['id', 'image', 'status', 'created_at', 'updated_at']
         read_only_fields = ['id', 'status', 'created_at', 'updated_at']
 
 
-class UserSerializer(serializers.ModelSerializer):
+class UserSerializer(LocalizedModelSerializer):
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
     user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
@@ -604,7 +692,7 @@ class UserSerializer(serializers.ModelSerializer):
         }
 
 
-class UserHistorySerializer(serializers.ModelSerializer):
+class UserHistorySerializer(LocalizedModelSerializer):
     """Serializer for user history items with flattened content"""
     type = serializers.CharField(source='content_type')
     item = serializers.SerializerMethodField()
@@ -629,7 +717,7 @@ class UserHistorySerializer(serializers.ModelSerializer):
         return None
 
 
-class UserSearchSummarySerializer(serializers.ModelSerializer):
+class UserSearchSummarySerializer(LocalizedModelSerializer):
     """Lightweight serializer for users in search results"""
     followers_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
@@ -650,7 +738,7 @@ class UserSearchSummarySerializer(serializers.ModelSerializer):
         ).exists()))
 
 
-class UserPublicProfileSerializer(serializers.ModelSerializer):
+class UserPublicProfileSerializer(LocalizedModelSerializer):
     """Serializer for a user's public profile"""
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
@@ -698,7 +786,7 @@ class UserPublicProfileSerializer(serializers.ModelSerializer):
         return UserPlaylistSerializer(qs, many=True, context=self.context).data
 
 
-class RegisterSerializer(serializers.ModelSerializer):
+class RegisterSerializer(LocalizedModelSerializer):
     password = serializers.CharField(write_only=True)
     # allow callers to request artist role at registration time (boolean)
     artist = serializers.BooleanField(write_only=True, required=False)
@@ -739,7 +827,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         # attach user profile but exclude internal flags from the login response
-        user_data = UserSerializer(self.user).data
+        user_data = UserSerializer(self.user, context=self.context).data
         # remove `is_staff` so it doesn't appear in the token response
         user_data.pop('is_staff', None)
         data['user'] = user_data
@@ -796,7 +884,7 @@ class PasswordResetSerializer(serializers.Serializer):
 class TokenRefreshRequestSerializer(serializers.Serializer):
     refreshToken = serializers.CharField()
 
-class ArtistSocialAccountSerializer(serializers.ModelSerializer):
+class ArtistSocialAccountSerializer(LocalizedModelSerializer):
     platform_name = serializers.CharField(source='platform.name', read_only=True)
     platform_slug = serializers.CharField(source='platform.slug', read_only=True)
     platform_base_url = serializers.CharField(source='platform.base_url', read_only=True)
@@ -817,7 +905,7 @@ class ChangePasswordSerializer(serializers.Serializer):
     newPassword = serializers.CharField(write_only=True)
 
 
-class ArtistSerializer(serializers.ModelSerializer):
+class ArtistSerializer(LocalizedModelSerializer):
     """Serializer for Artist model"""
     user_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), 
@@ -837,8 +925,8 @@ class ArtistSerializer(serializers.ModelSerializer):
     class Meta:
         model = Artist
         fields = [
-            'id', 'name', 'artistic_name', 'unique_id', 'user_id', 'bio', 'profile_image', 'banner_image', 
-            'email', 'city', 'date_of_birth', 'address', 'id_number',
+            'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id', 'user_id', 'bio', 'bio_en', 'profile_image', 'banner_image', 
+            'email', 'city', 'city_en', 'date_of_birth', 'address', 'address_en', 'id_number',
             'verified', 'followers_count', 'followings_count', 
             'monthly_listeners_count', 'live_listeners', 'is_following', 'created_at',
             'followers', 'following', 'social_accounts'
@@ -932,7 +1020,7 @@ class PopularArtistSerializer(ArtistSummarySerializer):
 
 
 
-class ArtistAuthSerializer(serializers.ModelSerializer):
+class ArtistAuthSerializer(LocalizedModelSerializer):
     """Serializer for ArtistAuth verification submissions."""
     user_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), source='user', required=False, allow_null=True
@@ -973,7 +1061,7 @@ class ArtistAuthSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class AlbumSerializer(serializers.ModelSerializer):
+class AlbumSerializer(LocalizedModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
@@ -991,8 +1079,8 @@ class AlbumSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Album
-        fields = ['id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'release_date',
-                  'description', 'created_at', 'likes_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
+        fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'release_date',
+                  'description', 'description_en', 'created_at', 'likes_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
                   'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'songs', 'song_genre_names', 'song_mood_names']
         read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
@@ -1000,15 +1088,15 @@ class AlbumSerializer(serializers.ModelSerializer):
     def get_is_liked(self, obj):
         request = self.context.get('request')
         return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and AlbumLike.objects.filter(user=request.user, album=obj).exists()))
-    def get_genre_ids(self, obj): return [x.name for x in obj.genres.all()]
-    def get_sub_genre_ids(self, obj): return [x.name for x in obj.sub_genres.all()]
-    def get_mood_ids(self, obj): return [x.name for x in obj.moods.all()]
+    def get_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.genres.all()]
+    def get_sub_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.sub_genres.all()]
+    def get_mood_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.moods.all()]
     def _songs(self, obj):
         songs = getattr(obj, '_detail_songs', None)
         return list(songs if songs is not None else obj.songs.all())
     def get_songs(self, obj): return SongStreamSerializer(self._songs(obj), many=True, context=self.context).data
-    def get_song_genre_names(self, obj): return sorted({g.name for s in self._songs(obj) for g in s.genres.all()})
-    def get_song_mood_names(self, obj): return sorted({m.name for s in self._songs(obj) for m in s.moods.all()})
+    def get_song_genre_names(self, obj): return sorted({localized_value(g, 'name', self.context.get('request')) for s in self._songs(obj) for g in s.genres.all()})
+    def get_song_mood_names(self, obj): return sorted({localized_value(m, 'name', self.context.get('request')) for s in self._songs(obj) for m in s.moods.all()})
     def to_representation(self, instance):
         data = super().to_representation(instance)
         value = data.get('cover_image') or next((s.cover_image for s in self._songs(instance) if s.cover_image), None)
@@ -1035,43 +1123,43 @@ class PopularAlbumSerializer(AlbumSummarySerializer):
 
 
 
-class GenreSerializer(serializers.ModelSerializer):
+class GenreSerializer(LocalizedModelSerializer):
     """Serializer for Genre model"""
     title = serializers.CharField(source='name', read_only=True)
 
     class Meta:
         model = Genre
-        fields = ['id', 'name', 'title', 'slug']
+        fields = ['id', 'name', 'name_en', 'title', 'slug']
         read_only_fields = ['id']
 
 
-class MoodSerializer(serializers.ModelSerializer):
+class MoodSerializer(LocalizedModelSerializer):
     """Serializer for Mood model"""
     class Meta:
         model = Mood
-        fields = ['id', 'name', 'slug']
+        fields = ['id', 'name', 'name_en', 'slug']
         read_only_fields = ['id']
 
 
-class TagSerializer(serializers.ModelSerializer):
+class TagSerializer(LocalizedModelSerializer):
     """Serializer for Tag model"""
     class Meta:
         model = Tag
-        fields = ['id', 'name', 'slug']
+        fields = ['id', 'name', 'name_en', 'slug']
         read_only_fields = ['id']
 
 
-class SubGenreSerializer(serializers.ModelSerializer):
+class SubGenreSerializer(LocalizedModelSerializer):
     """Serializer for SubGenre model"""
     parent_genre_name = serializers.CharField(source='parent_genre.name', read_only=True, allow_null=True)
     
     class Meta:
         model = SubGenre
-        fields = ['id', 'name', 'slug', 'parent_genre', 'parent_genre_name']
+        fields = ['id', 'name', 'name_en', 'slug', 'parent_genre', 'parent_genre_name']
         read_only_fields = ['id']
 
 
-class SlimGenreSerializer(serializers.ModelSerializer):
+class SlimGenreSerializer(LocalizedModelSerializer):
     title = serializers.CharField(source='name', read_only=True)
 
     class Meta:
@@ -1079,7 +1167,7 @@ class SlimGenreSerializer(serializers.ModelSerializer):
         fields = ['id', 'title']
 
 
-class SlimMoodSerializer(serializers.ModelSerializer):
+class SlimMoodSerializer(LocalizedModelSerializer):
     title = serializers.CharField(source='name', read_only=True)
 
     class Meta:
@@ -1087,7 +1175,7 @@ class SlimMoodSerializer(serializers.ModelSerializer):
         fields = ['id', 'title']
 
 
-class SlimTagSerializer(serializers.ModelSerializer):
+class SlimTagSerializer(LocalizedModelSerializer):
     title = serializers.CharField(source='name', read_only=True)
 
     class Meta:
@@ -1095,7 +1183,7 @@ class SlimTagSerializer(serializers.ModelSerializer):
         fields = ['id', 'title']
 
 
-class SongSerializer(serializers.ModelSerializer):
+class SongSerializer(LocalizedModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
@@ -1128,24 +1216,37 @@ class SongSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Song
-        fields = ['id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists', 'featured_artist_ids',
+        fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists', 'featured_artist_ids',
                   'album', 'album_id', 'album_title', 'is_single', 'stream_url', 'preview_url', 'is_preview',
                   'preview_duration_seconds', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
                   'duration_seconds', 'duration_display', 'plays', 'likes_count', 'added_to_playlists_count',
                   'added_to_playlist', 'is_liked', 'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',
-                  'mood_ids', 'tag_ids', 'description', 'lyrics', 'tempo', 'energy', 'danceability', 'valence',
-                  'acousticness', 'instrumentalness', 'live_performed', 'speechiness', 'label', 'producers',
-                  'composers', 'lyricists', 'credits', 'uploader', 'uploader_phone', 'uploader_unique_id', 'created_at',
+                  'mood_ids', 'tag_ids', 'description', 'description_en', 'lyrics', 'lyrics_en', 'tempo', 'energy', 'danceability', 'valence',
+                  'acousticness', 'instrumentalness', 'live_performed', 'speechiness', 'label', 'label_en', 'producers', 'producers_en',
+                  'composers', 'composers_en', 'lyricists', 'lyricists_en', 'credits', 'credits_en', 'uploader', 'uploader_phone', 'uploader_unique_id', 'created_at',
                   'updated_at', 'display_title', 'similar_songs', 'genre_ids_write', 'sub_genre_ids_write',
                   'mood_ids_write', 'tag_ids_write']
         read_only_fields = ['id', 'plays', 'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked',
                             'created_at', 'updated_at', 'duration_display', 'display_title']
 
-    def get_featured_artists(self, obj): return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
-    def get_genre_ids(self, obj): return [{'id': x.id, 'title': x.name} for x in obj.genres.all()]
-    def get_sub_genre_ids(self, obj): return [{'id': x.id, 'title': x.name} for x in obj.sub_genres.all()]
-    def get_mood_ids(self, obj): return [{'id': x.id, 'title': x.name} for x in obj.moods.all()]
-    def get_tag_ids(self, obj): return [{'id': x.id, 'title': x.name} for x in obj.tags.all()]
+    def get_featured_artists(self, obj):
+        request = self.context.get('request')
+        return [
+            {
+                'id': a.id,
+                'name': localized_value(a, 'name', request),
+                'name_fa': a.name,
+                'name_en': a.name_en or a.name,
+                'artistic_name': localized_value(a, 'artistic_name', request),
+                'artistic_name_fa': a.artistic_name,
+                'artistic_name_en': a.artistic_name_en or a.artistic_name,
+            }
+            for a in obj.featured_artists.all()
+        ]
+    def get_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.genres.all()]
+    def get_sub_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.sub_genres.all()]
+    def get_mood_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.moods.all()]
+    def get_tag_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.tags.all()]
     def get_plays(self, obj): return int(obj.plays or 0) + int(_metric(obj, '_play_count', lambda: obj.play_counts.count()))
     def get_likes_count(self, obj): return int(_metric(obj, '_likes_count', lambda: SongLike.objects.filter(song=obj).count()))
     def get_added_to_playlists_count(self, obj): return int(_metric(obj, '_playlist_count', lambda: obj.user_playlists.count()))
@@ -1226,6 +1327,7 @@ class SongUploadSerializer(serializers.Serializer):
     
     # Basic info
     title = serializers.CharField(max_length=400, required=True)
+    title_en = serializers.CharField(max_length=400, required=False, allow_blank=True, default="")
     artist_id = serializers.IntegerField(required=True, help_text="Artist ID")
     featured_artist_ids = serializers.ListField(
         child=serializers.IntegerField(),
@@ -1241,7 +1343,9 @@ class SongUploadSerializer(serializers.Serializer):
     release_date = serializers.DateField(required=False, allow_null=True)
     language = serializers.CharField(max_length=10, default="fa")
     description = serializers.CharField(required=False, allow_blank=True, default="")
+    description_en = serializers.CharField(required=False, allow_blank=True, default="")
     lyrics = serializers.CharField(required=False, allow_blank=True, default="")
+    lyrics_en = serializers.CharField(required=False, allow_blank=True, default="")
     
     # Classification
     genre_ids = serializers.ListField(
@@ -1281,7 +1385,14 @@ class SongUploadSerializer(serializers.Serializer):
     
     # Credits
     label = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    label_en = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     producers = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        required=False,
+        allow_empty=True,
+        default=list
+    )
+    producers_en = serializers.ListField(
         child=serializers.CharField(max_length=255),
         required=False,
         allow_empty=True,
@@ -1293,13 +1404,26 @@ class SongUploadSerializer(serializers.Serializer):
         allow_empty=True,
         default=list
     )
+    composers_en = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        required=False,
+        allow_empty=True,
+        default=list
+    )
     lyricists = serializers.ListField(
         child=serializers.CharField(max_length=255),
         required=False,
         allow_empty=True,
         default=list
     )
+    lyricists_en = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        required=False,
+        allow_empty=True,
+        default=list
+    )
     credits = serializers.CharField(required=False, allow_blank=True, default="")
+    credits_en = serializers.CharField(required=False, allow_blank=True, default="")
     
     def validate_audio_file(self, value):
         """Validate audio file format"""
@@ -1329,7 +1453,7 @@ class SongUploadSerializer(serializers.Serializer):
 
 
 
-class PlaylistSerializer(serializers.ModelSerializer):
+class PlaylistSerializer(LocalizedModelSerializer):
     genres = GenreSerializer(many=True, read_only=True)
     moods = MoodSerializer(many=True, read_only=True)
     tags = TagSerializer(many=True, read_only=True)
@@ -1345,7 +1469,7 @@ class PlaylistSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Playlist
-        fields = ['id','title','description','cover_image','created_at','created_by','generated_by','creator_unique_id',
+        fields = ['id','title','title_en','description','description_en','cover_image','created_at','created_by','generated_by','creator_unique_id',
                   'genres','moods','tags','songs','likes_count','is_liked','genre_ids','mood_ids','tag_ids','song_ids']
         read_only_fields = ['id','created_at','likes_count','is_liked','generated_by','creator_unique_id']
 
@@ -1362,7 +1486,7 @@ class PlaylistSerializer(serializers.ModelSerializer):
         data=super().to_representation(instance); data['cover_image']=_signed_url(data.get('cover_image')); return data
 
 
-class PlaylistForEventSerializer(serializers.ModelSerializer):
+class PlaylistForEventSerializer(LocalizedModelSerializer):
     """Lightweight playlist serializer for EventPlaylist endpoint: use slim genre/mood/tag representation without slug."""
     genres = SlimGenreSerializer(many=True, read_only=True)
     moods = SlimMoodSerializer(many=True, read_only=True)
@@ -1371,7 +1495,7 @@ class PlaylistForEventSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
+        fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = ['id', 'created_at']
 
     generated_by = serializers.CharField(source='created_by', read_only=True)
@@ -1383,7 +1507,7 @@ class PlaylistForEventSerializer(serializers.ModelSerializer):
         return sedabox_user.unique_id if sedabox_user else None
 
 
-class SongStreamSerializer(serializers.ModelSerializer):
+class SongStreamSerializer(LocalizedModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
@@ -1408,7 +1532,20 @@ class SongStreamSerializer(serializers.ModelSerializer):
                   'created_at','display_title','uploader_unique_id']
         read_only_fields = fields
 
-    def get_featured_artists(self,obj): return [{'id':a.id,'name':a.name,'artistic_name':a.artistic_name} for a in obj.featured_artists.all()]
+    def get_featured_artists(self, obj):
+        request = self.context.get('request')
+        return [
+            {
+                'id': a.id,
+                'name': localized_value(a, 'name', request),
+                'name_fa': a.name,
+                'name_en': a.name_en or a.name,
+                'artistic_name': localized_value(a, 'artistic_name', request),
+                'artistic_name_fa': a.artistic_name,
+                'artistic_name_en': a.artistic_name_en or a.artistic_name,
+            }
+            for a in obj.featured_artists.all()
+        ]
     def get_likes_count(self,obj): return int(_metric(obj,'_likes_count',lambda: SongLike.objects.filter(song=obj).count()))
     def get_is_liked(self,obj):
         request=self.context.get('request')
@@ -1423,7 +1560,7 @@ class SongStreamSerializer(serializers.ModelSerializer):
         data=super().to_representation(instance); data['cover_image']=_signed_url(data.get('cover_image')); return data
 
 
-class UserPlaylistSerializer(serializers.ModelSerializer):
+class UserPlaylistSerializer(LocalizedModelSerializer):
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
     user_unique_id = serializers.CharField(source='user.unique_id', read_only=True)
     songs_count = serializers.SerializerMethodField()
@@ -1484,7 +1621,7 @@ class UserPlaylistSerializer(serializers.ModelSerializer):
 
 
 
-class UserPlaylistCreateSerializer(serializers.ModelSerializer):
+class UserPlaylistCreateSerializer(LocalizedModelSerializer):
     """Serializer for creating UserPlaylist with optional first song"""
     first_song_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     order = serializers.JSONField(required=False)
@@ -1576,15 +1713,38 @@ class SearchResultSerializer(serializers.Serializer):
         if isinstance(obj,(Playlist,UserPlaylist)): return 'playlist'
         if isinstance(obj,User): return 'user'
         return 'unknown'
-    def get_title(self,obj):
-        if isinstance(obj,User): return obj.unique_id or f'{obj.first_name} {obj.last_name}'.strip()
-        return getattr(obj,'title',getattr(obj,'name',''))
-    def get_subtitle(self,obj):
-        if isinstance(obj,(Song,Album)): return obj.artist.name if obj.artist else ''
-        if isinstance(obj,Artist): return 'Artist'
-        if isinstance(obj,User): return 'User'
-        if isinstance(obj,UserPlaylist): return f"By {f'{obj.user.first_name} {obj.user.last_name}'.strip() or 'Sedabox user'}"
-        if isinstance(obj,Playlist): return obj.created_by
+    def get_title(self, obj):
+        if isinstance(obj, User):
+            return obj.unique_id or f'{obj.first_name} {obj.last_name}'.strip()
+        request = self.context.get('request')
+        if hasattr(obj, 'title_en'):
+            return localized_value(obj, 'title', request)
+        if hasattr(obj, 'name_en'):
+            return localized_value(obj, 'name', request)
+        return getattr(obj, 'title', getattr(obj, 'name', ''))
+
+    def get_subtitle(self, obj):
+        request = self.context.get('request')
+        language = get_request_language(request)
+        if isinstance(obj, (Song, Album)):
+            return localized_value(obj.artist, 'name', request) if obj.artist else ''
+        if isinstance(obj, Artist):
+            return 'Artist' if language == 'en' else 'هنرمند'
+        if isinstance(obj, User):
+            return 'User' if language == 'en' else 'کاربر'
+        if isinstance(obj, UserPlaylist):
+            owner = f'{obj.user.first_name} {obj.user.last_name}'.strip()
+            if not owner:
+                owner = 'SedaBox user' if language == 'en' else 'کاربر صداباکس'
+            return f'By {owner}' if language == 'en' else f'از {owner}'
+        if isinstance(obj, Playlist):
+            creator_labels = {
+                'system': ('سیستم', 'System'),
+                'admin': ('صداباکس', 'SedaBox'),
+                'audience': ('کاربر', 'User'),
+            }
+            fa_label, en_label = creator_labels.get(obj.created_by, (obj.created_by, obj.created_by))
+            return en_label if language == 'en' else fa_label
         return ''
     def get_image(self,obj):
         if isinstance(obj,User):
@@ -1600,19 +1760,21 @@ class SearchResultSerializer(serializers.Serializer):
         request=self.context.get('request')
         if isinstance(obj,Song):
             return {'duration_seconds':obj.duration_seconds,'plays':int(obj.plays or 0)+int(getattr(obj,'_play_count',0)),
-                    'language':obj.language,'artist_id':obj.artist_id,'artist_name':obj.artist.name if obj.artist else None,
-                    'album_id':obj.album_id,'album_name':obj.album.title if obj.album else None,
+                    'language':obj.language,'artist_id':obj.artist_id,'artist_name':localized_value(obj.artist, 'name', request) if obj.artist else None,
+                    'album_id':obj.album_id,'album_name':localized_value(obj.album, 'title', request) if obj.album else None,
                     'stream_url':_stream_wrapper(obj,request),'preview_url':_preview_url(obj),
                     'is_preview':bool((not request or not request.user.is_authenticated) and obj.preview_audio_url),
                     'preview_duration_seconds':min(30,obj.duration_seconds or 30) if obj.preview_audio_url else 0}
-        if isinstance(obj,Artist): return {'unique_id':obj.unique_id,'verified':obj.verified,'bio':obj.bio[:100] if obj.bio else ''}
-        if isinstance(obj,Album): return {'release_date':obj.release_date,'artist_id':obj.artist_id,'artist_name':obj.artist.name if obj.artist else None}
+        if isinstance(obj,Artist):
+            bio = localized_value(obj, 'bio', request)
+            return {'unique_id':obj.unique_id,'verified':obj.verified,'bio':bio[:100] if bio else ''}
+        if isinstance(obj,Album): return {'release_date':obj.release_date,'artist_id':obj.artist_id,'artist_name':localized_value(obj.artist, 'name', request) if obj.artist else None}
         if isinstance(obj,User): return {'unique_id':obj.unique_id,'first_name':obj.first_name,'last_name':obj.last_name,
                                          'plan':obj.plan,'is_verified':obj.is_verified}
         return {}
 
 
-class EventPlaylistSerializer(serializers.ModelSerializer):
+class EventPlaylistSerializer(LocalizedModelSerializer):
     """Serializer for EventPlaylist model"""
     # use compact playlist serializer that omits slug fields on nested genres/moods/tags
     playlists = PlaylistForEventSerializer(many=True, read_only=True)
@@ -1622,7 +1784,7 @@ class EventPlaylistSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
+        fields = ['id', 'title', 'title_en', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
 
     def get_creator_unique_id(self, obj):
         from .models import User
@@ -1630,7 +1792,7 @@ class EventPlaylistSerializer(serializers.ModelSerializer):
         return sedabox_user.unique_id if sedabox_user else None
 
 
-class PlaylistCoverSerializer(serializers.ModelSerializer):
+class PlaylistCoverSerializer(LocalizedModelSerializer):
     """Lightweight playlist serializer used in EventPlaylist list views.
     Uses the first song's cover image as the playlist cover when available.
     """
@@ -1674,7 +1836,7 @@ class PlaylistCoverSerializer(serializers.ModelSerializer):
         return getattr(obj, 'cover_image', None)
 
 
-class EventPlaylistListSerializer(serializers.ModelSerializer):
+class EventPlaylistListSerializer(LocalizedModelSerializer):
     """Serializer for listing EventPlaylists with lightweight playlist covers."""
     playlists = PlaylistCoverSerializer(many=True, read_only=True)
     generated_by = serializers.ReadOnlyField(default='admin')
@@ -1683,7 +1845,7 @@ class EventPlaylistListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
+        fields = ['id', 'title', 'title_en', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
@@ -1692,7 +1854,7 @@ class EventPlaylistListSerializer(serializers.ModelSerializer):
         return sedabox_user.unique_id if sedabox_user else None
 
 
-class PlaylistDetailForEventSerializer(serializers.ModelSerializer):
+class PlaylistDetailForEventSerializer(LocalizedModelSerializer):
     """Playlist serializer for EventPlaylist detail — uses SongSummarySerializer for songs."""
     genres = SlimGenreSerializer(many=True, read_only=True)
     moods = SlimMoodSerializer(many=True, read_only=True)
@@ -1708,11 +1870,11 @@ class PlaylistDetailForEventSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
+        fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = fields
 
 
-class EventPlaylistDetailSerializer(serializers.ModelSerializer):
+class EventPlaylistDetailSerializer(LocalizedModelSerializer):
     """Detailed EventPlaylist serializer returning playlists with summarized songs."""
     playlists = PlaylistDetailForEventSerializer(many=True, read_only=True)
     generated_by = serializers.ReadOnlyField(default='admin')
@@ -1721,7 +1883,7 @@ class EventPlaylistDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
+        fields = ['id', 'title', 'title_en', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
@@ -1730,7 +1892,7 @@ class EventPlaylistDetailSerializer(serializers.ModelSerializer):
         return sedabox_user.unique_id if sedabox_user else None
 
 
-class SearchSectionSerializer(serializers.ModelSerializer):
+class SearchSectionSerializer(LocalizedModelSerializer):
     """Serializer for SearchSection model
     Use `SongSummarySerializer` for song-type sections to keep responses lightweight.
     """
@@ -1756,7 +1918,7 @@ class SearchSectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = SearchSection
         fields = [
-            'id', 'type', 'title', 'icon_logo', 'item_size', 
+            'id', 'type', 'title', 'title_en', 'icon_logo', 'item_size', 
             'songs', 'albums', 'playlists', 
             'song_ids', 'album_ids', 'playlist_ids',
             'created_at', 'updated_at', 'created_by', 'updated_by',
@@ -1778,7 +1940,7 @@ class SearchSectionSerializer(serializers.ModelSerializer):
         return SongSerializer(obj.songs.all(), many=True, context=self.context).data
 
 
-class SessionSerializer(serializers.ModelSerializer):
+class SessionSerializer(LocalizedModelSerializer):
     is_current = serializers.SerializerMethodField()
 
     class Meta:
@@ -1793,7 +1955,7 @@ class SessionSerializer(serializers.ModelSerializer):
         return check_password(current_token, obj.token_hash)
 
 
-class LikedSongSerializer(serializers.ModelSerializer):
+class LikedSongSerializer(LocalizedModelSerializer):
     when_liked = serializers.SerializerMethodField()
     
     class Meta:
@@ -1804,9 +1966,7 @@ class LikedSongSerializer(serializers.ModelSerializer):
         from django.utils import timezone
         delta = timezone.now() - obj.created_at
         days = delta.days
-        if days == 0:
-            return "Today"
-        return f"{days} days ago"
+        return _relative_day_label(days, self.context.get('request'))
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
@@ -1818,7 +1978,7 @@ class LikedSongSerializer(serializers.ModelSerializer):
         return ret
 
 
-class LikedAlbumSerializer(serializers.ModelSerializer):
+class LikedAlbumSerializer(LocalizedModelSerializer):
     when_liked = serializers.SerializerMethodField()
     
     class Meta:
@@ -1829,9 +1989,7 @@ class LikedAlbumSerializer(serializers.ModelSerializer):
         from django.utils import timezone
         delta = timezone.now() - obj.created_at
         days = delta.days
-        if days == 0:
-            return "Today"
-        return f"{days} days ago"
+        return _relative_day_label(days, self.context.get('request'))
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
@@ -1843,7 +2001,7 @@ class LikedAlbumSerializer(serializers.ModelSerializer):
         return ret
 
 
-class LikedPlaylistSerializer(serializers.ModelSerializer):
+class LikedPlaylistSerializer(LocalizedModelSerializer):
     when_liked = serializers.SerializerMethodField()
     
     class Meta:
@@ -1854,9 +2012,7 @@ class LikedPlaylistSerializer(serializers.ModelSerializer):
         from django.utils import timezone
         delta = timezone.now() - obj.created_at
         days = delta.days
-        if days == 0:
-            return "Today"
-        return f"{days} days ago"
+        return _relative_day_label(days, self.context.get('request'))
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
@@ -1868,10 +2024,10 @@ class LikedPlaylistSerializer(serializers.ModelSerializer):
         return ret
 
 
-class RulesSerializer(serializers.ModelSerializer):
+class RulesSerializer(LocalizedModelSerializer):
     class Meta:
         model = Rules
-        fields = ['id', 'title', 'content', 'version', 'created_at']
+        fields = ['id', 'title', 'title_en', 'content', 'content_en', 'version', 'created_at']
         read_only_fields = ['version', 'created_at']
 
     def to_representation(self, instance):
@@ -1881,7 +2037,7 @@ class RulesSerializer(serializers.ModelSerializer):
         return ret
 
 
-class DepositRequestSerializer(serializers.ModelSerializer):
+class DepositRequestSerializer(LocalizedModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     artist_id = serializers.IntegerField(source='artist.id', read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
@@ -1895,7 +2051,7 @@ class DepositRequestSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'artist_id', 'status', 'submission_date', 'status_change_date', 'summary']
 
 
-class ReportSerializer(serializers.ModelSerializer):
+class ReportSerializer(LocalizedModelSerializer):
     artist_id = serializers.IntegerField(source='artist.id', required=False, allow_null=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     reported_user_phone = serializers.CharField(source='reported_user.phone_number', read_only=True)
@@ -1918,14 +2074,14 @@ class ReportSerializer(serializers.ModelSerializer):
         return data
 
 
-class NotificationSerializer(serializers.ModelSerializer):
+class NotificationSerializer(LocalizedModelSerializer):
     class Meta:
         model = Notification
-        fields = ['id', 'text', 'has_read', 'created_at']
+        fields = ['id', 'text', 'text_en', 'has_read', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
-class AudioAdSerializer(serializers.ModelSerializer):
+class AudioAdSerializer(LocalizedModelSerializer):
     """Public serializer for audio ad objects."""
     audio_url = serializers.SerializerMethodField()
     image_cover = serializers.SerializerMethodField()
@@ -1933,7 +2089,7 @@ class AudioAdSerializer(serializers.ModelSerializer):
     class Meta:
         model = AudioAd
         fields = [
-            'id', 'title', 'audio_url', 'image_cover', 'navigate_link',
+            'id', 'title', 'title_en', 'audio_url', 'image_cover', 'navigate_link',
             'duration', 'skippable_after', 'is_active', 'created_at'
         ]
         read_only_fields = fields
@@ -1951,7 +2107,7 @@ class AudioAdSerializer(serializers.ModelSerializer):
         return signed if signed else obj.image_cover
 
 
-class DownloadHistorySerializer(serializers.ModelSerializer):
+class DownloadHistorySerializer(LocalizedModelSerializer):
     """Serializer for user download history entries"""
     song = SongSummarySerializer(read_only=True)
 
@@ -1961,7 +2117,7 @@ class DownloadHistorySerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'song', 'updated_at']
 
 
-class InitialCheckSerializer(serializers.ModelSerializer):
+class InitialCheckSerializer(LocalizedModelSerializer):
     """Serializer for initial genre selection for personalization"""
     genres = GenreSerializer(many=True, read_only=True)
     genre_ids = serializers.PrimaryKeyRelatedField(

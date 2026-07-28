@@ -40,6 +40,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -117,7 +118,11 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'fa'
+LANGUAGES = [
+    ('fa', 'فارسی'),
+    ('en', 'English'),
+]
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
@@ -136,6 +141,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST framework defaults
 REST_FRAMEWORK = {
+    'DEFAULT_RENDERER_CLASSES': [
+        'api.localization.LocalizedJSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],

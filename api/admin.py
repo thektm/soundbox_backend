@@ -54,12 +54,12 @@ class UserAdmin(admin.ModelAdmin):
 class ArtistAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'artistic_name', 'unique_id', 'user', 'verified', 'city', 'email', 'id_number', 'created_at')
     list_filter = ('verified', 'created_at', 'city')
-    search_fields = ('name', 'artistic_name', 'unique_id', 'user__phone_number', 'email', 'id_number', 'city')
+    search_fields = ('name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id', 'user__phone_number', 'email', 'id_number', 'city', 'city_en')
     readonly_fields = ('created_at',)
     inlines = [ArtistSocialAccountInline]
     fieldsets = (
         ('Basic Info', {
-            'fields': ('name', 'artistic_name', 'unique_id', 'user', 'bio', 'verified', 'email', 'city', 'id_number', 'date_of_birth', 'address')
+            'fields': ('name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id', 'user', 'bio', 'bio_en', 'verified', 'email', 'city', 'city_en', 'id_number', 'date_of_birth', 'address', 'address_en')
         }),
         ('Media', {
             'fields': ('profile_image', 'banner_image')
@@ -92,8 +92,8 @@ class ArtistSocialAccountAdmin(admin.ModelAdmin):
 
 @admin.register(SocialPlatform)
 class SocialPlatformAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'slug', 'base_url')
-    search_fields = ('name', 'slug')
+    list_display = ('id', 'name', 'name_en', 'slug', 'base_url')
+    search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 @admin.register(ArtistMonthlyListener)
@@ -186,18 +186,18 @@ class UserImageProfileAdmin(admin.ModelAdmin):
 class AlbumAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'artist', 'release_date', 'created_at')
     list_filter = ('release_date', 'created_at', 'artist')
-    search_fields = ('title', 'artist__name')
+    search_fields = ('title', 'title_en', 'description', 'description_en', 'artist__name', 'artist__name_en')
     readonly_fields = ('created_at',)
     autocomplete_fields = ['artist']
     fieldsets = (
         ('Basic Info', {
-            'fields': ('title', 'artist', 'release_date')
+            'fields': ('title', 'title_en', 'artist', 'release_date')
         }),
         ('Media', {
             'fields': ('cover_image',)
         }),
         ('Description', {
-            'fields': ('description',)
+            'fields': ('description', 'description_en')
         }),
         ('Metadata', {
             'fields': ('created_at',)
@@ -207,22 +207,22 @@ class AlbumAdmin(admin.ModelAdmin):
 
 @admin.register(Genre)
 class GenreAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'slug')
-    search_fields = ('name', 'slug')
+    list_display = ('id', 'name', 'name_en', 'slug')
+    search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 
 @admin.register(Mood)
 class MoodAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'slug')
-    search_fields = ('name', 'slug')
+    list_display = ('id', 'name', 'name_en', 'slug')
+    search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 
 @admin.register(Tag)
 class TagAdmin(admin.ModelAdmin):
-    list_display = ('id', 'name', 'slug')
-    search_fields = ('name', 'slug')
+    list_display = ('id', 'name', 'name_en', 'slug')
+    search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
 
 
@@ -230,7 +230,7 @@ class TagAdmin(admin.ModelAdmin):
 class SubGenreAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'slug', 'parent_genre')
     list_filter = ('parent_genre',)
-    search_fields = ('name', 'slug')
+    search_fields = ('name', 'name_en', 'slug')
     prepopulated_fields = {'slug': ('name',)}
     autocomplete_fields = ['parent_genre']
 
@@ -247,7 +247,7 @@ class SongAdmin(admin.ModelAdmin):
     )
     # Add date hierarchy for quick drill-down by the record creation date
     date_hierarchy = 'created_at'
-    search_fields = ('title', 'artist__name', 'description', 'lyrics')
+    search_fields = ('title', 'title_en', 'artist__name', 'artist__name_en', 'description', 'description_en', 'lyrics', 'lyrics_en', 'label', 'label_en')
     readonly_fields = ('plays', 'duration_display', 'display_title', 'created_at', 'updated_at')
     autocomplete_fields = ['artist', 'album', 'uploader']
     filter_horizontal = ('genres', 'moods', 'tags', 'featured_artists')
@@ -255,7 +255,7 @@ class SongAdmin(admin.ModelAdmin):
     fieldsets = (
         ('Basic Information', {
             'fields': (
-                'title', 'artist', 'featured_artists', 'album', 'is_single', 'display_title'
+                'title', 'title_en', 'artist', 'featured_artists', 'album', 'is_single', 'display_title'
             )
         }),
         ('Files & Media', {
@@ -275,7 +275,7 @@ class SongAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Description & Lyrics', {
-            'fields': ('description', 'lyrics'),
+            'fields': ('description', 'description_en', 'lyrics', 'lyrics_en'),
             'classes': ('collapse',)
         }),
         ('Audio Features', {
@@ -286,7 +286,7 @@ class SongAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Credits & Legal', {
-            'fields': ('label', 'producers', 'composers', 'lyricists', 'credits'),
+            'fields': ('label', 'label_en', 'producers', 'producers_en', 'composers', 'composers_en', 'lyricists', 'lyricists_en', 'credits', 'credits_en'),
             'classes': ('collapse',)
         }),
         ('Timestamps', {
@@ -328,11 +328,11 @@ class SongAdmin(admin.ModelAdmin):
 class PlaylistAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'cover_image', 'created_by', 'created_at')
     list_filter = ('created_by', 'created_at', 'genres', 'moods')
-    search_fields = ('title',)
+    search_fields = ('title', 'title_en', 'description', 'description_en')
     readonly_fields = ('created_at',)
     filter_horizontal = ('genres', 'moods', 'tags', 'songs')
     fieldsets = (
-        ('Basic Info', {'fields': ('title', 'description', 'cover_image', 'created_by')}),
+        ('Basic Info', {'fields': ('title', 'title_en', 'description', 'description_en', 'cover_image', 'created_by')}),
         ('Classification', {'fields': ('genres', 'moods', 'tags'), 'classes': ('collapse',)}),
         ('Songs', {'fields': ('songs',)}),
         ('Metadata', {'fields': ('created_at',)}),
@@ -446,13 +446,13 @@ class PlaylistLikeAdmin(admin.ModelAdmin):
 class RecommendedPlaylistAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'playlist_type', 'user', 'match_percentage', 'relevance_score', 'views', 'created_at')
     list_filter = ('playlist_type', 'created_at', 'user')
-    search_fields = ('title', 'unique_id', 'user__phone_number')
+    search_fields = ('title', 'title_en', 'description', 'description_en', 'unique_id', 'user__phone_number')
     readonly_fields = ('created_at', 'updated_at', 'views')
     filter_horizontal = ('songs', 'liked_by', 'saved_by', 'viewed_by')
     readonly_fields = ('created_at', 'updated_at', 'views', 'song_order')
     fieldsets = (
         ('Basic Info', {
-            'fields': ('unique_id', 'title', 'description', 'playlist_type', 'user')
+            'fields': ('unique_id', 'title', 'title_en', 'description', 'description_en', 'playlist_type', 'user')
         }),
         ('Songs', {
             'fields': ('songs', 'song_order')
@@ -473,13 +473,13 @@ class RecommendedPlaylistAdmin(admin.ModelAdmin):
 class EventPlaylistAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'time_of_day', 'playlists_count', 'created_at')
     list_filter = ('time_of_day', 'created_at')
-    search_fields = ('title',)
+    search_fields = ('title', 'title_en')
     autocomplete_fields = ['playlists']
     readonly_fields = ('created_at', 'updated_at')
     
     fieldsets = (
         ('Basic Info', {
-            'fields': ('title', 'time_of_day')
+            'fields': ('title', 'title_en', 'time_of_day')
         }),
         ('Playlists', {
             'fields': ('playlists',),
@@ -500,13 +500,13 @@ class EventPlaylistAdmin(admin.ModelAdmin):
 class SearchSectionAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'type', 'item_size', 'created_at', 'created_by')
     list_filter = ('type', 'item_size', 'created_at')
-    search_fields = ('title',)
+    search_fields = ('title', 'title_en')
     readonly_fields = ('created_at', 'updated_at', 'created_by', 'updated_by')
     filter_horizontal = ('songs', 'albums', 'playlists')
     
     fieldsets = (
         ('Basic Info', {
-            'fields': ('title', 'type', 'item_size', 'icon_logo')
+            'fields': ('title', 'title_en', 'type', 'item_size', 'icon_logo')
         }),
         ('Content Items', {
             'fields': ('songs', 'albums', 'playlists'),
@@ -529,11 +529,11 @@ class SearchSectionAdmin(admin.ModelAdmin):
 class RulesAdmin(admin.ModelAdmin):
     list_display = ('id', 'title', 'version', 'created_at')
     list_filter = ('created_at',)
-    search_fields = ('title', 'content', 'version')
+    search_fields = ('title', 'title_en', 'content', 'content_en', 'version')
     readonly_fields = ('version', 'created_at')
     fieldsets = (
         ('Basic Info', {
-            'fields': ('title', 'content')
+            'fields': ('title', 'title_en', 'content', 'content_en')
         }),
         ('Versioning', {
             'fields': ('version', 'created_at'),
@@ -560,22 +560,22 @@ class ActivePlaybackAdmin(admin.ModelAdmin):
 class PaymentTransactionAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'transaction_id', 'amount', 'created_at')
     list_filter = ('created_at',)
-    search_fields = ('user__phone_number', 'transaction_id', 'description')
+    search_fields = ('user__phone_number', 'transaction_id', 'description', 'description_en')
     readonly_fields = ('created_at',)
 
 
 @admin.register(BannerAd)
 class BannerAdAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'is_active', 'created_at')
+    list_display = ('id', 'title', 'title_en', 'is_active', 'created_at')
     list_filter = ('is_active', 'created_at')
-    search_fields = ('title', 'navigate_link')
+    search_fields = ('title', 'title_en', 'navigate_link')
     readonly_fields = ('created_at', 'updated_at')
 
 
 @admin.register(AudioAd)
 class AudioAdAdmin(admin.ModelAdmin):
-    list_display = ('id', 'title', 'duration', 'skippable_after', 'is_active', 'created_at')
+    list_display = ('id', 'title', 'title_en', 'duration', 'skippable_after', 'is_active', 'created_at')
     list_filter = ('is_active', 'created_at')
-    search_fields = ('title', 'navigate_link')
+    search_fields = ('title', 'title_en', 'navigate_link')
     readonly_fields = ('created_at', 'updated_at')
 

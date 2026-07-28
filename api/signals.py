@@ -24,7 +24,7 @@ def _get_user_display_name(u: User):
     # 3. Fallback to a generic string (could also use partially hidden phone if preferred)
     return "یک کاربر"
 
-def _send_or_update_notification(user_or_artist, text):
+def _send_or_update_notification(user_or_artist, text, text_en=None):
     """
     Creates a new notification or updates an existing one if the text is identical.
     Ensures 'created_at' is updated to now and 'has_read' is reset to False.
@@ -44,9 +44,9 @@ def _send_or_update_notification(user_or_artist, text):
         # We need to use update() to bypass auto_now_add if we want to force time change efficiently
         # OR just call save() which usually doesn't update auto_now_add.
         # However, for the user's "time is wrong" fix, we will manually update via queryset.
-        Notification.objects.filter(pk=existing.pk).update(has_read=False, created_at=now)
+        Notification.objects.filter(pk=existing.pk).update(has_read=False, created_at=now, text_en=text_en or existing.text_en)
     else:
-        Notification.objects.create(**lookup)
+        Notification.objects.create(**lookup, text_en=text_en or text)
 
 @receiver(post_save, sender=User)
 def create_user_notification_settings(sender, instance, created, **kwargs):
@@ -66,13 +66,17 @@ def notify_new_follower(sender, instance, created, **kwargs):
                 # Resolve a friendly display name for the follower carefully:
                 if instance.follower_user:
                     follower_name = _get_user_display_name(instance.follower_user)
+                    follower_name_en = follower_name
                 elif instance.follower_artist:
                     follower_name = instance.follower_artist.name
+                    follower_name_en = instance.follower_artist.name_en or follower_name
                 else:
                     follower_name = "یک کاربر"
+                    follower_name_en = "A user"
 
                 text = f"{follower_name} شروع به دنبال کردن شما کرد."
-                _send_or_update_notification(target_user, text)
+                text_en = f"{follower_name_en} started following you."
+                _send_or_update_notification(target_user, text, text_en)
         except Exception:
             pass
 
@@ -90,7 +94,8 @@ def notify_playlist_like(sender, instance, action, pk_set, **kwargs):
                             liker = User.objects.get(pk=pk)
                             liker_name = _get_user_display_name(liker)
                             text = f"{liker_name} لیست پخش '{instance.title}' شما را لایک کرد."
-                            _send_or_update_notification(owner, text)
+                            text_en = f"{liker_name} liked your playlist '{instance.title}'."
+                            _send_or_update_notification(owner, text, text_en)
                         except User.DoesNotExist:
                             continue
         except Exception:
@@ -125,7 +130,8 @@ def notify_new_song_published(sender, instance, created, **kwargs):
                     setting, _ = NotificationSetting.objects.get_or_create(user=user)
                     if setting.new_song_followed_artists:
                         text = f"آهنگ جدید '{instance.title}' از {artist.name} منتشر شد!"
-                        _send_or_update_notification(user, text)
+                        text_en = f"New song '{instance.title_en or instance.title}' by {artist.name_en or artist.name} is out!"
+                        _send_or_update_notification(user, text, text_en)
                 except Exception:
                     pass
 
@@ -143,7 +149,8 @@ def notify_new_album_published(sender, instance, created, **kwargs):
                     setting, _ = NotificationSetting.objects.get_or_create(user=user)
                     if setting.new_album_followed_artists:
                         text = f"آلبوم جدید '{instance.title}' از {artist.name} منتشر شد!"
-                        _send_or_update_notification(user, text)
+                        text_en = f"New album '{instance.title_en or instance.title}' by {artist.name_en or artist.name} is out!"
+                        _send_or_update_notification(user, text, text_en)
                 except Exception:
                     pass
 
