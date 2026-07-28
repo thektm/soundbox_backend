@@ -327,6 +327,20 @@ def generated_playlist_english(obj: Any, field: str) -> str:
 # API-owned response messages. Content fields such as song/playlist titles are
 # deliberately excluded from this map so user-authored text is never rewritten.
 API_MESSAGE_EN_TO_FA = {
+    "Please correct the highlighted fields.": "لطفاً فیلدهای مشخص‌شده را اصلاح کنید.",
+    "Enter a valid mobile number.": "یک شماره موبایل معتبر وارد کنید.",
+    "Enter the 4-digit verification code.": "کد تأیید ۴ رقمی را وارد کنید.",
+    "The new password must be different from the current password.": "رمز عبور جدید باید با رمز عبور فعلی متفاوت باشد.",
+    "Artist authentication submission not found": "درخواست احراز هویت هنرمند پیدا نشد",
+    "The request is invalid.": "درخواست نامعتبر است.",
+    "Authentication is required.": "برای ادامه باید وارد حساب شوید.",
+    "Session not found": "نشست پیدا نشد",
+    "The current session is invalid or has expired.": "نشست فعلی نامعتبر یا منقضی شده است.",
+    "The requested resource was not found.": "مورد درخواستی پیدا نشد.",
+    "The server could not complete the request.": "سرور نتوانست درخواست را انجام دهد. لطفاً دوباره تلاش کنید.",
+    "The request body is not valid JSON.": "بدنه درخواست JSON معتبر نیست.",
+    "This request method is not allowed.": "این روش درخواست مجاز نیست.",
+    "The request content type is not supported.": "نوع محتوای این درخواست پشتیبانی نمی‌شود.",
     "A new short stream link has been generated": "یک لینک کوتاه جدید برای پخش ایجاد شد",
     "A user with that phone number already exists": "کاربری با این شماره تلفن از قبل وجود دارد",
     "Account temporarily locked": "حساب کاربری موقتاً قفل شده است",

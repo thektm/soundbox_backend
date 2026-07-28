@@ -172,6 +172,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
     is_preview = serializers.SerializerMethodField()
     preview_duration_seconds = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     tag_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
@@ -187,7 +188,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
         fields = [
             'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists',
             'album_id', 'album_title', 'cover_image', 'stream_url', 'preview_url', 'is_preview',
-            'preview_duration_seconds', 'duration_seconds', 'is_liked', 'genre_names', 'tag_names',
+            'preview_duration_seconds', 'duration_seconds', 'is_liked', 'genres', 'genre_names', 'tag_names',
             'mood_names', 'sub_genre_names', 'play_count', 'genre_ids', 'tag_ids', 'mood_ids',
             'sub_genre_ids',
         ]
@@ -210,7 +211,14 @@ class SongSummarySerializer(LocalizedModelSerializer):
     def _items(self, obj, relation):
         return list(getattr(obj, relation).all())
 
-    def get_genre_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'genres')]
+    def get_genres(self, obj):
+        request = self.context.get('request')
+        return [
+            {'id': genre.id, 'name': localized_value(genre, 'name', request)}
+            for genre in self._items(obj, 'genres')
+        ]
+
+    def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
     def get_tag_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'tags')]
     def get_mood_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'moods')]
     def get_sub_genre_names(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in self._items(obj, 'sub_genres')]
@@ -309,6 +317,7 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
     artist_id = serializers.IntegerField(read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     is_liked = serializers.SerializerMethodField()
+    genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     sub_genre_names = serializers.SerializerMethodField()
@@ -316,7 +325,7 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Album
-        fields = ['id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'is_liked', 'genre_names', 'mood_names', 'sub_genre_names']
+        fields = ['id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'is_liked', 'genres', 'genre_names', 'mood_names', 'sub_genre_names']
 
     def _songs(self, obj):
         songs = getattr(obj, '_card_songs', None)
@@ -329,7 +338,17 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
             values.update(localized_value(x, 'name', request) for x in getattr(song, relation).all())
         return sorted(values)
 
-    def get_genre_names(self, obj): return self._combined(obj, 'genres')
+    def get_genres(self, obj):
+        request = self.context.get('request')
+        genres = {genre.id: genre for genre in obj.genres.all()}
+        for song in self._songs(obj):
+            genres.update({genre.id: genre for genre in song.genres.all()})
+        return sorted(
+            ({'id': genre.id, 'name': localized_value(genre, 'name', request)} for genre in genres.values()),
+            key=lambda item: item['name'],
+        )
+
+    def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
     def get_mood_names(self, obj): return self._combined(obj, 'moods')
     def get_sub_genre_names(self, obj): return self._combined(obj, 'sub_genres')
     def get_cover_image(self, obj):
@@ -348,6 +367,7 @@ class PlaylistSummarySerializer(LocalizedModelSerializer):
     is_liked = serializers.SerializerMethodField()
     cover_image = serializers.SerializerMethodField()
     top_three_song_covers = serializers.SerializerMethodField()
+    genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='recommended')
@@ -358,7 +378,7 @@ class PlaylistSummarySerializer(LocalizedModelSerializer):
         model = RecommendedPlaylist
         fields = [
             'id', 'unique_id', 'title', 'description', 'cover_image',
-            'top_three_song_covers', 'songs_count', 'is_liked', 'genre_names',
+            'top_three_song_covers', 'songs_count', 'is_liked', 'genres', 'genre_names',
             'mood_names', 'type', 'generated_by', 'creator_unique_id',
         ]
 
@@ -378,8 +398,16 @@ class PlaylistSummarySerializer(LocalizedModelSerializer):
             ).values_list('unique_id', flat=True).first() or 'sedabox'
         return self._creator_uid
 
+    def get_genres(self, obj):
+        request = self.context.get('request')
+        genres = {genre.id: genre for song in self._songs(obj) for genre in song.genres.all()}
+        return sorted(
+            ({'id': genre.id, 'name': localized_value(genre, 'name', request)} for genre in genres.values()),
+            key=lambda item: item['name'],
+        )
+
     def get_genre_names(self, obj):
-        return sorted({localized_value(g, 'name', self.context.get('request')) for song in self._songs(obj) for g in song.genres.all()})
+        return [item['name'] for item in self.get_genres(obj)]
 
     def get_mood_names(self, obj):
         return sorted({localized_value(m, 'name', self.context.get('request')) for song in self._songs(obj) for m in song.moods.all()})
@@ -411,6 +439,7 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
     likes_count = serializers.SerializerMethodField()
     cover_image = serializers.SerializerMethodField()
     top_three_song_covers = serializers.SerializerMethodField()
+    genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     mood_names = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='normal-playlist')
@@ -421,7 +450,7 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
         model = Playlist
         fields = [
             'id', 'title', 'description', 'cover_image', 'top_three_song_covers',
-            'songs_count', 'is_liked', 'likes_count', 'genre_names', 'mood_names',
+            'songs_count', 'is_liked', 'likes_count', 'genres', 'genre_names', 'mood_names',
             'type', 'generated_by', 'creator_unique_id',
         ]
 
@@ -442,7 +471,14 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
             self._creator_uid = User.objects.filter(first_name='SedaBox |', last_name='صداباکس').values_list('unique_id', flat=True).first()
         return self._creator_uid
 
-    def get_genre_names(self, obj): return [localized_value(g, 'name', self.context.get('request')) for g in obj.genres.all()]
+    def get_genres(self, obj):
+        request = self.context.get('request')
+        return [
+            {'id': genre.id, 'name': localized_value(genre, 'name', request)}
+            for genre in obj.genres.all()
+        ]
+
+    def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
     def get_mood_names(self, obj): return [localized_value(m, 'name', self.context.get('request')) for m in obj.moods.all()]
 
     def get_top_three_song_covers(self, obj):
@@ -865,48 +901,81 @@ class UploadSerializer(serializers.Serializer):
 
 
 # --- Auth related serializers ---
+_AUTH_PHONE_ERROR = "Enter a valid mobile number."
+_AUTH_OTP_ERROR = "Enter the 4-digit verification code."
+
+
+def _normalize_auth_phone(value):
+    digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
+    if digits.startswith('0098') and len(digits) == 13:
+        digits = '0' + digits[4:]
+    elif digits.startswith('98') and len(digits) == 12:
+        digits = '0' + digits[2:]
+    elif digits.startswith('9') and len(digits) == 10:
+        digits = '0' + digits
+    if len(digits) != 11 or not digits.startswith('09'):
+        raise serializers.ValidationError(_AUTH_PHONE_ERROR, code='invalid_phone')
+    return digits
+
+
+def _validate_auth_otp(value):
+    code = ''.join(ch for ch in str(value or '') if ch.isdigit())
+    if len(code) != 4:
+        raise serializers.ValidationError(_AUTH_OTP_ERROR, code='invalid_otp_format')
+    return code
+
+
 class PhoneSerializer(serializers.Serializer):
-    phone = serializers.CharField()
+    phone = serializers.CharField(trim_whitespace=True)
+
+    def validate_phone(self, value):
+        return _normalize_auth_phone(value)
 
 
-class RegisterRequestSerializer(serializers.Serializer):
-    phone = serializers.CharField()
-    password = serializers.CharField(write_only=True)
+class RegisterRequestSerializer(PhoneSerializer):
+    password = serializers.CharField(write_only=True, trim_whitespace=False, min_length=6)
     # `artist` flag is taken from query params now; password used as artist password when artist=true
 
 
-class VerifySerializer(serializers.Serializer):
-    phone = serializers.CharField()
-    otp = serializers.CharField()
+class VerifySerializer(PhoneSerializer):
+    otp = serializers.CharField(trim_whitespace=True)
+
+    def validate_otp(self, value):
+        return _validate_auth_otp(value)
 
 
-class LoginPasswordSerializer(serializers.Serializer):
-    phone = serializers.CharField()
-    password = serializers.CharField(write_only=True)
+class LoginPasswordSerializer(PhoneSerializer):
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
 
 
-class LoginOtpRequestSerializer(serializers.Serializer):
-    phone = serializers.CharField()
+class LoginOtpRequestSerializer(PhoneSerializer):
+    pass
 
 
-class LoginOtpVerifySerializer(serializers.Serializer):
-    phone = serializers.CharField()
-    otp = serializers.CharField()
+class LoginOtpVerifySerializer(PhoneSerializer):
+    otp = serializers.CharField(trim_whitespace=True)
+
+    def validate_otp(self, value):
+        return _validate_auth_otp(value)
 
 
-class ForgotPasswordSerializer(serializers.Serializer):
-    phone = serializers.CharField()
+class ForgotPasswordSerializer(PhoneSerializer):
+    pass
 
 
-class PasswordResetSerializer(serializers.Serializer):
-    phone = serializers.CharField(required=False)
-    otp = serializers.CharField(required=False)
-    newPassword = serializers.CharField(write_only=True)
-    resetToken = serializers.CharField(required=False)
+class PasswordResetSerializer(PhoneSerializer):
+    phone = serializers.CharField(required=True, trim_whitespace=True)
+    otp = serializers.CharField(required=True, trim_whitespace=True)
+    newPassword = serializers.CharField(write_only=True, trim_whitespace=False, min_length=6)
+    resetToken = serializers.CharField(required=False, allow_blank=False, trim_whitespace=False)
+
+    def validate_otp(self, value):
+        return _validate_auth_otp(value)
 
 
 class TokenRefreshRequestSerializer(serializers.Serializer):
-    refreshToken = serializers.CharField()
+    refreshToken = serializers.CharField(trim_whitespace=False, allow_blank=False)
+
 
 class ArtistSocialAccountSerializer(LocalizedModelSerializer):
     platform_name = serializers.CharField(source='platform.name', read_only=True)
@@ -921,12 +990,22 @@ class ArtistSocialAccountSerializer(LocalizedModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'platform_name', 'platform_slug', 'platform_base_url']
 class LogoutSerializer(serializers.Serializer):
-    refreshToken = serializers.CharField()
+    refreshToken = serializers.CharField(trim_whitespace=False, allow_blank=False)
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    currentPassword = serializers.CharField(write_only=True)
-    newPassword = serializers.CharField(write_only=True)
+    currentPassword = serializers.CharField(write_only=True, trim_whitespace=False)
+    newPassword = serializers.CharField(write_only=True, trim_whitespace=False, min_length=6)
+
+    def validate(self, attrs):
+        if attrs.get('currentPassword') == attrs.get('newPassword'):
+            raise serializers.ValidationError(
+                {'newPassword': serializers.ErrorDetail(
+                    'The new password must be different from the current password.',
+                    code='password_unchanged',
+                )}
+            )
+        return attrs
 
 
 class ArtistSerializer(LocalizedModelSerializer):
@@ -1981,8 +2060,10 @@ class SessionSerializer(LocalizedModelSerializer):
         current_token = self.context.get('current_token')
         if not current_token:
             return False
-        from django.contrib.auth.hashers import check_password
-        return check_password(current_token, obj.token_hash)
+        # Lazy import avoids the serializers/auth_views import cycle and keeps
+        # both legacy PBKDF2 and current HMAC refresh-token hashes compatible.
+        from .auth_views import check_refresh_token
+        return check_refresh_token(current_token, obj.token_hash)
 
 
 class LikedSongSerializer(LocalizedModelSerializer):

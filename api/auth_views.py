@@ -1,6 +1,6 @@
 from django.utils import timezone
 from django.conf import settings
-from django.shortcuts import get_object_or_404
+from django.core.exceptions import ObjectDoesNotExist
 import logging
 import requests
 import hmac
@@ -9,7 +9,6 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.db import transaction
 from django.db.models import F
 import user_agents
-from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, serializers
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -32,11 +31,13 @@ from .serializers import (
     SessionSerializer,
 )
 from rest_framework_simplejwt.tokens import RefreshToken as SimpleRefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
 from django.utils.crypto import get_random_string
 from datetime import timedelta
 import hashlib
 import re
 from .recommendation_runtime import redis_delete, redis_get, redis_set
+from .auth_errors import AuthAPIView, auth_error, validation_error
 
 _SMS_SESSION = requests.Session()
 _SMS_ADAPTER = HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=0)
@@ -217,22 +218,13 @@ def consume_otp(user: User, purpose: str, raw_code: str, *, max_attempts: int = 
 
 
 def _otp_failure_response(result: str):
-    if result == 'not_found':
-        return Response(
-            {'error': {'code': 'OTP_NOT_FOUND', 'message': 'No valid OTP found'}},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-    if result == 'exceeded':
-        return Response(
-            {'error': {'code': 'OTP_EXCEEDED', 'message': 'OTP attempts exceeded'}},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-    if result == 'invalid':
-        return Response(
-            {'error': {'code': 'OTP_INVALID', 'message': 'The provided OTP is invalid.'}},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-    return None
+    mapping = {
+        'not_found': 'OTP_NOT_FOUND',
+        'exceeded': 'OTP_EXCEEDED',
+        'invalid': 'OTP_INVALID',
+    }
+    code = mapping.get(result)
+    return auth_error(code, status.HTTP_401_UNAUTHORIZED) if code else None
 
 
 def get_device_info(request):
@@ -424,7 +416,7 @@ def issue_tokens_for_user(user: User, request) -> dict:
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class AuthRegisterView(APIView):
+class AuthRegisterView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -445,7 +437,7 @@ class AuthRegisterView(APIView):
     def post(self, request):
         serializer = RegisterRequestSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
         artist_flag = parse_artist_flag(request)
@@ -455,14 +447,14 @@ class AuthRegisterView(APIView):
         existing = User.objects.filter(phone_number=phone).first()
         if existing:
             if existing.is_banned:
-                return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
+                return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
             # If already verified, block registration
             if existing.is_verified:
                 # If client requested artist role, send a verification OTP to confirm
                 if artist_flag:
                     retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY, existing)
                     if retry_after:
-                        return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                        return auth_error('RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS, retry_after_seconds=retry_after)
                     # store artist password now so user can verify and become artist (verify will add role)
                     if artist_password:
                         existing.set_artist_password(artist_password)
@@ -470,21 +462,21 @@ class AuthRegisterView(APIView):
                     otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
                     if sent:
                         return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
-                    return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                return Response({'error': {'code': 'USER_EXISTS', 'message': 'Phone already registered'}}, status=status.HTTP_409_CONFLICT)
+                    return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
+                return auth_error('USER_EXISTS', status.HTTP_409_CONFLICT)
             # Redis performs the common cooldown check without touching PostgreSQL.
             retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY, existing)
             if retry_after:
-                return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                return auth_error('RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS, retry_after_seconds=retry_after)
             # send new OTP to existing unverified user
             otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
             if sent:
                 return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
-            return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
 
         retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY)
         if retry_after:
-            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            return auth_error('RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS, retry_after_seconds=retry_after)
 
         # create user with is_verified False
         create_kwargs = {}
@@ -500,11 +492,11 @@ class AuthRegisterView(APIView):
         if sent:
             return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
         # SMS failed: return error with details
-        return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class AuthVerifyView(APIView):
+class AuthVerifyView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -516,7 +508,7 @@ class AuthVerifyView(APIView):
     def post(self, request):
         serializer = VerifySerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = normalize_phone(serializer.validated_data['phone'])
         otp = serializer.validated_data['otp']
         artist_flag = parse_artist_flag(request)
@@ -524,7 +516,11 @@ class AuthVerifyView(APIView):
         # only add the artist role (password should have been provided during registration).
         artist_password = None
         purpose = OtpCode.PURPOSE_VERIFY
-        user = get_object_or_404(User, phone_number=phone)
+        user = User.objects.filter(phone_number=phone).first()
+        if user is None:
+            return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+        if user.is_banned:
+            return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         otp_result = consume_otp(user, purpose, otp)
         otp_error = _otp_failure_response(otp_result)
         if otp_error is not None:
@@ -552,7 +548,7 @@ class AuthVerifyView(APIView):
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class LoginPasswordView(APIView):
+class LoginPasswordView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -564,17 +560,19 @@ class LoginPasswordView(APIView):
     def post(self, request):
         serializer = LoginPasswordSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
         artist_flag = parse_artist_flag(request)
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
-            return Response({'error': {'code': 'AUTH_FAILED', 'message': 'Invalid credentials'}}, status=status.HTTP_401_UNAUTHORIZED)
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        if user.is_banned:
+            return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         # lockout check
         if user.locked_until and user.locked_until > timezone.now():
-            return Response({'error': {'code': 'ACCOUNT_LOCKED', 'message': 'Account temporarily locked'}}, status=status.HTTP_403_FORBIDDEN)
+            return auth_error('ACCOUNT_LOCKED', status.HTTP_423_LOCKED, retry_after_seconds=max(1, int((user.locked_until - timezone.now()).total_seconds())))
         # choose which password to validate
         password_ok = False
         if artist_flag:
@@ -587,7 +585,7 @@ class LoginPasswordView(APIView):
             if user.failed_login_attempts >= 5:
                 user.locked_until = timezone.now() + timedelta(minutes=15)
             user.save(update_fields=['failed_login_attempts', 'locked_until'])
-            return Response({'error': {'code': 'AUTH_FAILED', 'message': 'Invalid credentials'}}, status=status.HTTP_401_UNAUTHORIZED)
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
         # success
         user.failed_login_attempts = 0
         user.locked_until = None
@@ -600,7 +598,7 @@ class LoginPasswordView(APIView):
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class LoginOtpRequestView(APIView):
+class LoginOtpRequestView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -617,25 +615,25 @@ class LoginOtpRequestView(APIView):
     def post(self, request):
         serializer = LoginOtpRequestSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = normalize_phone(serializer.validated_data['phone'])
         try:
             user = User.objects.get(phone_number=phone)
             if user.is_banned:
-                return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
+                return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         except User.DoesNotExist:
-            return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
+            return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
         retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_LOGIN, user)
         if retry_after:
-            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            return auth_error('RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS, retry_after_seconds=retry_after)
         otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_LOGIN)
         if sent:
             return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
-        return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class LoginOtpVerifyView(APIView):
+class LoginOtpVerifyView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -647,13 +645,15 @@ class LoginOtpVerifyView(APIView):
     def post(self, request):
         serializer = LoginOtpVerifySerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = normalize_phone(serializer.validated_data['phone'])
         otp = serializer.validated_data['otp']
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
-            return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
+            return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+        if user.is_banned:
+            return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         otp_result = consume_otp(user, OtpCode.PURPOSE_LOGIN, otp)
         otp_error = _otp_failure_response(otp_result)
         if otp_error is not None:
@@ -680,7 +680,7 @@ class LoginOtpVerifyView(APIView):
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
-class ArtistAuthView(APIView):
+class ArtistAuthView(AuthAPIView):
     """Create / retrieve / update artist authentication submissions for the authenticated user."""
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -692,11 +692,11 @@ class ArtistAuthView(APIView):
     )
     def get(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
-            return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
+            return auth_error('ARTIST_ONLY', status.HTTP_403_FORBIDDEN)
         try:
             auth = request.user.artist_auth
-        except Exception:
-            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        except ObjectDoesNotExist:
+            return auth_error('ARTIST_AUTH_NOT_FOUND', status.HTTP_404_NOT_FOUND)
         serializer = ArtistAuthSerializer(auth, context={'request': request})
         return Response(serializer.data)
 
@@ -708,13 +708,13 @@ class ArtistAuthView(APIView):
     )
     def post(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
-            return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
+            return auth_error('ARTIST_ONLY', status.HTTP_403_FORBIDDEN)
         # create or replace submission for this user
         if hasattr(request.user, 'artist_auth'):
-            return Response({'detail': 'Submission already exists. Use PATCH to update.'}, status=status.HTTP_400_BAD_REQUEST)
+            return auth_error('SUBMISSION_EXISTS', status.HTTP_409_CONFLICT)
         serializer = ArtistAuthSerializer(data=request.data, context={'request': request})
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -726,20 +726,20 @@ class ArtistAuthView(APIView):
     )
     def patch(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
-            return Response({'detail': 'Only artists can access this endpoint'}, status=status.HTTP_403_FORBIDDEN)
+            return auth_error('ARTIST_ONLY', status.HTTP_403_FORBIDDEN)
         try:
             auth = request.user.artist_auth
-        except Exception:
-            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        except ObjectDoesNotExist:
+            return auth_error('ARTIST_AUTH_NOT_FOUND', status.HTTP_404_NOT_FOUND)
         serializer = ArtistAuthSerializer(auth, data=request.data, partial=True, context={'request': request})
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         serializer.save()
         return Response(serializer.data)
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class ForgotPasswordView(APIView):
+class ForgotPasswordView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -756,24 +756,26 @@ class ForgotPasswordView(APIView):
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = normalize_phone(serializer.validated_data['phone'])
         # Keep the OTP purpose same; client will indicate in reset whether it's for artist password
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
-            return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
+            return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+        if user.is_banned:
+            return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_RESET, user)
         if retry_after:
-            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            return auth_error('RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS, retry_after_seconds=retry_after)
         otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_RESET)
         if sent:
             return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
-        return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class PasswordResetView(APIView):
+class PasswordResetView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -790,7 +792,7 @@ class PasswordResetView(APIView):
     def post(self, request):
         serializer = PasswordResetSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         phone = serializer.validated_data.get('phone')
         otp = serializer.validated_data.get('otp')
         new_password = serializer.validated_data.get('newPassword')
@@ -800,7 +802,9 @@ class PasswordResetView(APIView):
             try:
                 user = User.objects.get(phone_number=phone)
             except User.DoesNotExist:
-                return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
+                return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+            if user.is_banned:
+                return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
             otp_result = consume_otp(user, OtpCode.PURPOSE_RESET, otp or '')
             otp_error = _otp_failure_response(otp_result)
             if otp_error is not None:
@@ -817,11 +821,11 @@ class PasswordResetView(APIView):
             # revoke refresh tokens
             RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
             return Response({'status': 'password_reset'})
-        return Response({'error': {'code': 'BAD_REQUEST', 'message': 'phone is required'}}, status=status.HTTP_400_BAD_REQUEST)
+        return auth_error('VALIDATION_ERROR', status.HTTP_400_BAD_REQUEST, fields={'phone': ['This field is required.']})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class TokenRefreshView(APIView):
+class TokenRefreshView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -842,50 +846,67 @@ class TokenRefreshView(APIView):
     def post(self, request):
         serializer = TokenRefreshRequestSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         refresh_token = serializer.validated_data['refreshToken']
-        # validate token using SimpleJWT
+        # Validate the JWT first. Only malformed/expired JWTs are reported as
+        # TOKEN_INVALID; database failures are allowed to surface as SERVER_ERROR.
         try:
             rt = SimpleRefreshToken(refresh_token)
             user_id = rt['user_id']
-            user = User.objects.get(id=user_id)
-            if user.is_banned:
-                return Response({'error': {'code': 'USER_BANNED', 'message': 'Your account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
-        except Exception:
-            return Response({'error': {'code': 'TOKEN_INVALID', 'message': 'Invalid refresh token'}}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        # Check if this specific token is revoked in our DB
-        active_sessions = RefreshToken.objects.filter(user=user, revoked_at__isnull=True)
-        valid_session = None
-        for session in active_sessions:
-            if check_refresh_token(refresh_token, session.token_hash):
-                valid_session = session
-                break
-        
-        if not valid_session:
-            return Response({'error': {'code': 'TOKEN_REVOKED', 'message': 'Session has been revoked or expired'}}, status=status.HTTP_401_UNAUTHORIZED)
+        except (TokenError, KeyError, TypeError, ValueError):
+            return auth_error('TOKEN_INVALID', status.HTTP_401_UNAUTHORIZED)
 
-        # rotate: create new refresh and store
-        new_refresh = SimpleRefreshToken.for_user(user)
-        new_access = new_refresh.access_token
-        # store new refresh hashed and update existing session for this device
-        try:
-            # Extract device info
+        user = User.objects.filter(id=user_id).first()
+        if user is None:
+            return auth_error('TOKEN_INVALID', status.HTTP_401_UNAUTHORIZED)
+        if user.is_banned:
+            return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
+
+        # HMAC hashes cannot be queried by the raw token, so inspect only active,
+        # unexpired sessions and retain the matching primary key.
+        active_sessions = RefreshToken.objects.filter(
+            user=user,
+            revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).only('id', 'token_hash')
+        valid_session_id = next((
+            session.id
+            for session in active_sessions
+            if check_refresh_token(refresh_token, session.token_hash)
+        ), None)
+        if valid_session_id is None:
+            return auth_error('TOKEN_REVOKED', status.HTTP_401_UNAUTHORIZED)
+
+        # Serialize refresh-token rotation at the database row. A concurrent
+        # request that arrives with the old token loses the re-check and receives
+        # TOKEN_REVOKED instead of issuing a second valid refresh token.
+        with transaction.atomic():
+            valid_session = RefreshToken.objects.select_for_update().filter(
+                id=valid_session_id,
+                user=user,
+                revoked_at__isnull=True,
+                expires_at__gt=timezone.now(),
+            ).first()
+            if valid_session is None or not check_refresh_token(
+                refresh_token, valid_session.token_hash
+            ):
+                return auth_error('TOKEN_REVOKED', status.HTTP_401_UNAUTHORIZED)
+
+            new_refresh = SimpleRefreshToken.for_user(user)
+            new_access = new_refresh.access_token
             device_name, device_type, os_info = get_device_info(request)
-            ua = request.META.get('HTTP_USER_AGENT', '')
-            ip = request.META.get('REMOTE_ADDR', '')
-            
             valid_session.token_hash = hash_refresh_token(str(new_refresh))
             valid_session.expires_at = timezone.now() + timedelta(days=30)
-            valid_session.user_agent = ua
-            valid_session.ip = ip
+            valid_session.user_agent = request.META.get('HTTP_USER_AGENT', '')
+            valid_session.ip = request.META.get('REMOTE_ADDR', '')
             valid_session.device_name = device_name
             valid_session.device_type = device_type
             valid_session.os_info = os_info
-            valid_session.save()
-        except Exception:
-            pass
-        
+            valid_session.save(update_fields=[
+                'token_hash', 'expires_at', 'user_agent', 'ip',
+                'device_name', 'device_type', 'os_info',
+            ])
+
         from .serializers import UserSerializer
         user_data = UserSerializer(user, context={'request': request}).data
         return Response({
@@ -896,7 +917,7 @@ class TokenRefreshView(APIView):
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class LogoutView(APIView):
+class LogoutView(AuthAPIView):
     permission_classes = [AllowAny]
 
     @extend_schema(
@@ -913,22 +934,34 @@ class LogoutView(APIView):
     def post(self, request):
         serializer = LogoutSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         refresh_token = serializer.validated_data['refreshToken']
-        # revoke matching RefreshToken entries
+        # Logout is idempotent and does not reveal whether a token was valid.
+        # Revoke only this device session; revoking other devices is a separate action.
         try:
-            # best-effort: mark all tokens for user as revoked if token is valid
             rt = SimpleRefreshToken(refresh_token)
             user_id = rt['user_id']
-            RefreshToken.objects.filter(user_id=user_id, revoked_at__isnull=True).update(revoked_at=timezone.now())
-        except Exception:
-            # if token invalid, still return success to avoid token probing
-            pass
+        except (TokenError, KeyError, TypeError, ValueError):
+            return Response({'status': 'ok'})
+
+        sessions = RefreshToken.objects.filter(
+            user_id=user_id,
+            revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).only('id', 'token_hash')
+        matching_id = next((
+            session.id for session in sessions
+            if check_refresh_token(refresh_token, session.token_hash)
+        ), None)
+        if matching_id is not None:
+            RefreshToken.objects.filter(
+                pk=matching_id, revoked_at__isnull=True,
+            ).update(revoked_at=timezone.now())
         return Response({'status': 'ok'})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class SessionListView(APIView):
+class SessionListView(AuthAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -954,7 +987,7 @@ class SessionListView(APIView):
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class SessionRevokeView(APIView):
+class SessionRevokeView(AuthAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -968,14 +1001,16 @@ class SessionRevokeView(APIView):
         }
     )
     def post(self, request, pk):
-        session = get_object_or_404(RefreshToken, pk=pk, user=request.user)
+        session = RefreshToken.objects.filter(pk=pk, user=request.user).first()
+        if session is None:
+            return auth_error('SESSION_NOT_FOUND', status.HTTP_404_NOT_FOUND)
         session.revoked_at = timezone.now()
-        session.save()
+        session.save(update_fields=['revoked_at'])
         return Response({'status': 'ok'})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class SessionRevokeOtherView(APIView):
+class SessionRevokeOtherView(AuthAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -1003,22 +1038,41 @@ class SessionRevokeOtherView(APIView):
     def post(self, request):
         current_refresh = request.data.get('refreshToken')
         if not current_refresh:
-            return Response({'error': 'refreshToken is required to keep the current session'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        sessions = RefreshToken.objects.filter(user=request.user, revoked_at__isnull=True)
-        
-        revoked_count = 0
-        for session in sessions:
-            if not check_refresh_token(current_refresh, session.token_hash):
-                session.revoked_at = timezone.now()
-                session.save()
-                revoked_count += 1
-                
+            return auth_error(
+                'REFRESH_TOKEN_REQUIRED',
+                status.HTTP_400_BAD_REQUEST,
+                fields={
+                    'refreshToken': [serializers.ErrorDetail(
+                        'This field is required.', code='required'
+                    )]
+                },
+            )
+
+        sessions = list(RefreshToken.objects.filter(
+            user=request.user,
+            revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).only('id', 'token_hash'))
+        current_session_id = next((
+            session.id for session in sessions
+            if check_refresh_token(current_refresh, session.token_hash)
+        ), None)
+        if current_session_id is None:
+            # A stale or foreign token must never cause every valid session to
+            # be revoked. Return an explicit, recoverable session error.
+            return auth_error('CURRENT_SESSION_INVALID', status.HTTP_401_UNAUTHORIZED)
+
+        revoked_count = RefreshToken.objects.filter(
+            user=request.user,
+            revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).exclude(pk=current_session_id).update(revoked_at=timezone.now())
+
         return Response({'status': 'ok', 'revoked_count': revoked_count})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
-class ChangePasswordView(APIView):
+class ChangePasswordView(AuthAPIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -1038,7 +1092,7 @@ class ChangePasswordView(APIView):
     def post(self, request):
         serializer = ChangePasswordSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return validation_error(serializer.errors)
         
         current_password = serializer.validated_data['currentPassword']
         new_password = serializer.validated_data['newPassword']
@@ -1048,11 +1102,11 @@ class ChangePasswordView(APIView):
         # Validate with the correct password type
         if artist_flag:
             if not user.check_artist_password(current_password):
-                return Response({'error': {'code': 'INVALID_PASSWORD', 'message': 'Current password is incorrect'}}, status=status.HTTP_400_BAD_REQUEST)
+                return auth_error('INVALID_PASSWORD', status.HTTP_400_BAD_REQUEST, fields={'currentPassword': [serializers.ErrorDetail('Current password is incorrect.', code='invalid_password')]})
             user.set_artist_password(new_password)
         else:
             if not user.check_password(current_password):
-                return Response({'error': {'code': 'INVALID_PASSWORD', 'message': 'Current password is incorrect'}}, status=status.HTTP_400_BAD_REQUEST)
+                return auth_error('INVALID_PASSWORD', status.HTTP_400_BAD_REQUEST, fields={'currentPassword': [serializers.ErrorDetail('Current password is incorrect.', code='invalid_password')]})
             user.set_password(new_password)
         user.save()
         
