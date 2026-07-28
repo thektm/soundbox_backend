@@ -108,6 +108,7 @@ from .performance import (
 )
 from collections import Counter
 import json
+from .subscriptions import activate_one_month_premium_locked
 from .recommendation_runtime import (
     fresh_order_ids, fresh_order_objects, fresh_select_ids,
     mark_generated_playlist_usage, remember_exposure,
@@ -8026,20 +8027,63 @@ class PremiumPlanPriceView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        # Prefer the latest PlayConfiguration record's premium_plan_price.
-        config = PlayConfiguration.objects.order_by('-updated_at').first()
-        if config and config.premium_plan_price is not None:
-            try:
+        fallback = float(getattr(settings, 'PREMIUM_PLAN_PRICE', 0))
+        price_val = fallback
+        try:
+            config = PlayConfiguration.objects.order_by('-updated_at').only(
+                'premium_plan_price'
+            ).first()
+            if config and config.premium_plan_price is not None:
                 price_val = float(config.premium_plan_price)
-            except Exception:
-                price_val = float(getattr(settings, 'PREMIUM_PLAN_PRICE', 4.99))
-        else:
-            price_val = float(getattr(settings, 'PREMIUM_PLAN_PRICE', 4.99))
+        except Exception:
+            # The public pricing screen should remain available during a brief
+            # configuration-table outage or an incomplete deployment.
+            price_val = fallback
 
-        currency = getattr(settings, 'PREMIUM_PLAN_CURRENCY', 'USD')
-
-        return Response({
+        response = Response({
             'plan': 'premium',
             'price': price_val,
-            
+            'currency': 'TOMAN',
         }, status=status.HTTP_200_OK)
+        response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+        return response
+
+
+@extend_schema(
+    summary="Complete simulated premium checkout",
+    description="Activates Premium for exactly one calendar month for the authenticated audience account.",
+    request=inline_serializer(
+        name='PremiumCheckoutRequest',
+        fields={'gateway': serializers.ChoiceField(choices=['zarinpal'])},
+    ),
+    responses={200: UserSerializer},
+)
+class PremiumPlanActivateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        gateway = str(request.data.get('gateway') or '').strip().lower()
+        if gateway != 'zarinpal':
+            return Response(
+                {
+                    'error': {
+                        'code': 'PAYMENT_GATEWAY_INVALID',
+                        'message': 'The selected payment gateway is not available.',
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user, expiry = activate_one_month_premium_locked(
+            request.user.pk, gateway=gateway
+        )
+        payload = UserSerializer(user, context={'request': request}).data
+        return Response(
+            {
+                'message': 'Premium activated successfully.',
+                'plan': user.plan,
+                'premium_expires_at': expiry.isoformat(),
+                'user': payload,
+            },
+            status=status.HTTP_200_OK,
+        )

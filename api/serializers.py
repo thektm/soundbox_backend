@@ -18,6 +18,7 @@ from django.db.models import Q
 from django.db.models.manager import BaseManager
 
 from .localization import get_request_language, localized_value, translate_generated_text, generated_playlist_english
+from .subscriptions import normalize_expired_premium, premium_expires_at
 
 from .performance import (
     CATALOG_VERSION_KEY, cache_get_or_claim, cache_set, cache_version,
@@ -590,6 +591,8 @@ class UserImageProfileSerializer(LocalizedModelSerializer):
 
 
 class UserSerializer(LocalizedModelSerializer):
+    is_premium = serializers.SerializerMethodField()
+    premium_expires_at = serializers.SerializerMethodField()
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
     user_playlists_count = serializers.IntegerField(source='user_playlists.count', read_only=True)
@@ -605,14 +608,27 @@ class UserSerializer(LocalizedModelSerializer):
             'id', 'phone_number', 'unique_id', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_staff', 'date_joined',
             'followers_count', 'following_count', 'user_playlists_count', 
-            'recently_played', 'notification_setting', 'image_profile', 'plan', 'stream_quality',
+            'recently_played', 'notification_setting', 'image_profile', 'plan', 'is_premium',
+            'premium_expires_at', 'stream_quality',
             'followers', 'following'
         ]
         read_only_fields = [
             'id', 'is_active', 'is_staff', 'date_joined', 
             'followers_count', 'following_count', 'user_playlists_count',
-            'notification_setting', 'image_profile', 'followers', 'following', 'plan'
+            'notification_setting', 'image_profile', 'followers', 'following', 'plan',
+            'is_premium', 'premium_expires_at'
         ]
+
+    def to_representation(self, instance):
+        normalize_expired_premium(instance)
+        return super().to_representation(instance)
+
+    def get_is_premium(self, obj):
+        return obj.plan == User.PLAN_PREMIUM
+
+    def get_premium_expires_at(self, obj):
+        expiry = premium_expires_at(obj)
+        return expiry.isoformat() if expiry else None
 
     def get_followers_count(self, obj):
         return Follow.objects.filter(followed_user=obj).count()

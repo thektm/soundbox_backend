@@ -89,6 +89,7 @@ from .views import (
     PlaylistRecommendationLikeView,
     PlaylistRecommendationSaveView,
     PremiumPlanPriceView,
+    PremiumPlanActivateView,
     PlaylistSaveToggleView,
     SearchView,
     EventPlaylistView,
@@ -289,6 +290,7 @@ urlpatterns = [
     path('search/sections/<int:pk>/', SearchSectionDetailView.as_view(), name='search_section_detail'),
     path('search/', SearchView.as_view(), name='search'),
     path('plans/premium/price/', PremiumPlanPriceView.as_view(), name='premium_plan_price'),
+    path('plans/premium/activate/', PremiumPlanActivateView.as_view(), name='premium_plan_activate'),
 
     # --- Admin App Endpoints ---
     path('admin/users/', AdminUserListView.as_view(), name='admin_user_list'),
