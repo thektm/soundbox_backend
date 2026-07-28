@@ -73,12 +73,15 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast, Concat
 from django.utils import timezone
 from django.conf import settings
+from django.http import StreamingHttpResponse
+from django.core.cache import cache
 from .utils import (
     absolute_api_url, upload_file_to_r2, generate_signed_r2_url,
     get_audio_info, convert_to_128kbps,
 )
 from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
+import requests
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import uuid
@@ -882,50 +885,320 @@ class UserHistoryDeleteView(generics.DestroyAPIView):
         return self.destroy(request, *args, **kwargs)
 
 
+DOWNLOAD_QUALITY_CACHE_TTL = 60 * 60 * 24 * 365
+
+
+def _download_quality_cache_key(user_id, song_id):
+    return f"download-quality:v1:{int(user_id)}:{int(song_id)}"
+
+
+def _download_quality_map(user_id, song_ids):
+    song_ids = [int(song_id) for song_id in song_ids]
+    keys = [_download_quality_cache_key(user_id, song_id) for song_id in song_ids]
+    cached = cache.get_many(keys) if keys else {}
+    return {
+        song_id: cached.get(_download_quality_cache_key(user_id, song_id))
+        for song_id in song_ids
+    }
+
+
+def _signed_download_url(raw_url, expiration=900):
+    if not raw_url:
+        return None
+    cdn_base = getattr(settings, 'R2_CDN_BASE', '').rstrip('/')
+    from urllib.parse import unquote, urlparse
+    if cdn_base and raw_url.startswith(cdn_base + '/'):
+        object_key = unquote(raw_url[len(cdn_base) + 1:])
+        return generate_signed_r2_url(object_key, expiration=expiration) or raw_url
+    parsed = urlparse(raw_url)
+    if parsed.scheme in {'http', 'https'}:
+        return raw_url
+    return generate_signed_r2_url(unquote(parsed.path.lstrip('/')), expiration=expiration) or raw_url
+
+
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
 class DownloadHistoryView(generics.ListAPIView):
-    """
-    Manages the user's download history.
-    """
+    """List completed browser downloads and record the latest chosen quality."""
     serializer_class = DownloadHistorySerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
 
     @extend_schema(
         summary="دریافت تاریخچه دانلودهای کاربر",
-        description="دریافت لیست آهنگ‌هایی که کاربر برای دانلود اقدام کرده است، بصورت صفحه‌بندی شده و مرتب شده بر اساس آخرین زمان دانلود.",
+        description="دریافت لیست آهنگ‌های دانلودشده همراه با آخرین کیفیت دانلود.",
         responses={200: DownloadHistorySerializer(many=True)}
     )
     def get_queryset(self):
-        return DownloadHistory.objects.filter(user=self.request.user).order_by('-updated_at')
+        return (
+            DownloadHistory.objects
+            .filter(user=self.request.user)
+            .select_related('song', 'song__artist', 'song__album')
+            .prefetch_related(
+                'song__featured_artists', 'song__genres', 'song__tags',
+                'song__moods', 'song__sub_genres',
+            )
+            .order_by('-updated_at')
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        items = list(page if page is not None else queryset)
+        quality_map = _download_quality_map(request.user.id, [item.song_id for item in items])
+        context = {**self.get_serializer_context(), 'download_quality_map': quality_map}
+        data = self.get_serializer(items, many=True, context=context).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
     @extend_schema(
-        summary="ثبت درخواست دانلود آهنگ",
-        description="ثبت یک آهنگ در تاریخچه دانلودهای کاربر. اگر آهنگ قبلاً دانلود شده باشد، زمان آن بروزرسانی می‌شود تا به ابتدای لیست بیاید.",
+        summary="ثبت دانلود تکمیل‌شده آهنگ",
+        description="پس از آماده‌شدن کامل Blob در مرورگر، آهنگ و کیفیت انتخاب‌شده را در تاریخچه ثبت می‌کند.",
         request=inline_serializer(
             name='DownloadRequest',
-            fields={'song_id': serializers.IntegerField()}
+            fields={
+                'song_id': serializers.IntegerField(),
+                'quality': serializers.ChoiceField(choices=['128', '320']),
+            }
         ),
         responses={201: DownloadHistorySerializer, 200: DownloadHistorySerializer}
     )
     def post(self, request, *args, **kwargs):
         song_id = request.data.get('song_id')
+        quality = str(request.data.get('quality') or '')
         if not song_id:
-            return Response({"error": "song_id is required"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        song = get_object_or_404(Song, id=song_id)
-        
+            return Response({'error': {'code': 'SONG_ID_REQUIRED', 'message': 'song_id is required'}}, status=status.HTTP_400_BAD_REQUEST)
+        if quality not in {'128', '320'}:
+            return Response({'error': {'code': 'DOWNLOAD_QUALITY_INVALID', 'message': 'quality must be 128 or 320'}}, status=status.HTTP_400_BAD_REQUEST)
+
+        song = get_object_or_404(Song, id=song_id, status=Song.STATUS_PUBLISHED)
         obj, created = DownloadHistory.objects.update_or_create(
             user=request.user,
             song=song,
             defaults={'updated_at': timezone.now()}
         )
-        
-        serializer = self.get_serializer(obj)
-        if created:
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        else:
-            return Response(serializer.data, status=status.HTTP_200_OK)
+        cache.set(
+            _download_quality_cache_key(request.user.id, song.id),
+            quality,
+            timeout=DOWNLOAD_QUALITY_CACHE_TTL,
+        )
+        context = {
+            **self.get_serializer_context(),
+            'download_quality_map': {song.id: quality},
+        }
+        serializer = self.get_serializer(obj, context=context)
+        return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
+class SongPlaybackQualityView(APIView):
+    """Provide a replacement source for the currently playing song without creating a new play session."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary='تغییر کیفیت آهنگ در حال پخش',
+        request=inline_serializer(
+            name='SongPlaybackQualityRequest',
+            fields={'quality': serializers.ChoiceField(choices=['medium', 'high'])},
+        ),
+        responses={200: inline_serializer(
+            name='SongPlaybackQualityResponse',
+            fields={
+                'song_id': serializers.IntegerField(),
+                'quality': serializers.CharField(),
+                'stream_url': serializers.URLField(),
+                'expires_in': serializers.IntegerField(),
+            },
+        )},
+    )
+    def post(self, request, pk):
+        song = get_object_or_404(Song, pk=pk, status=Song.STATUS_PUBLISHED)
+        quality = str(request.data.get('quality') or '')
+        if quality not in {'medium', 'high'}:
+            return Response({'error': {'code': 'PLAYBACK_QUALITY_INVALID', 'message': 'quality must be medium or high'}}, status=status.HTTP_400_BAD_REQUEST)
+        if quality == 'high' and request.user.plan != User.PLAN_PREMIUM:
+            return Response({'error': {'code': 'PREMIUM_REQUIRED', 'message': 'High quality is available to Premium users.'}}, status=status.HTTP_403_FORBIDDEN)
+
+        raw_url = song.converted_audio_url if quality == 'medium' else song.audio_file
+        if not raw_url:
+            return Response({'error': {'code': 'PLAYBACK_QUALITY_UNAVAILABLE', 'message': 'This quality is unavailable for the current song.'}}, status=status.HTTP_409_CONFLICT)
+
+        signed_url = _signed_download_url(raw_url, expiration=3600)
+        if not signed_url:
+            return Response({'error': {'code': 'PLAYBACK_SOURCE_UNAVAILABLE', 'message': 'The playback source is unavailable.'}}, status=status.HTTP_409_CONFLICT)
+
+        response = Response({
+            'song_id': song.id,
+            'quality': quality,
+            'stream_url': signed_url,
+            'expires_in': 3600,
+        })
+        response['Cache-Control'] = 'private, no-store'
+        return response
+
+
+def _download_filename(song, quality):
+    safe_title = re.sub(r'[<>:"/\\|?*]+', '', song.display_title or song.title).strip() or f'song-{song.id}'
+    safe_artist = re.sub(r'[<>:"/\\|?*]+', '', song.artist.artistic_name or song.artist.name).strip()
+    return f"{safe_title}{' - ' + safe_artist if safe_artist else ''} [{quality}kbps].mp3"
+
+
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
+class SongDownloadView(APIView):
+    """Return available download qualities and short-lived direct URLs."""
+    permission_classes = [IsAuthenticated]
+
+    def _song(self, request, pk):
+        queryset = Song.objects.select_related('artist')
+        if not request.user.is_staff:
+            queryset = queryset.filter(status=Song.STATUS_PUBLISHED)
+        return get_object_or_404(queryset, pk=pk)
+
+    def _options(self, request, song):
+        is_premium = request.user.plan == User.PLAN_PREMIUM
+        return [
+            {
+                'quality': '128',
+                'label': '128 kbps',
+                'available': bool(is_premium and song.converted_audio_url),
+                'requires_premium': True,
+                'reason': None if is_premium and song.converted_audio_url else (
+                    'PREMIUM_REQUIRED' if not is_premium else 'SOURCE_UNAVAILABLE'
+                ),
+            },
+            {
+                'quality': '320',
+                'label': '320 kbps',
+                'available': bool(is_premium and song.audio_file),
+                'requires_premium': True,
+                'reason': None if is_premium and song.audio_file else (
+                    'PREMIUM_REQUIRED' if not is_premium else 'SOURCE_UNAVAILABLE'
+                ),
+            },
+        ]
+
+    @extend_schema(
+        summary='دریافت کیفیت‌های قابل دانلود',
+        responses={200: inline_serializer(
+            name='SongDownloadOptionsResponse',
+            fields={
+                'song_id': serializers.IntegerField(),
+                'can_download': serializers.BooleanField(),
+                'qualities': serializers.ListField(child=serializers.DictField()),
+            },
+        )},
+    )
+    def get(self, request, pk):
+        song = self._song(request, pk)
+        options = self._options(request, song)
+        response = Response({
+            'song_id': song.id,
+            'can_download': any(option['available'] for option in options),
+            'qualities': options,
+        })
+        response['Cache-Control'] = 'private, no-store'
+        return response
+
+    @extend_schema(
+        summary='آماده‌سازی لینک مستقیم دانلود',
+        request=inline_serializer(
+            name='SongDownloadPrepareRequest',
+            fields={'quality': serializers.ChoiceField(choices=['128', '320'])},
+        ),
+        responses={200: inline_serializer(
+            name='SongDownloadPrepareResponse',
+            fields={
+                'song_id': serializers.IntegerField(),
+                'quality': serializers.CharField(),
+                'download_url': serializers.URLField(),
+                'proxy_url': serializers.URLField(),
+                'filename': serializers.CharField(),
+                'expires_in': serializers.IntegerField(),
+            },
+        )},
+    )
+    def post(self, request, pk):
+        song = self._song(request, pk)
+        quality = str(request.data.get('quality') or '')
+        options = {option['quality']: option for option in self._options(request, song)}
+        option = options.get(quality)
+        if option is None:
+            return Response({'error': {'code': 'DOWNLOAD_QUALITY_INVALID', 'message': 'quality must be 128 or 320'}}, status=status.HTTP_400_BAD_REQUEST)
+        if not option['available']:
+            code = option['reason'] or 'DOWNLOAD_QUALITY_UNAVAILABLE'
+            http_status = status.HTTP_403_FORBIDDEN if code == 'PREMIUM_REQUIRED' else status.HTTP_409_CONFLICT
+            return Response({'error': {'code': code, 'message': 'The selected download quality is unavailable.'}}, status=http_status)
+
+        raw_url = song.converted_audio_url if quality == '128' else song.audio_file
+        signed_url = _signed_download_url(raw_url, expiration=900)
+        if not signed_url:
+            return Response({'error': {'code': 'DOWNLOAD_SOURCE_UNAVAILABLE', 'message': 'The download source is unavailable.'}}, status=status.HTTP_409_CONFLICT)
+
+        filename = _download_filename(song, quality)
+        proxy_path = reverse('song_download_file', kwargs={'pk': song.id})
+        proxy_url = request.build_absolute_uri(f"{proxy_path}?quality={quality}")
+        response = Response({
+            'song_id': song.id,
+            'quality': quality,
+            'download_url': signed_url,
+            'proxy_url': proxy_url,
+            'filename': filename,
+            'expires_in': 900,
+        })
+        response['Cache-Control'] = 'private, no-store'
+        return response
+
+
+@extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
+class SongDownloadFileView(SongDownloadView):
+    """Stream a download through the API only when direct object-storage CORS is unavailable."""
+    http_method_names = ['get', 'head', 'options']
+
+    def get(self, request, pk):
+        song = self._song(request, pk)
+        quality = str(request.query_params.get('quality') or '')
+        options = {option['quality']: option for option in self._options(request, song)}
+        option = options.get(quality)
+        if option is None:
+            return Response({'error': {'code': 'DOWNLOAD_QUALITY_INVALID', 'message': 'quality must be 128 or 320'}}, status=status.HTTP_400_BAD_REQUEST)
+        if not option['available']:
+            code = option['reason'] or 'DOWNLOAD_QUALITY_UNAVAILABLE'
+            http_status = status.HTTP_403_FORBIDDEN if code == 'PREMIUM_REQUIRED' else status.HTTP_409_CONFLICT
+            return Response({'error': {'code': code, 'message': 'The selected download quality is unavailable.'}}, status=http_status)
+
+        raw_url = song.converted_audio_url if quality == '128' else song.audio_file
+        signed_url = _signed_download_url(raw_url, expiration=900)
+        if not signed_url:
+            return Response({'error': {'code': 'DOWNLOAD_SOURCE_UNAVAILABLE', 'message': 'The download source is unavailable.'}}, status=status.HTTP_409_CONFLICT)
+
+        try:
+            upstream = requests.get(signed_url, stream=True, timeout=(5, 30))
+            upstream.raise_for_status()
+        except requests.RequestException:
+            return Response({'error': {'code': 'DOWNLOAD_SOURCE_UNAVAILABLE', 'message': 'The download source is unavailable.'}}, status=status.HTTP_502_BAD_GATEWAY)
+
+        def stream_chunks():
+            try:
+                for chunk in upstream.iter_content(chunk_size=256 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        response = StreamingHttpResponse(
+            stream_chunks(),
+            content_type=upstream.headers.get('Content-Type') or 'audio/mpeg',
+        )
+        content_length = upstream.headers.get('Content-Length')
+        if content_length:
+            response['Content-Length'] = content_length
+        from urllib.parse import quote
+        filename = _download_filename(song, quality)
+        ascii_filename = re.sub(r'[^A-Za-z0-9._ -]+', '_', filename) or f'song-{song.id}-{quality}.mp3'
+        response['Content-Disposition'] = (
+            f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{quote(filename)}'
+        )
+        response['Cache-Control'] = 'private, no-store'
+        response['X-Content-Type-Options'] = 'nosniff'
+        return response
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
@@ -938,6 +1211,10 @@ class DownloadHistoryDeleteView(generics.DestroyAPIView):
 
     def get_queryset(self):
         return DownloadHistory.objects.filter(user=self.request.user)
+
+    def perform_destroy(self, instance):
+        cache.delete(_download_quality_cache_key(instance.user_id, instance.song_id))
+        instance.delete()
 
     def delete(self, request, *args, **kwargs):
         return self.destroy(request, *args, **kwargs)

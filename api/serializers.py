@@ -198,6 +198,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
         return [
             {
                 'id': a.id,
+                'unique_id': a.unique_id,
                 'name': localized_value(a, 'name', request),
                 'name_fa': a.name,
                 'name_en': a.name_en or a.name,
@@ -1337,6 +1338,7 @@ class SongSerializer(LocalizedModelSerializer):
         return [
             {
                 'id': a.id,
+                'unique_id': a.unique_id,
                 'name': localized_value(a, 'name', request),
                 'name_fa': a.name,
                 'name_en': a.name_en or a.name,
@@ -1640,6 +1642,7 @@ class SongStreamSerializer(LocalizedModelSerializer):
         return [
             {
                 'id': a.id,
+                'unique_id': a.unique_id,
                 'name': localized_value(a, 'name', request),
                 'name_fa': a.name,
                 'name_en': a.name_en or a.name,
@@ -2219,13 +2222,19 @@ class AudioAdSerializer(LocalizedModelSerializer):
 
 
 class DownloadHistorySerializer(LocalizedModelSerializer):
-    """Serializer for user download history entries"""
+    """Serializer for user download history entries."""
     song = SongSummarySerializer(read_only=True)
+    last_download_quality = serializers.SerializerMethodField()
 
     class Meta:
         model = DownloadHistory
-        fields = ['id', 'song', 'updated_at']
-        read_only_fields = ['id', 'song', 'updated_at']
+        fields = ['id', 'song', 'updated_at', 'last_download_quality']
+        read_only_fields = ['id', 'song', 'updated_at', 'last_download_quality']
+
+    def get_last_download_quality(self, obj):
+        quality_map = self.context.get('download_quality_map') or {}
+        value = quality_map.get(obj.song_id)
+        return str(value) if value in {'128', '320'} else None
 
 
 class InitialCheckSerializer(LocalizedModelSerializer):
