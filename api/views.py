@@ -65,6 +65,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
+from django.db import transaction
 from django.db.models import (
     Sum, Count, F, IntegerField, BigIntegerField, Value, Prefetch, DecimalField, CharField,
     TextField, OuterRef, Subquery,
@@ -100,10 +101,14 @@ from .performance import (
     AFFINITY_VERSION_KEY, CATALOG_VERSION_KEY, USER_DIRECTORY_VERSION_KEY,
     cache_delete, cache_get, cache_get_or_claim, cache_set,
     cache_version, hydrate_album_metrics, hydrate_artist_metrics, hydrate_playlist_metrics,
-    hydrate_song_metrics, stable_cache_key,
+    hydrate_song_metrics, stable_cache_key, user_affinity_version,
 )
 from collections import Counter
 import json
+from .recommendation_runtime import (
+    fresh_order_ids, fresh_order_objects, fresh_select_ids,
+    mark_generated_playlist_usage, remember_exposure,
+)
 
 
 
@@ -4009,7 +4014,7 @@ def _dynamic_playlist_items(user=None, bucket=None):
 def _user_has_music_activity(user):
     if user is None or not getattr(user, 'is_authenticated', False):
         return False
-    key = stable_cache_key('user-music-activity', user.pk, 'v1')
+    key = stable_cache_key('user-music-activity', user.pk, user_affinity_version(user.pk), 'v2')
     cached = cache_get(key)
     if cached is not None:
         return bool(cached)
@@ -4022,13 +4027,254 @@ def _user_has_music_activity(user):
     return active
 
 
+def _ensure_personal_recommendations(user, target=18):
+    """Maintain a compact, current personal playlist pool for one user.
+
+    The expensive factor analysis runs at most once per five-minute bucket and
+    again immediately when that user's affinity version changes. Rows are
+    created in bulk and old unused generations are removed by Redis maintenance.
+    """
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return []
+    if not _user_has_music_activity(user):
+        return []
+
+    affinity = user_affinity_version(user.pk)
+    bucket = _time_bucket(15)
+    generation_key = stable_cache_key(
+        'ensure-personal-playlist-pool', user.pk, affinity, bucket, target, 'v8'
+    )
+    cached, claimed = cache_get_or_claim(generation_key, lock_timeout=30, wait_timeout=0.6)
+    if cached is not None:
+        return list(cached)
+
+    interacted = Song.objects.filter(
+        Q(liked_by=user) | Q(play_counts__user=user) | Q(user_playlists__user=user),
+        status=Song.STATUS_PUBLISHED,
+    ).distinct()
+    genre_ids = list(
+        interacted.exclude(genres__id=None)
+        .values('genres__id').annotate(n=Count('id')).order_by('-n')
+        .values_list('genres__id', flat=True)[:4]
+    )
+    mood_ids = list(
+        interacted.exclude(moods__id=None)
+        .values('moods__id').annotate(n=Count('id')).order_by('-n')
+        .values_list('moods__id', flat=True)[:3]
+    )
+    artist_ids = list(
+        interacted.values('artist_id').annotate(n=Count('id')).order_by('-n')
+        .values_list('artist_id', flat=True)[:3]
+    )
+
+    genre_rows = {
+        row['id']: row for row in Genre.objects.filter(id__in=genre_ids)
+        .values('id', 'name', 'name_en', 'slug')
+    }
+    mood_rows = {
+        row['id']: row for row in Mood.objects.filter(id__in=mood_ids)
+        .values('id', 'name', 'name_en', 'slug')
+    }
+    artist_rows = {
+        row['id']: row for row in Artist.objects.filter(id__in=artist_ids)
+        .values('id', 'name', 'name_en')
+    }
+
+    configs = []
+    for value in genre_ids:
+        configs.extend([('genre', value, 1), ('genre', value, 2)])
+    for value in mood_ids:
+        configs.append(('mood', value, 1))
+    for value in artist_ids:
+        configs.append(('artist', value, 1))
+    configs.append(('blend', 0, 1))
+
+    base = _home_song_queryset()
+    used = set()
+    recipes = []
+    now = timezone.now()
+
+    def pick(queryset, size, seed):
+        ids = _pick_ids(queryset, size, seed, used, pool_size=100)
+        if len(ids) < 4:
+            # Permit limited overlap only when a narrow factor lacks enough songs.
+            ids = _pick_ids(queryset, size, f'{seed}:overlap', set(), pool_size=100)
+        return ids
+
+    for kind, value, variant in configs:
+        if len(recipes) >= target:
+            break
+        if kind == 'genre':
+            row = genre_rows.get(value, {})
+            fa = row.get('name') or 'سبک محبوب شما'
+            en = generated_term_en(row.get('name'), row.get('name_en'), generic='Your Favorite Genre')
+            title = f'میکس {fa}' if variant == 1 else f'کشف {fa}'
+            title_en = f'{en} Mix' if variant == 1 else f'Discover {en}'
+            description = 'منتخب تازه براساس سبک‌های مورد علاقه شما'
+            description_en = 'A fresh selection based on the genres you enjoy most'
+            queryset = base.filter(genres__id=value).distinct().order_by('-plays', '-release_date', '-created_at')
+            playlist_type = RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE
+        elif kind == 'mood':
+            row = mood_rows.get(value, {})
+            fa = row.get('name') or 'حال‌وهوای شما'
+            en = generated_term_en(row.get('name'), row.get('name_en'), generic='Your Mood')
+            title, title_en = f'حال‌وهوای {fa}', f'{en} Mood'
+            description = 'یک جریان تازه متناسب با حال‌وهوای شنیداری شما'
+            description_en = 'A fresh flow matched to your listening mood'
+            queryset = base.filter(moods__id=value).distinct().order_by('-plays', '-release_date', '-created_at')
+            playlist_type = RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED
+        elif kind == 'artist':
+            row = artist_rows.get(value, {})
+            fa = row.get('name') or 'هنرمند محبوب شما'
+            en = generated_term_en(row.get('name'), row.get('name_en'), generic='Your Favorite Artist')
+            title, title_en = f'منتخب {fa}', f'{en} Essentials'
+            description = 'ترک‌های برتر از هنرمندانی که بیشتر دنبال می‌کنید'
+            description_en = 'Top tracks from artists closest to your current taste'
+            queryset = base.filter(artist_id=value).order_by('-plays', '-release_date', '-created_at')
+            playlist_type = RecommendedPlaylist.PLAYLIST_TYPE_ARTIST_MIX
+        else:
+            title, title_en = 'برای امروز شما', 'Made for You Today'
+            description = 'ترکیبی تازه از سبک‌ها، مودها و هنرمندان محبوب شما'
+            description_en = 'A fresh blend of your favorite genres, moods, and artists'
+            factor_filter = Q()
+            if genre_ids:
+                factor_filter |= Q(genres__id__in=genre_ids)
+            if mood_ids:
+                factor_filter |= Q(moods__id__in=mood_ids)
+            if artist_ids:
+                factor_filter |= Q(artist_id__in=artist_ids)
+            queryset = (
+                base.filter(factor_filter).distinct() if factor_filter else base
+            ).order_by('-plays', '-release_date', '-created_at')
+            playlist_type = RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE
+
+        song_ids = pick(queryset, 18, f'{user.pk}:{affinity}:{bucket}:{kind}:{value}:{variant}')
+        if len(song_ids) < 3:
+            continue
+        recipes.append({
+            'title': title,
+            'title_en': title_en,
+            'description': description,
+            'description_en': description_en,
+            'playlist_type': playlist_type,
+            'song_ids': song_ids,
+        })
+
+    # Sparse profiles still receive a complete pool from strong catalog signals.
+    fallback_specs = [
+        ('تازه برای شما', 'Fresh for You', '-release_date'),
+        ('محبوب برای شما', 'Popular for You', '-plays'),
+        ('کشف بعدی شما', 'Your Next Discovery', '-created_at'),
+    ]
+    fallback_index = 0
+    while len(recipes) < target and fallback_index < target * 2:
+        fa_title, en_title, ordering = fallback_specs[fallback_index % len(fallback_specs)]
+        variant = fallback_index // len(fallback_specs) + 1
+        queryset = base.order_by(ordering, '-release_date', '-created_at')
+        song_ids = pick(queryset, 18, f'{user.pk}:{affinity}:{bucket}:fallback:{fallback_index}')
+        fallback_index += 1
+        if len(song_ids) < 3:
+            break
+        recipes.append({
+            'title': f'{fa_title} {variant}' if variant > 1 else fa_title,
+            'title_en': f'{en_title} {variant}' if variant > 1 else en_title,
+            'description': 'پیشنهاد تازه براساس سلیقه و شنیده‌های فعلی شما',
+            'description_en': 'A fresh recommendation based on your current taste and listening history',
+            'playlist_type': RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE,
+            'song_ids': song_ids,
+        })
+
+    if not recipes:
+        cache_set(generation_key, [], 60)
+        return []
+
+    unique_ids = [
+        f'smart_rec_{user.pk}_{affinity}_{bucket}_{index}'
+        for index in range(1, len(recipes) + 1)
+    ]
+    existing_qs = RecommendedPlaylist.objects.filter(unique_id__in=unique_ids)
+    existing = {item.unique_id: item for item in existing_qs}
+    durable_ids = set(
+        existing_qs.filter(
+            Q(expires_at__isnull=True) | Q(views__gt=0)
+            | Q(liked_by__isnull=False) | Q(saved_by__isnull=False)
+            | Q(viewed_by__isnull=False)
+        ).values_list('id', flat=True).distinct()
+    )
+    to_create = []
+    to_update = []
+    for index, (unique_id, recipe) in enumerate(zip(unique_ids, recipes), 1):
+        defaults = {
+            'user': user,
+            'title': recipe['title'],
+            'title_en': recipe['title_en'],
+            'description': recipe['description'],
+            'description_en': recipe['description_en'],
+            'playlist_type': recipe['playlist_type'],
+            'song_order': recipe['song_ids'],
+            'relevance_score': 110 - index,
+            'match_percentage': max(78, 98 - index),
+            'expires_at': now + timedelta(hours=2),
+            'updated_at': now,
+        }
+        item = existing.get(unique_id)
+        if item is None:
+            to_create.append(RecommendedPlaylist(
+                unique_id=unique_id, created_at=now, **defaults
+            ))
+        elif item.pk not in durable_ids:
+            for field, value in defaults.items():
+                setattr(item, field, value)
+            to_update.append(item)
+
+    if to_create:
+        RecommendedPlaylist.objects.bulk_create(to_create, ignore_conflicts=True, batch_size=100)
+    if to_update:
+        RecommendedPlaylist.objects.bulk_update(
+            to_update,
+            ['user', 'title', 'title_en', 'description', 'description_en',
+             'playlist_type', 'song_order', 'relevance_score', 'match_percentage',
+             'expires_at', 'updated_at'],
+            batch_size=100,
+        )
+
+    stored = list(RecommendedPlaylist.objects.filter(unique_id__in=unique_ids))
+    stored_by_uid = {item.unique_id: item for item in stored}
+    through = RecommendedPlaylist.songs.through
+    mutable_ids = [item.pk for item in stored if item.pk not in durable_ids]
+    if mutable_ids:
+        through.objects.filter(recommendedplaylist_id__in=mutable_ids).delete()
+        links = []
+        for unique_id, recipe in zip(unique_ids, recipes):
+            item = stored_by_uid.get(unique_id)
+            if item is None or item.pk in durable_ids:
+                continue
+            links.extend(
+                through(recommendedplaylist_id=item.pk, song_id=song_id)
+                for song_id in recipe['song_ids']
+            )
+        through.objects.bulk_create(links, ignore_conflicts=True, batch_size=1000)
+
+    cache_set(generation_key, unique_ids, 5 * 60)
+    return unique_ids
+
+
 def _playlist_recommendation_items(user=None, limit=80):
     authenticated = bool(user is not None and getattr(user, 'is_authenticated', False))
     base = _home_playlist_queryset(user)
     dynamic = _dynamic_playlist_items(user)
     if authenticated:
-        personal = list(base.filter(user=user).order_by('-relevance_score', '-created_at')[:limit])
-        global_items = list(base.filter(user__isnull=True).order_by('-relevance_score', '-created_at')[:limit])
+        # Expiring personal rows are useful only while they are current. Durable
+        # rows (liked/saved/detail-viewed copies) have no expiry and stay visible.
+        personal = list(
+            base.filter(user=user).filter(
+                Q(expires_at__isnull=True)
+                | Q(updated_at__gte=timezone.now() - timedelta(minutes=20))
+            ).order_by('-relevance_score', '-created_at')[:limit]
+        )
+        global_items = list(
+            base.filter(user__isnull=True).order_by('-relevance_score', '-created_at')[:limit]
+        )
         ordered = (
             personal + dynamic + global_items
             if personal and _user_has_music_activity(user)
@@ -4046,9 +4292,24 @@ def _playlist_recommendation_items(user=None, limit=80):
             continue
         seen.add(key)
         items.append(item)
-        if len(items) >= limit:
-            break
-    return items
+
+    if authenticated:
+        items = fresh_order_objects(
+            f'recommended-playlists:user:{user.pk}', items,
+            identity=lambda item: item.unique_id,
+        )
+    return items[:limit]
+
+
+def _remember_playlist_results(user, items):
+    items = list(items)
+    if user is not None and getattr(user, 'is_authenticated', False):
+        remember_exposure(
+            f'recommended-playlists:user:{user.pk}',
+            [item.unique_id for item in items],
+            recent_window=160,
+        )
+    mark_generated_playlist_usage(items)
 
 
 def _dynamic_playlist_by_unique_id(user, unique_id):
@@ -4057,6 +4318,48 @@ def _dynamic_playlist_by_unique_id(user, unique_id):
         return None
     bucket = int(match.group(1))
     return next((item for item in _dynamic_playlist_items(user, bucket) if item.unique_id == unique_id), None)
+
+
+def _materialize_dynamic_playlist(item):
+    """Persist an in-memory generated mix when its detail is requested.
+
+    Detail access is a durable use signal. Persisting here keeps the exact mix
+    addressable for future history/library reads while list-only mixes remain
+    cheap and disposable.
+    """
+    if item is None or not getattr(item, '_is_dynamic', False):
+        return item
+    with transaction.atomic():
+        stored, created = RecommendedPlaylist.objects.get_or_create(
+            unique_id=item.unique_id,
+            defaults={
+                'user': None,
+                'title': item.title,
+                'title_en': item.title_en,
+                'description': item.description,
+                'description_en': item.description_en,
+                'playlist_type': item.playlist_type,
+                'song_order': list(item.song_order or []),
+                'relevance_score': item.relevance_score,
+                'match_percentage': item.match_percentage,
+                'expires_at': item.expires_at,
+            },
+        )
+        songs = list(getattr(item, '_detail_songs', []) or getattr(item, '_card_songs', []))
+        if created and songs:
+            RecommendedPlaylist.songs.through.objects.bulk_create(
+                [
+                    RecommendedPlaylist.songs.through(
+                        recommendedplaylist_id=stored.pk, song_id=song.pk
+                    )
+                    for song in songs
+                ],
+                ignore_conflicts=True,
+                batch_size=500,
+            )
+        stored._detail_songs = songs
+        stored._card_songs = songs
+        return stored
 
 
 
@@ -4112,53 +4415,130 @@ def _slice_items(items, page, size):
     return chunk[:size], len(chunk) > size
 
 
-def _song_recommendations(request, limit=10):
+def _song_recommendation_candidate_ids(request, pool_limit=240):
+    """Build a high-quality ranked candidate pool and cache only the ranking.
+
+    Per-request freshness is applied after this function, so the expensive taste
+    analysis remains fast while the visible list does not repeat.
+    """
     user = request.user
     require_preview = not user.is_authenticated
     if require_preview:
-        ids = _guest_daily_song_ids(limit)
-        song_map = _home_song_queryset(True).filter(id__in=ids).in_bulk()
-        songs = [song_map[sid] for sid in ids if sid in song_map]
-        hydrate_song_metrics(songs, None)
-        return 'daily_trending', songs
+        return 'daily_trending', _guest_daily_song_ids(pool_limit)
 
-    version = cache_version(CATALOG_VERSION_KEY)
-    affinity = cache_version(AFFINITY_VERSION_KEY)
-    audience = f'user:{user.id}:{affinity}' if user.is_authenticated else 'guest'
-    key = stable_cache_key('home-song-recommendations', audience, version, limit, 'v4')
-    ids = cache_get(key)
-    recommendation_type = 'personalized' if user.is_authenticated else 'guest_discovery'
+    catalog_version = cache_version(CATALOG_VERSION_KEY)
+    affinity_version = user_affinity_version(user.pk)
+    key = stable_cache_key(
+        'home-song-candidate-pool', user.pk, catalog_version,
+        affinity_version, pool_limit, 'v7',
+    )
+    cached = cache_get(key)
+    if cached:
+        return cached.get('type', 'personalized'), cached.get('ids', [])
 
-    if not ids:
-        base = _home_song_queryset(require_preview=require_preview)
-        excluded = set()
-        candidates = base
-        if user.is_authenticated:
-            liked = set(SongLike.objects.filter(user=user).values_list('song_id', flat=True))
-            played = set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
-            playlist = set(UserPlaylist.objects.filter(user=user).values_list('songs__id', flat=True))
-            excluded = liked | played | playlist
-            interacted = Song.objects.filter(id__in=excluded)
-            genre_ids = list(interacted.exclude(genres__id=None).values('genres__id').annotate(n=Count('id')).order_by('-n').values_list('genres__id', flat=True)[:4])
-            mood_ids = list(interacted.exclude(moods__id=None).values('moods__id').annotate(n=Count('id')).order_by('-n').values_list('moods__id', flat=True)[:3])
-            artist_ids = list(interacted.values('artist_id').annotate(n=Count('id')).order_by('-n').values_list('artist_id', flat=True)[:4])
-            if genre_ids or mood_ids or artist_ids:
-                candidates = base.exclude(id__in=excluded).filter(
-                    Q(genres__id__in=genre_ids) | Q(moods__id__in=mood_ids) | Q(artist_id__in=artist_ids)
-                ).distinct()
-            else:
-                recommendation_type = 'trending'
-        pool = list(candidates.order_by('-plays', '-release_date', '-created_at')[:120])
-        if len(pool) < limit:
-            seen = excluded | {song.id for song in pool}
-            pool.extend(base.exclude(id__in=seen).order_by('-plays', '-release_date')[:limit - len(pool)])
-        songs = _rotate_sample(pool, limit, f'{audience}:{timezone.now():%Y-%m-%d-%H}')
-        ids = [song.id for song in songs]
-        cache_set(key, ids, getattr(settings, 'CACHE_TTL_USER_HOME', 30) if user.is_authenticated else getattr(settings, 'CACHE_TTL_HOME', 90))
-    song_map = _home_song_queryset(require_preview=require_preview).filter(id__in=ids).in_bulk()
-    songs = [song_map[sid] for sid in ids if sid in song_map]
-    hydrate_song_metrics(songs, user if user.is_authenticated else None)
-    return recommendation_type, songs
+    base = _home_song_queryset()
+    liked = set(SongLike.objects.filter(user=user).values_list('song_id', flat=True))
+    played = set(
+        Song.objects.filter(play_counts__user=user)
+        .order_by('-play_counts__created_at')
+        .values_list('id', flat=True)[:1500]
+    )
+    playlist = set(
+        UserPlaylist.songs.through.objects.filter(userplaylist__user=user)
+        .values_list('song_id', flat=True)[:1500]
+    )
+    interacted_ids = liked | played | playlist
+    recommendation_type = 'personalized'
+
+    ranked_ids = []
+    if interacted_ids:
+        interacted = Song.objects.filter(id__in=interacted_ids)
+        genre_ids = list(
+            interacted.exclude(genres__id=None)
+            .values('genres__id').annotate(n=Count('id')).order_by('-n')
+            .values_list('genres__id', flat=True)[:5]
+        )
+        mood_ids = list(
+            interacted.exclude(moods__id=None)
+            .values('moods__id').annotate(n=Count('id')).order_by('-n')
+            .values_list('moods__id', flat=True)[:4]
+        )
+        artist_ids = list(
+            interacted.values('artist_id').annotate(n=Count('id')).order_by('-n')
+            .values_list('artist_id', flat=True)[:6]
+        )
+        if genre_ids or mood_ids or artist_ids:
+            ranked_ids = list(
+                base.exclude(id__in=interacted_ids).filter(
+                    Q(genres__id__in=genre_ids)
+                    | Q(moods__id__in=mood_ids)
+                    | Q(artist_id__in=artist_ids)
+                ).distinct().order_by('-plays', '-release_date', '-created_at')
+                .values_list('id', flat=True)[:pool_limit]
+            )
+        else:
+            recommendation_type = 'trending'
+    else:
+        recommendation_type = 'trending'
+
+    # Fill from strong catalog candidates without weakening the personalized top.
+    if len(ranked_ids) < pool_limit:
+        seen = set(ranked_ids) | interacted_ids
+        ranked_ids.extend(
+            base.exclude(id__in=seen)
+            .order_by('-plays', '-release_date', '-created_at')
+            .values_list('id', flat=True)[:pool_limit - len(ranked_ids)]
+        )
+    # Small catalogs may not have twelve unseen songs; only then reuse the best
+    # interacted tracks so the section remains complete rather than disappearing.
+    if len(ranked_ids) < pool_limit:
+        seen = set(ranked_ids)
+        ranked_ids.extend(
+            base.exclude(id__in=seen)
+            .order_by('-plays', '-release_date', '-created_at')
+            .values_list('id', flat=True)[:pool_limit - len(ranked_ids)]
+        )
+
+    ranked_ids = list(dict.fromkeys(ranked_ids))
+    cache_set(
+        key,
+        {'type': recommendation_type, 'ids': ranked_ids},
+        max(15, int(getattr(settings, 'CACHE_TTL_USER_HOME', 30))),
+    )
+    return recommendation_type, ranked_ids
+
+
+def _song_recommendations(request, limit=12, *, remember=True, scope='today-picks'):
+    recommendation_type, ranked_ids = _song_recommendation_candidate_ids(
+        request, max(120, int(limit) * 12)
+    )
+    if request.user.is_authenticated:
+        exposure_scope = f'{scope}:user:{request.user.pk}'
+        # Keep novelty inside the strongest quality band. Redis atomically selects
+        # and records exposure so concurrent home requests do not repeat a slice.
+        freshness_pool = ranked_ids[:max(int(limit) * 6, 72)]
+        selected_ids = fresh_select_ids(
+            exposure_scope, freshness_pool, limit=limit,
+            recent_window=max(96, int(limit) * 8),
+        )
+    else:
+        exposure_scope = None
+        selected_ids = ranked_ids[:limit]
+
+    song_map = _home_song_queryset(not request.user.is_authenticated).filter(
+        id__in=selected_ids
+    ).in_bulk()
+    songs = [song_map[song_id] for song_id in selected_ids if song_id in song_map]
+    if request.user.is_authenticated and len(songs) < limit:
+        existing_ids = {song.id for song in songs}
+        fallback = list(
+            _home_song_queryset().exclude(id__in=existing_ids)
+            .order_by('-plays', '-release_date', '-created_at')[:limit - len(songs)]
+        )
+        songs.extend(fallback)
+    hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
+
+    return recommendation_type, songs, len(ranked_ids) > len(songs)
 
 
 def _paginated_payload(request, items, page_param, page, size, serializer):
@@ -4188,9 +4568,19 @@ class HomeSummaryView(APIView):
         if cached is not None:
             return Response(cached)
 
-        rec_size = 12 if not user.is_authenticated else 6
-        rec_type, rec_songs = _song_recommendations(request, 48 if not user.is_authenticated else 30)
-        rec_page, rec_next = _slice_items(rec_songs, pages['rec'], rec_size)
+        rec_size = 12
+        if user.is_authenticated:
+            # Authenticated users always receive a complete, fresh twelve-item
+            # Today's Picks set. Ranking is cached; exposure rotation is Redis-only.
+            rec_type, rec_page, rec_next = _song_recommendations(
+                request, rec_size, remember=True, scope='home-today-picks'
+            )
+            rec_songs = rec_page
+        else:
+            rec_type, rec_songs, _ = _song_recommendations(
+                request, 48, remember=False, scope='guest-home-today-picks'
+            )
+            rec_page, rec_next = _slice_items(rec_songs, pages['rec'], rec_size)
 
         latest_qs = _home_song_queryset(not user.is_authenticated)
         latest_ids = _cached_ranked_ids(
@@ -4213,9 +4603,12 @@ class HomeSummaryView(APIView):
         album_page, album_next = _slice_items(albums, pages['albums'], 6)
         hydrate_album_metrics(album_page, user if user.is_authenticated else None)
 
+        if user.is_authenticated:
+            _ensure_personal_recommendations(user, target=18)
         playlists = _playlist_recommendation_items(user, 80)
         playlist_page, playlist_next = _slice_items(playlists, pages['playlists'], 6)
         _attach_recommended_metrics(playlist_page, user)
+        _remember_playlist_results(user, playlist_page)
 
         discovery_base = _home_song_queryset(not user.is_authenticated)
         excluded = {song.id for song in latest[:30]} | {song.id for song in rec_songs}
@@ -4269,8 +4662,12 @@ class UserRecommendationView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        _, size = _page_values(request, 20 if not request.user.is_authenticated else 10, 50)
-        recommendation_type, songs = _song_recommendations(request, size)
+        _, size = _page_values(request, 20 if not request.user.is_authenticated else 12, 50)
+        if request.user.is_authenticated:
+            size = max(12, size)
+        recommendation_type, songs, _ = _song_recommendations(
+            request, size, remember=True, scope='today-picks-endpoint'
+        )
         return Response({
             'type': recommendation_type,
             'message': (
@@ -4467,49 +4864,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
     serializer_class = RecommendedPlaylistListSerializer
 
     def _ensure_personal(self, user):
-        key = stable_cache_key('ensure-playlist-recs', user.id, cache_version(AFFINITY_VERSION_KEY), 'v4')
-        # Do not trust previously generated rows here: older bilingual builds may
-        # have stored romanized/Finglish values in title_en. Regenerating through
-        # update_or_create repairs those rows while preserving the base algorithm.
-        if cache_get(key) is not None:
-            return
-        if not _user_has_music_activity(user):
-            cache_set(key, True, 30)
-            return
-        interacted = Song.objects.filter(
-            Q(liked_by=user) | Q(play_counts__user=user) | Q(user_playlists__user=user),
-            status=Song.STATUS_PUBLISHED,
-        ).distinct()
-        genre_ids = list(interacted.exclude(genres__id=None).values('genres__id').annotate(n=Count('id')).order_by('-n').values_list('genres__id', flat=True)[:3])
-        mood_ids = list(interacted.exclude(moods__id=None).values('moods__id').annotate(n=Count('id')).order_by('-n').values_list('moods__id', flat=True)[:2])
-        configs = [('genre', gid) for gid in genre_ids] + [('mood', mid) for mid in mood_ids]
-        for index, (kind, value) in enumerate(configs[:5], 1):
-            filter_key = {'genres__id': value} if kind == 'genre' else {'moods__id': value}
-            songs = list(_home_song_queryset().filter(**filter_key).order_by('-plays', '-release_date')[:20])
-            if not songs:
-                continue
-            label_row = (
-                Genre.objects.filter(id=value).values('name', 'name_en', 'slug').first()
-                if kind == 'genre'
-                else Mood.objects.filter(id=value).values('name', 'name_en', 'slug').first()
-            ) or {}
-            label = label_row.get('name') or 'برای شما'
-            label_en = generated_term_en(
-                label_row.get('name'),
-                label_row.get('name_en'),
-                generic='Genre Mix' if kind == 'genre' else 'Mood Mix',
-            )
-            playlist, _ = RecommendedPlaylist.objects.update_or_create(
-                unique_id=f'smart_rec_{user.id}_{index}', defaults={
-                    'user': user, 'title': label, 'title_en': label_en,
-                    'description': 'پیشنهاد تازه براساس سلیقه و شنیده‌های شما',
-                    'description_en': 'A fresh recommendation based on your taste and listening history',
-                    'playlist_type': RecommendedPlaylist.PLAYLIST_TYPE_DISCOVER_GENRE if kind == 'genre' else RecommendedPlaylist.PLAYLIST_TYPE_MOOD_BASED,
-                    'song_order': [song.id for song in songs], 'relevance_score': 100 - index,
-                    'match_percentage': 95 - index, 'expires_at': timezone.now() + timedelta(days=2),
-                })
-            playlist.songs.set(songs)
-        cache_set(key, True, 900)
+        return _ensure_personal_recommendations(user, target=18)
 
     def get_queryset(self):
         if self.request.user.is_authenticated:
@@ -4523,6 +4878,7 @@ class PlaylistRecommendationsView(generics.ListAPIView):
         page = self.paginate_queryset(all_items)
         items = list(page if page is not None else all_items)
         _attach_recommended_metrics(items, request.user)
+        _remember_playlist_results(request.user, items)
         data = self.get_serializer(items, many=True).data
         return self.get_paginated_response(data) if page is not None else Response(data)
 
@@ -4556,14 +4912,26 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
         instance = self.get_queryset().filter(unique_id=unique_id).first()
         if instance is None:
             instance = _dynamic_playlist_by_unique_id(request.user, unique_id)
+            instance = _materialize_dynamic_playlist(instance)
         if instance is None:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if not getattr(instance, '_is_dynamic', False):
-            RecommendedPlaylist.objects.filter(pk=instance.pk).update(views=F('views') + 1)
-            instance.views += 1
-            if request.user.is_authenticated:
-                instance.viewed_by.add(request.user)
+
+        # A detail GET is durable use: keep the exact generated row permanently.
+        RecommendedPlaylist.objects.filter(pk=instance.pk).update(
+            views=F('views') + 1, expires_at=None
+        )
+        instance.views = int(getattr(instance, 'views', 0) or 0) + 1
+        instance.expires_at = None
+        if request.user.is_authenticated:
+            instance.viewed_by.add(request.user)
+        mark_generated_playlist_usage([instance])
+
         songs = list(getattr(instance, '_detail_songs', []))
+        if not songs:
+            songs = list(_home_song_queryset(not request.user.is_authenticated).filter(
+                recommended_playlists=instance
+            ).order_by('-release_date', '-created_at'))
+            instance._detail_songs = songs
         hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
         _attach_recommended_metrics([instance], request.user)
         return Response(self.get_serializer(instance).data)
@@ -4593,6 +4961,10 @@ class PlaylistRecommendationLikeView(APIView):
         
         try:
             playlist = RecommendedPlaylist.objects.get(unique_id=unique_id)
+            if playlist.expires_at is not None:
+                RecommendedPlaylist.objects.filter(pk=playlist.pk).update(expires_at=None)
+                playlist.expires_at = None
+            mark_generated_playlist_usage([playlist])
         except RecommendedPlaylist.DoesNotExist:
             return Response(
                 {'error': 'Playlist not found'},
@@ -4679,6 +5051,10 @@ class PlaylistRecommendationSaveView(APIView):
         
         try:
             playlist = RecommendedPlaylist.objects.get(unique_id=unique_id)
+            if playlist.expires_at is not None:
+                RecommendedPlaylist.objects.filter(pk=playlist.pk).update(expires_at=None)
+                playlist.expires_at = None
+            mark_generated_playlist_usage([playlist])
         except RecommendedPlaylist.DoesNotExist:
             return Response(
                 {'error': 'Playlist not found'},

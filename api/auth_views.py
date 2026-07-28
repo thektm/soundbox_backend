@@ -3,8 +3,11 @@ from django.conf import settings
 from django.shortcuts import get_object_or_404
 import logging
 import requests
+import hmac
+from requests.adapters import HTTPAdapter
 from django.contrib.auth.hashers import make_password, check_password
 from django.db import transaction
+from django.db.models import F
 import user_agents
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -33,6 +36,11 @@ from django.utils.crypto import get_random_string
 from datetime import timedelta
 import hashlib
 import re
+from .recommendation_runtime import redis_delete, redis_get, redis_set
+
+_SMS_SESSION = requests.Session()
+_SMS_ADAPTER = HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=0)
+_SMS_SESSION.mount('https://', _SMS_ADAPTER)
 
 
 def normalize_phone(phone: str) -> str:
@@ -85,13 +93,146 @@ def parse_artist_flag(request) -> bool:
     return str(val).lower() in ('1', 'true', 'yes', 'on')
 
 
+def _fast_secret_hash(namespace: str, value: str) -> str:
+    secret = str(settings.SECRET_KEY).encode('utf-8')
+    digest = hmac.new(secret, f'{namespace}:{value}'.encode('utf-8'), hashlib.sha256).hexdigest()
+    return f'{namespace}${digest}'
+
+
 def hash_code(code: str) -> str:
-    # use Django's make_password for salted hash
-    return make_password(code)
+    # OTPs are short-lived and rate-limited. A keyed HMAC is secure here and is
+    # dramatically faster than a password KDF designed for long-lived passwords.
+    return _fast_secret_hash('otp-v2', code)
 
 
 def check_code_hash(raw: str, hashed: str) -> bool:
+    if hashed and hashed.startswith('otp-v2$'):
+        return hmac.compare_digest(hash_code(raw), hashed)
+    # Backward compatibility for OTP rows created before this optimization.
     return check_password(raw, hashed)
+
+
+def hash_refresh_token(token: str) -> str:
+    return _fast_secret_hash('refresh-v2', token)
+
+
+def check_refresh_token(token: str, hashed: str) -> bool:
+    if hashed and hashed.startswith('refresh-v2$'):
+        return hmac.compare_digest(hash_refresh_token(token), hashed)
+    return check_password(token, hashed)
+
+
+def _otp_latest_key(user_id: int, purpose: str) -> str:
+    return f'sedabox:otp:latest:{int(user_id)}:{purpose}'
+
+
+def _otp_send_guard_key(phone: str, purpose: str) -> str:
+    digest = hashlib.sha256(f'{normalize_phone(phone)}:{purpose}'.encode()).hexdigest()[:24]
+    return f'sedabox:otp:send-guard:{digest}'
+
+
+def otp_retry_after(phone: str, purpose: str) -> int:
+    """Acquire a Redis cooldown guard; return zero when sending is allowed."""
+    cooldown = max(1, int(getattr(settings, 'OTP_SEND_COOLDOWN_SECONDS', 60)))
+    key = _otp_send_guard_key(phone, purpose)
+    if redis_set(key, timezone.now().timestamp(), cooldown, only_if_absent=True):
+        return 0
+    client_value = redis_get(key)
+    if client_value is not None:
+        try:
+            elapsed = max(0, int(timezone.now().timestamp() - float(client_value)))
+            return max(1, cooldown - elapsed)
+        except (TypeError, ValueError):
+            return cooldown
+    # Redis unavailable: caller may fall back to the indexed database lookup.
+    return -1
+
+
+def otp_rate_limit_retry_after(phone: str, purpose: str, user: User | None = None) -> int:
+    """Return seconds to wait, while atomically reserving an allowed send slot."""
+    retry_after = otp_retry_after(phone, purpose)
+    if retry_after >= 0:
+        return retry_after
+    if user is None:
+        return 0
+    cooldown = max(1, int(getattr(settings, 'OTP_SEND_COOLDOWN_SECONDS', 60)))
+    last_created = OtpCode.objects.filter(
+        user=user, purpose=purpose
+    ).order_by('-created_at').values_list('created_at', flat=True).first()
+    if last_created is None:
+        return 0
+    remaining = cooldown - int((timezone.now() - last_created).total_seconds())
+    return max(0, remaining)
+
+
+def release_otp_send_guard(phone: str, purpose: str) -> None:
+    redis_delete(_otp_send_guard_key(phone, purpose))
+
+
+def latest_valid_otp(user: User, purpose: str, *, for_update: bool = False):
+    queryset = OtpCode.objects
+    if for_update:
+        queryset = queryset.select_for_update()
+    cached_id = redis_get(_otp_latest_key(user.pk, purpose))
+    if cached_id:
+        otp = queryset.filter(
+            pk=cached_id, user=user, purpose=purpose, consumed=False,
+            expires_at__gt=timezone.now(),
+        ).first()
+        if otp is not None:
+            return otp
+    otp = queryset.filter(
+        user=user, purpose=purpose, consumed=False, expires_at__gt=timezone.now(),
+    ).order_by('-created_at').first()
+    if otp is not None:
+        ttl = max(60, int((otp.expires_at - timezone.now()).total_seconds()) + 60)
+        redis_set(_otp_latest_key(user.pk, purpose), otp.pk, ttl)
+    else:
+        redis_delete(_otp_latest_key(user.pk, purpose))
+    return otp
+
+
+def consume_otp(user: User, purpose: str, raw_code: str, *, max_attempts: int = 3) -> str:
+    """Atomically validate and consume the newest OTP with one indexed lookup.
+
+    Returns one of: ``ok``, ``not_found``, ``exceeded`` or ``invalid``.
+    Row locking prevents two simultaneous verify requests from consuming the same
+    code and removes the previous exists()+first() double-query pattern.
+    """
+    cache_key = _otp_latest_key(user.pk, purpose)
+    with transaction.atomic():
+        otp_obj = latest_valid_otp(user, purpose, for_update=True)
+        if otp_obj is None:
+            return 'not_found'
+        if otp_obj.attempts >= max_attempts:
+            OtpCode.objects.filter(pk=otp_obj.pk).update(consumed=True)
+            redis_delete(cache_key)
+            return 'exceeded'
+        if not check_code_hash(raw_code or '', otp_obj.code_hash):
+            OtpCode.objects.filter(pk=otp_obj.pk).update(attempts=F('attempts') + 1)
+            return 'invalid'
+        OtpCode.objects.filter(pk=otp_obj.pk).update(consumed=True)
+        redis_delete(cache_key)
+        return 'ok'
+
+
+def _otp_failure_response(result: str):
+    if result == 'not_found':
+        return Response(
+            {'error': {'code': 'OTP_NOT_FOUND', 'message': 'No valid OTP found'}},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+    if result == 'exceeded':
+        return Response(
+            {'error': {'code': 'OTP_EXCEEDED', 'message': 'OTP attempts exceeded'}},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+    if result == 'invalid':
+        return Response(
+            {'error': {'code': 'OTP_INVALID', 'message': 'The provided OTP is invalid.'}},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+    return None
 
 
 def get_device_info(request):
@@ -164,12 +305,22 @@ def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
 
     try:
         logger.debug('Kavenegar request prepared: url=%s template=%s receptor=%s', url, template_name, receptor)
-        resp = requests.post(url, data=data, headers=headers, timeout=5)
+        resp = _SMS_SESSION.post(
+            url, data=data, headers=headers,
+            timeout=(
+                float(getattr(settings, 'OTP_REQUEST_TIMEOUT_CONNECT', 1.5)),
+                float(getattr(settings, 'OTP_REQUEST_TIMEOUT_READ', 3.5)),
+            ),
+        )
         if resp.status_code != 200:
             logger.error('Kavenegar returned non-200 status: %s %s', resp.status_code, resp.text)
             return False
-        j = resp.json()
-        logger.info('Kavenegar sent SMS to %s (template=%s): %s', receptor, template_name, j)
+        payload = resp.json()
+        provider_status = (payload.get('return') or {}).get('status') if isinstance(payload, dict) else None
+        logger.info(
+            'Kavenegar accepted SMS for %s (template=%s provider_status=%s)',
+            receptor, template_name, provider_status,
+        )
         return True
     except Exception as e:
         logger.exception('Error sending SMS via Kavenegar: %s', e)
@@ -178,19 +329,45 @@ def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
 
 def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5) -> OtpCode:
     otp = generate_otp(4)
-    hashed = hash_code(otp)
     expires = timezone.now() + timedelta(minutes=minutes)
-    # Persist both hashed and plaintext OTP. Plaintext is stored for admin visibility only.
-    otp_obj = OtpCode.objects.create(user=user, code_hash=hashed, code=otp, purpose=purpose, expires_at=expires)
-    # send SMS and log result to help debugging in development
     logger = logging.getLogger(__name__)
-    logger.debug('Created OTP object id=%s purpose=%s phone=%s (plaintext logged for admin)', otp_obj.id, purpose, phone)
+
+    # Keep only one live OTP per user/purpose. The short transaction prevents
+    # concurrent requests from leaving multiple valid codes behind.
+    with transaction.atomic():
+        if user is not None:
+            OtpCode.objects.filter(
+                user=user, purpose=purpose, consumed=False
+            ).update(consumed=True)
+        otp_obj = OtpCode.objects.create(
+            user=user,
+            code_hash=hash_code(otp),
+            code=otp,
+            purpose=purpose,
+            expires_at=expires,
+        )
+    if user is not None:
+        redis_set(
+            _otp_latest_key(user.pk, purpose), otp_obj.pk,
+            max(60, int(minutes * 60) + 60),
+        )
+
     sent = send_sms(phone, otp, purpose, minutes)
-    logger = logging.getLogger(__name__)
     if sent:
-        logger.info("OTP created and SMS send attempt succeeded for phone=%s purpose=%s", phone, purpose)
+        logger.info(
+            'OTP created and SMS accepted for phone=%s purpose=%s otp_id=%s',
+            phone, purpose, otp_obj.pk,
+        )
     else:
-        logger.warning("OTP created but SMS send attempt failed for phone=%s purpose=%s", phone, purpose)
+        # A failed provider call must not leave a valid but undelivered OTP.
+        OtpCode.objects.filter(pk=otp_obj.pk).update(consumed=True)
+        if user is not None:
+            redis_delete(_otp_latest_key(user.pk, purpose))
+        release_otp_send_guard(phone, purpose)
+        logger.warning(
+            'OTP SMS failed for phone=%s purpose=%s otp_id=%s',
+            phone, purpose, otp_obj.pk,
+        )
     return otp_obj, sent
 
 
@@ -201,7 +378,7 @@ def issue_tokens_for_user(user: User, request) -> dict:
     access = refresh.access_token
     # persist hashed refresh token for revocation / rotation tracking
     token_str = str(refresh)
-    token_hash = make_password(token_str)
+    token_hash = hash_refresh_token(token_str)
     expires_at = timezone.now() + timedelta(days=30)
     
     # Extract device info
@@ -219,14 +396,13 @@ def issue_tokens_for_user(user: User, request) -> dict:
         os_info=os_info
     )
 
-    if existing_sessions.exists():
-        # Update the most recent one and revoke/delete others if they exist
-        session = existing_sessions.order_by('-created_at').first()
+    # One indexed query replaces the previous exists()+first() double hit.
+    session = existing_sessions.order_by('-created_at').first()
+    if session is not None:
         session.token_hash = token_hash
         session.expires_at = expires_at
         session.revoked_at = None
-        session.save()
-        # Clean up any other duplicates for this exact device/IP/UA combo
+        session.save(update_fields=['token_hash', 'expires_at', 'revoked_at'])
         existing_sessions.exclude(id=session.id).delete()
     else:
         RefreshToken.objects.create(
@@ -284,13 +460,9 @@ class AuthRegisterView(APIView):
             if existing.is_verified:
                 # If client requested artist role, send a verification OTP to confirm
                 if artist_flag:
-                    # rate-limit similar to unverified flow
-                    last_otp = OtpCode.objects.filter(user=existing, purpose=OtpCode.PURPOSE_VERIFY).order_by('-created_at').first()
-                    if last_otp:
-                        elapsed = timezone.now() - last_otp.created_at
-                        if elapsed < timedelta(minutes=1):
-                            retry_after = int((timedelta(minutes=1) - elapsed).total_seconds())
-                            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                    retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY, existing)
+                    if retry_after:
+                        return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
                     # store artist password now so user can verify and become artist (verify will add role)
                     if artist_password:
                         existing.set_artist_password(artist_password)
@@ -300,19 +472,19 @@ class AuthRegisterView(APIView):
                         return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
                     return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                 return Response({'error': {'code': 'USER_EXISTS', 'message': 'Phone already registered'}}, status=status.HTTP_409_CONFLICT)
-            # Not verified: allow resend but rate-limit to 1 minute since last verify OTP
-            last_otp = OtpCode.objects.filter(user=existing, purpose=OtpCode.PURPOSE_VERIFY).order_by('-created_at').first()
-            if last_otp:
-                elapsed = timezone.now() - last_otp.created_at
-                if elapsed < timedelta(minutes=1):
-                    # Too soon to resend
-                    retry_after = int((timedelta(minutes=1) - elapsed).total_seconds())
-                    return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+            # Redis performs the common cooldown check without touching PostgreSQL.
+            retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY, existing)
+            if retry_after:
+                return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
             # send new OTP to existing unverified user
             otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
             if sent:
                 return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
             return Response({'error': {'code': 'SMS_FAILED', 'message': 'Failed to send OTP SMS'}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY)
+        if retry_after:
+            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         # create user with is_verified False
         create_kwargs = {}
@@ -353,22 +525,10 @@ class AuthVerifyView(APIView):
         artist_password = None
         purpose = OtpCode.PURPOSE_VERIFY
         user = get_object_or_404(User, phone_number=phone)
-        # find latest unconsumed otp
-        otp_qs = OtpCode.objects.filter(user=user, purpose=purpose, consumed=False, expires_at__gt=timezone.now()).order_by('-created_at')
-        if not otp_qs.exists():
-            return Response({'error': {'code': 'OTP_NOT_FOUND', 'message': 'No valid OTP found'}}, status=status.HTTP_401_UNAUTHORIZED)
-        otp_obj = otp_qs.first()
-        if otp_obj.attempts >= 3:
-            otp_obj.consumed = True
-            otp_obj.save(update_fields=['consumed'])
-            return Response({'error': {'code': 'OTP_EXCEEDED', 'message': 'OTP attempts exceeded'}}, status=status.HTTP_401_UNAUTHORIZED)
-        if not check_code_hash(otp, otp_obj.code_hash):
-            otp_obj.attempts += 1
-            otp_obj.save(update_fields=['attempts'])
-            return Response({'error': {'code': 'OTP_INVALID', 'message': 'The provided OTP is invalid.'}}, status=status.HTTP_401_UNAUTHORIZED)
-        # success
-        otp_obj.consumed = True
-        otp_obj.save(update_fields=['consumed'])
+        otp_result = consume_otp(user, purpose, otp)
+        otp_error = _otp_failure_response(otp_result)
+        if otp_error is not None:
+            return otp_error
         user.is_verified = True
         # If client requested artist role during verify, add artist role and set separate artist password
         if artist_flag:
@@ -465,13 +625,9 @@ class LoginOtpRequestView(APIView):
                 return Response({'error': {'code': 'USER_BANNED', 'message': 'This account has been banned.'}}, status=status.HTTP_403_FORBIDDEN)
         except User.DoesNotExist:
             return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
-        # rate limit: require at least 60 seconds since last login OTP
-        last_otp = OtpCode.objects.filter(user=user, purpose=OtpCode.PURPOSE_LOGIN).order_by('-created_at').first()
-        if last_otp:
-            elapsed = timezone.now() - last_otp.created_at
-            if elapsed < timedelta(seconds=60):
-                retry_after = int((timedelta(seconds=60) - elapsed).total_seconds())
-                return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_LOGIN, user)
+        if retry_after:
+            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_LOGIN)
         if sent:
             return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
@@ -498,20 +654,10 @@ class LoginOtpVerifyView(APIView):
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
             return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
-        otp_qs = OtpCode.objects.filter(user=user, purpose=OtpCode.PURPOSE_LOGIN, consumed=False, expires_at__gt=timezone.now()).order_by('-created_at')
-        if not otp_qs.exists():
-            return Response({'error': {'code': 'OTP_NOT_FOUND', 'message': 'No valid OTP found'}}, status=status.HTTP_401_UNAUTHORIZED)
-        otp_obj = otp_qs.first()
-        if otp_obj.attempts >= 3:
-            otp_obj.consumed = True
-            otp_obj.save(update_fields=['consumed'])
-            return Response({'error': {'code': 'OTP_EXCEEDED', 'message': 'OTP attempts exceeded'}}, status=status.HTTP_401_UNAUTHORIZED)
-        if not check_code_hash(otp, otp_obj.code_hash):
-            otp_obj.attempts += 1
-            otp_obj.save(update_fields=['attempts'])
-            return Response({'error': {'code': 'OTP_INVALID', 'message': 'The provided OTP is invalid.'}}, status=status.HTTP_401_UNAUTHORIZED)
-        otp_obj.consumed = True
-        otp_obj.save(update_fields=['consumed'])
+        otp_result = consume_otp(user, OtpCode.PURPOSE_LOGIN, otp)
+        otp_error = _otp_failure_response(otp_result)
+        if otp_error is not None:
+            return otp_error
         # mark verified if not
         if not user.is_verified:
             user.is_verified = True
@@ -617,6 +763,9 @@ class ForgotPasswordView(APIView):
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
             return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
+        retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_RESET, user)
+        if retry_after:
+            return Response({'error': {'code': 'RATE_LIMIT', 'message': 'Please wait before requesting another OTP', 'retry_after_seconds': retry_after}}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_RESET)
         if sent:
             return Response({'status': 'otp_sent'}, status=status.HTTP_200_OK)
@@ -652,17 +801,10 @@ class PasswordResetView(APIView):
                 user = User.objects.get(phone_number=phone)
             except User.DoesNotExist:
                 return Response({'error': {'code': 'NOT_FOUND', 'message': 'Phone not registered'}}, status=status.HTTP_404_NOT_FOUND)
-            otp_qs = OtpCode.objects.filter(user=user, purpose=OtpCode.PURPOSE_RESET, consumed=False, expires_at__gt=timezone.now()).order_by('-created_at')
-            if not otp_qs.exists():
-                return Response({'error': {'code': 'OTP_NOT_FOUND', 'message': 'No valid OTP found'}}, status=status.HTTP_401_UNAUTHORIZED)
-            otp_obj = otp_qs.first()
-            if not otp or not check_code_hash(otp, otp_obj.code_hash):
-                otp_obj.attempts += 1
-                otp_obj.save(update_fields=['attempts'])
-                return Response({'error': {'code': 'OTP_INVALID', 'message': 'The provided OTP is invalid.'}}, status=status.HTTP_401_UNAUTHORIZED)
-            # valid
-            otp_obj.consumed = True
-            otp_obj.save(update_fields=['consumed'])
+            otp_result = consume_otp(user, OtpCode.PURPOSE_RESET, otp or '')
+            otp_error = _otp_failure_response(otp_result)
+            if otp_error is not None:
+                return otp_error
             # If client specified artist, reset artist password, otherwise reset main password
             if artist_flag:
                 user.set_artist_password(new_password)
@@ -716,7 +858,7 @@ class TokenRefreshView(APIView):
         active_sessions = RefreshToken.objects.filter(user=user, revoked_at__isnull=True)
         valid_session = None
         for session in active_sessions:
-            if check_password(refresh_token, session.token_hash):
+            if check_refresh_token(refresh_token, session.token_hash):
                 valid_session = session
                 break
         
@@ -733,7 +875,7 @@ class TokenRefreshView(APIView):
             ua = request.META.get('HTTP_USER_AGENT', '')
             ip = request.META.get('REMOTE_ADDR', '')
             
-            valid_session.token_hash = make_password(str(new_refresh))
+            valid_session.token_hash = hash_refresh_token(str(new_refresh))
             valid_session.expires_at = timezone.now() + timedelta(days=30)
             valid_session.user_agent = ua
             valid_session.ip = ip
@@ -867,7 +1009,7 @@ class SessionRevokeOtherView(APIView):
         
         revoked_count = 0
         for session in sessions:
-            if not check_password(current_refresh, session.token_hash):
+            if not check_refresh_token(current_refresh, session.token_hash):
                 session.revoked_at = timezone.now()
                 session.save()
                 revoked_count += 1

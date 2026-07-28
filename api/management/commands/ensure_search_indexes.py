@@ -40,6 +40,18 @@ class Command(BaseCommand):
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_recommended_guest_rank_idx "
                     "ON api_recommendedplaylist (relevance_score DESC, created_at DESC) "
                     "WHERE user_id IS NULL",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_recommended_user_fresh_idx "
+                    "ON api_recommendedplaylist (user_id, updated_at DESC, relevance_score DESC) "
+                    "WHERE expires_at IS NOT NULL",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_recommended_cleanup_idx "
+                    "ON api_recommendedplaylist (updated_at, id) "
+                    "WHERE expires_at IS NOT NULL AND views = 0",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_otpcode_live_lookup_idx "
+                    "ON api_otpcode (user_id, purpose, created_at DESC) "
+                    "WHERE consumed = FALSE",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_refreshtoken_active_user_idx "
+                    "ON api_refreshtoken (user_id, created_at DESC) "
+                    "WHERE revoked_at IS NULL",
                     # Case-insensitive contains searches. PostgreSQL can combine these
                     # bitmap indexes across the endpoint's OR predicates.
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_song_title_trgm_idx "

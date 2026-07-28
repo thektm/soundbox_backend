@@ -14,6 +14,7 @@ from .models import AlbumLike, ArtistMonthlyListener, Follow, PlaylistLike, Song
 CATALOG_VERSION_KEY = "catalog-version"
 AFFINITY_VERSION_KEY = "affinity-version"
 USER_DIRECTORY_VERSION_KEY = "user-directory-version"
+USER_AFFINITY_VERSION_PREFIX = "user-affinity-version"
 
 
 def stable_cache_key(prefix, *parts):
@@ -57,6 +58,19 @@ def cache_version(key):
     value = cache_get(key)
     return value if isinstance(value, int) else 0
 
+
+
+
+def user_affinity_version(user_id):
+    if not user_id:
+        return 0
+    return cache_version(f"{USER_AFFINITY_VERSION_PREFIX}:{int(user_id)}")
+
+
+def bump_user_affinity_version(user_id, timeout=7 * 24 * 60 * 60):
+    if not user_id:
+        return 0
+    return cache_increment(f"{USER_AFFINITY_VERSION_PREFIX}:{int(user_id)}", timeout)
 
 def cache_get_or_claim(key, lock_timeout=20, wait_timeout=1.2):
     cached = cache_get(key)

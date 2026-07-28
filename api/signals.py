@@ -1,6 +1,10 @@
 from django.db.models.signals import post_save, post_delete, m2m_changed, pre_save
 from django.dispatch import receiver
-from .models import User, Song, Album, Artist, Playlist, RecommendedPlaylist, Follow, UserPlaylist, Notification, NotificationSetting, ArtistMonthlyListener
+from .models import (
+    User, Song, Album, Artist, Playlist, RecommendedPlaylist, Follow, UserPlaylist,
+    Notification, NotificationSetting, ArtistMonthlyListener, SongLike, AlbumLike,
+    PlaylistLike, PlayCount,
+)
 from django.utils.translation import gettext as _
 from django.utils import timezone
 
@@ -160,6 +164,7 @@ from .performance import (
     CATALOG_VERSION_KEY,
     USER_DIRECTORY_VERSION_KEY,
     cache_increment,
+    bump_user_affinity_version,
 )
 
 _VERSION_TTL = 7 * 24 * 60 * 60
@@ -228,3 +233,56 @@ for model, fields in (
 
 post_save.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.directory.save')
 post_delete.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.directory.delete')
+
+
+# Keep per-user recommendation pools current without invalidating every user's
+# cache whenever one account interacts with music.
+def _bump_instance_user_affinity(sender=None, instance=None, **_kwargs):
+    bump_user_affinity_version(getattr(instance, 'user_id', None))
+
+
+def _bump_follow_user_affinity(sender=None, instance=None, **_kwargs):
+    bump_user_affinity_version(getattr(instance, 'follower_user_id', None))
+
+
+def _bump_user_playlist_songs(sender=None, instance=None, action=None, **_kwargs):
+    if action in {'post_add', 'post_remove', 'post_clear'}:
+        bump_user_affinity_version(getattr(instance, 'user_id', None))
+
+
+def _bump_recommended_interactions(sender=None, action=None, pk_set=None, **_kwargs):
+    if action in {'post_add', 'post_remove', 'post_clear'}:
+        for user_id in pk_set or ():
+            bump_user_affinity_version(user_id)
+
+
+for interaction_model in (SongLike, AlbumLike, PlaylistLike, PlayCount):
+    post_save.connect(
+        _bump_instance_user_affinity,
+        sender=interaction_model,
+        dispatch_uid=f'api.user-affinity.{interaction_model.__name__}.save',
+    )
+    post_delete.connect(
+        _bump_instance_user_affinity,
+        sender=interaction_model,
+        dispatch_uid=f'api.user-affinity.{interaction_model.__name__}.delete',
+    )
+
+post_save.connect(
+    _bump_follow_user_affinity, sender=Follow,
+    dispatch_uid='api.user-affinity.follow.save',
+)
+post_delete.connect(
+    _bump_follow_user_affinity, sender=Follow,
+    dispatch_uid='api.user-affinity.follow.delete',
+)
+m2m_changed.connect(
+    _bump_user_playlist_songs, sender=UserPlaylist.songs.through,
+    dispatch_uid='api.user-affinity.user-playlist.songs',
+)
+for field_name in ('liked_by', 'saved_by', 'viewed_by'):
+    m2m_changed.connect(
+        _bump_recommended_interactions,
+        sender=RecommendedPlaylist._meta.get_field(field_name).remote_field.through,
+        dispatch_uid=f'api.user-affinity.recommended.{field_name}',
+    )

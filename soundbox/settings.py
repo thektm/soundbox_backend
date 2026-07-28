@@ -105,6 +105,18 @@ CACHE_TTL_USER_SEARCH = int(os.environ.get('CACHE_TTL_USER_SEARCH', '15'))
 CACHE_TTL_DISCOVERY = int(os.environ.get('CACHE_TTL_DISCOVERY', '300'))
 CACHE_TTL_SIMILAR = int(os.environ.get('CACHE_TTL_SIMILAR', '90'))
 
+# Redis-backed recommendation freshness and safe generated-row housekeeping.
+GENERATED_PLAYLIST_MAINTENANCE_ENABLED = os.environ.get('GENERATED_PLAYLIST_MAINTENANCE_ENABLED', 'true').lower() in ('1', 'true', 'yes', 'on')
+GENERATED_PLAYLIST_UNUSED_TTL = int(os.environ.get('GENERATED_PLAYLIST_UNUSED_TTL', '3600'))
+GENERATED_PLAYLIST_CLEANUP_INTERVAL = int(os.environ.get('GENERATED_PLAYLIST_CLEANUP_INTERVAL', '3600'))
+GENERATED_PLAYLIST_CLEANUP_BATCH = int(os.environ.get('GENERATED_PLAYLIST_CLEANUP_BATCH', '500'))
+REDIS_CONNECT_TIMEOUT = float(os.environ.get('REDIS_CONNECT_TIMEOUT', '1'))
+REDIS_SOCKET_TIMEOUT = float(os.environ.get('REDIS_SOCKET_TIMEOUT', '1'))
+REDIS_MAX_CONNECTIONS = int(os.environ.get('REDIS_MAX_CONNECTIONS', '40'))
+OTP_SEND_COOLDOWN_SECONDS = int(os.environ.get('OTP_SEND_COOLDOWN_SECONDS', '60'))
+OTP_REQUEST_TIMEOUT_CONNECT = float(os.environ.get('OTP_REQUEST_TIMEOUT_CONNECT', '1.5'))
+OTP_REQUEST_TIMEOUT_READ = float(os.environ.get('OTP_REQUEST_TIMEOUT_READ', '3.5'))
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
