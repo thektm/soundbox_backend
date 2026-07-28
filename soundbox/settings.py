@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 
+from corsheaders.defaults import default_headers
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get('DJANGO_SECRET', 'changeme-in-production')
@@ -167,6 +169,12 @@ SPECTACULAR_SETTINGS = {
 
 # CORS - allow all origins for now (change in production)
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Keep the API compatible with clients that still send the legacy language
+# header. New web clients use the CORS-safelisted Accept-Language header and do
+# not require this custom entry, but allowing it prevents avoidable preflight
+# failures during rolling deployments.
+CORS_ALLOW_HEADERS = (*default_headers, "x-app-language")
 
 # CSRF trusted origins for admin panel
 _REQUIRED_CSRF_ORIGINS = [
