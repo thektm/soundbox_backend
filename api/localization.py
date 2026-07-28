@@ -261,6 +261,69 @@ def translate_generated_text(text: str) -> str:
             return formatter(match)
     return text
 
+def _contains_persian(value: str) -> bool:
+    return any("\u0600" <= char <= "\u06ff" for char in str(value or ""))
+
+
+def _looks_like_romanized_farsi(value: str) -> bool:
+    """Reject known legacy Finglish output for server-owned playlist copy.
+
+    This is deliberately narrow and runs only for generated playlists. It does
+    not inspect or rewrite user-authored content.
+    """
+    normalized = " ".join(str(value or "").lower().replace("_", " ").split())
+    markers = (
+        "bar asas", "barasas", "brasas", "shenide", "shenyde", "shenydh", "shnydh",
+        "ahang", "ahanghaye", "ahng", "andhanday", "pishnahad", "hal o hava", "hale hava",
+        "baraye shoma", "shoma", "karbar",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def generated_playlist_english(obj: Any, field: str) -> str:
+    """Return safe English copy for a server-generated playlist in O(1).
+
+    The helper performs only in-memory string checks—no relation access and no
+    database queries. Known canonical Farsi templates are translated first,
+    which also repairs rows whose old ``*_en`` value contains Finglish.
+    """
+    source = str(getattr(obj, field, None) or "").strip()
+    stored = str(getattr(obj, f"{field}_en", None) or "").strip()
+
+    translated = translate_generated_text(source) if source else ""
+    if translated and translated != source and not _contains_persian(translated):
+        return translated
+
+    if stored and not _contains_persian(stored) and not _looks_like_romanized_farsi(stored):
+        return stored
+
+    # Canonical text may already be English even when the English column is
+    # empty (common in older admin/server rows).
+    if source and not _contains_persian(source) and not _looks_like_romanized_farsi(source):
+        return source
+
+    playlist_type = str(getattr(obj, "playlist_type", "") or "")
+    if field == "title":
+        titles = {
+            "similar_taste": "Made for You",
+            "discover_genre": "Discovery Mix",
+            "mood_based": "Mood Mix",
+            "decade": "Decade Mix",
+            "energy": "Energy Mix",
+            "artist_mix": "Artist Mix",
+        }
+        return titles.get(playlist_type, "SedaBox Mix")
+
+    descriptions = {
+        "similar_taste": "A personalized mix based on your listening activity.",
+        "discover_genre": "A fresh selection created to help you discover more music.",
+        "mood_based": "A curated mix selected for your current mood.",
+        "decade": "A curated selection of memorable tracks from the era.",
+        "energy": "A focused mix matched to your energy level.",
+        "artist_mix": "A mix built around artists you may enjoy.",
+    }
+    return descriptions.get(playlist_type, "A playlist selected for you by SedaBox.")
+
 # API-owned response messages. Content fields such as song/playlist titles are
 # deliberately excluded from this map so user-authored text is never rewritten.
 API_MESSAGE_EN_TO_FA = {

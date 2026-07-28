@@ -133,7 +133,17 @@ def _song_card_queryset():
 
 
 def _history_queryset(user):
-    return UserHistory.objects.filter(user=user).select_related(
+    # History rows can outlive a deleted target because several relations use
+    # SET_NULL. Exclude those orphaned rows before pagination/serialization so
+    # clients never receive ``item: null`` entries.
+    valid_target = (
+        Q(content_type=UserHistory.TYPE_SONG, song__isnull=False)
+        | Q(content_type=UserHistory.TYPE_ALBUM, album__isnull=False)
+        | Q(content_type=UserHistory.TYPE_PLAYLIST, playlist__isnull=False)
+        | Q(content_type=UserHistory.TYPE_ARTIST, artist__isnull=False)
+        | Q(content_type=UserHistory.TYPE_USER, target_user__isnull=False)
+    )
+    return UserHistory.objects.filter(user=user).filter(valid_target).select_related(
         'song__artist', 'song__album', 'song__uploader', 'album__artist',
         'playlist', 'artist', 'target_user', 'target_user__image_profile',
     ).prefetch_related(
@@ -4832,7 +4842,7 @@ class EventPlaylistView(APIView):
         # list view: return event playlists with lightweight playlist covers
         queryset = EventPlaylist.objects.all().prefetch_related(
             'playlists',
-            'playlists__songs',
+            Prefetch('playlists__songs', queryset=Song.objects.select_related('album')),
         )
 
         time_of_day = request.query_params.get('time_of_day')

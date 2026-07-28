@@ -17,7 +17,7 @@ from django.db import IntegrityError
 from django.db.models import Q
 from django.db.models.manager import BaseManager
 
-from .localization import get_request_language, localized_value, translate_generated_text
+from .localization import get_request_language, localized_value, translate_generated_text, generated_playlist_english
 
 from .performance import (
     CATALOG_VERSION_KEY, cache_get_or_claim, cache_set, cache_version,
@@ -140,6 +140,21 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
             data[f'{output_name}_fa'] = fa_value
             data[f'{output_name}_en'] = en_value
             data[output_name] = en_value if language == 'en' and en_value not in (None, '', [], {}) else fa_value
+
+        # Server-generated playlists must never leak Farsi or legacy Finglish
+        # into English responses when an old row has missing/bad English copy.
+        # This correction is O(1) and performs no relation/database access.
+        is_generated_playlist = isinstance(instance, RecommendedPlaylist) or (
+            isinstance(instance, Playlist)
+            and getattr(instance, 'created_by', None) == Playlist.CREATED_BY_SYSTEM
+        )
+        if language == 'en' and is_generated_playlist:
+            for field_name in ('title', 'description'):
+                if field_name not in data:
+                    continue
+                english_value = generated_playlist_english(instance, field_name)
+                data[f'{field_name}_en'] = english_value
+                data[field_name] = english_value
 
         return data
 
@@ -1806,13 +1821,15 @@ class PlaylistCoverSerializer(LocalizedModelSerializer):
     Uses the first song's cover image as the playlist cover when available.
     """
     cover_image = serializers.SerializerMethodField()
+    top_song_covers = serializers.SerializerMethodField()
+    songs_count = serializers.SerializerMethodField()
     generated_by = serializers.CharField(source='created_by', read_only=True)
     creator_unique_id = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='normal-playlist')
 
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'description', 'cover_image', 'generated_by', 'creator_unique_id', 'type']
+        fields = ['id', 'title', 'description', 'cover_image', 'top_song_covers', 'songs_count', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
@@ -1820,29 +1837,33 @@ class PlaylistCoverSerializer(LocalizedModelSerializer):
         sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
         return sedabox_user.unique_id if sedabox_user else None
 
+    def _songs(self, obj):
+        prefetched = getattr(obj, '_prefetched_objects_cache', {}).get('songs')
+        return list(prefetched) if prefetched is not None else list(obj.songs.all())
+
+    def get_songs_count(self, obj):
+        return len(self._songs(obj))
+
+    def get_top_song_covers(self, obj):
+        covers = []
+        for song in self._songs(obj):
+            value = getattr(song, 'cover_image', None) or getattr(getattr(song, 'album', None), 'cover_image', None)
+            if value:
+                covers.append(_signed_url(value))
+            if len(covers) == 2:
+                break
+        return covers
+
     def get_cover_image(self, obj):
-        try:
-            # prefer an explicit ordering if present
-            order = getattr(obj, 'song_order', None)
-        except Exception:
-            order = None
-
-        try:
-            if order:
-                first_id = order[0] if len(order) else None
-                if first_id:
-                    first_song = next((s for s in obj.songs.all() if s.id == first_id), None)
-                    if first_song and getattr(first_song, 'cover_image', None):
-                        return first_song.cover_image
-
-            first_song = obj.songs.all().first()
-            if first_song and getattr(first_song, 'cover_image', None):
-                return first_song.cover_image
-        except Exception:
-            pass
-
-        # fallback to playlist cover field if present
-        return getattr(obj, 'cover_image', None)
+        songs = self._songs(obj)
+        first_song = songs[0] if songs else None
+        if first_song:
+            value = getattr(first_song, 'cover_image', None) or getattr(
+                getattr(first_song, 'album', None), 'cover_image', None
+            )
+            if value:
+                return _signed_url(value)
+        return _signed_url(getattr(obj, 'cover_image', None))
 
 
 class EventPlaylistListSerializer(LocalizedModelSerializer):
