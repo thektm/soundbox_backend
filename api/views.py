@@ -65,7 +65,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import (
     Sum, Count, F, IntegerField, BigIntegerField, Value, Prefetch, DecimalField, CharField,
     TextField, OuterRef, Subquery, Max, Case, When,
@@ -139,6 +139,43 @@ def _song_card_queryset():
     return Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related(
         'artist', 'album', 'uploader'
     ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+
+
+def _touch_user_history(user, content_type, **target):
+    """Atomically touch one history row and collapse legacy duplicates.
+
+    PostgreSQL advisory locks serialize concurrent requests for the same user/item
+    even though older databases do not have a matching unique constraint. This
+    avoids ``MultipleObjectsReturned`` without requiring a migration.
+    """
+    target_ids = [value.pk if hasattr(value, 'pk') else int(value) for value in target.values() if value is not None]
+    target_id = target_ids[0] if target_ids else 0
+    type_codes = {
+        UserHistory.TYPE_USER: 1,
+        UserHistory.TYPE_SONG: 2,
+        UserHistory.TYPE_ALBUM: 3,
+        UserHistory.TYPE_PLAYLIST: 4,
+        UserHistory.TYPE_ARTIST: 5,
+    }
+    lookup = {'user': user, 'content_type': content_type, **target}
+    now = timezone.now()
+
+    with transaction.atomic():
+        if connection.vendor == 'postgresql':
+            first_key = int(user.pk) % 2147483647
+            second_key = ((type_codes.get(content_type, 0) << 24) ^ int(target_id)) % 2147483647
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT pg_advisory_xact_lock(%s, %s)', [first_key, second_key])
+
+        rows = UserHistory.objects.select_for_update().filter(**lookup).order_by('-updated_at', '-id')
+        current = rows.first()
+        if current is None:
+            return UserHistory.objects.create(**lookup)
+
+        rows.exclude(pk=current.pk).delete()
+        UserHistory.objects.filter(pk=current.pk).update(updated_at=now)
+        current.updated_at = now
+        return current
 
 
 def _history_queryset(user):
@@ -457,7 +494,11 @@ class UserProfileView(APIView):
                             if profile and profile.image:
                                 item['image'] = absolute_api_url(request, profile.image.url)
 
-        return Response(data)
+        response = Response(data)
+        response['Cache-Control'] = 'private, no-store, max-age=0'
+        response['Pragma'] = 'no-cache'
+        response['Vary'] = 'Authorization, Accept-Language'
+        return response
 
     @extend_schema(
         summary="ویرایش پروفایل کاربر",
@@ -1602,8 +1643,7 @@ class PlaylistDetailView(APIView):
         ).filter(pk=pk).first()
         if not playlist: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_PLAYLIST,
-                                                 playlist=playlist, defaults={'updated_at': timezone.now()})
+            _touch_user_history(request.user, UserHistory.TYPE_PLAYLIST, playlist=playlist)
         songs = list(playlist.songs.all()); hydrate_song_metrics(songs, request.user, False); hydrate_playlist_metrics([playlist], request.user)
         return Response(PlaylistSerializer(playlist, context={'request': request}).data)
 
@@ -1843,8 +1883,7 @@ class ArtistDetailView(APIView):
         artist = Artist.objects.prefetch_related('social_account_links__platform').filter(pk=pk).first()
         if not artist: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_ARTIST,
-                                                 artist=artist, defaults={'updated_at': timezone.now()})
+            _touch_user_history(request.user, UserHistory.TYPE_ARTIST, artist=artist)
         page, page_size = _page_values(request, 10, 50); offset = (page - 1) * page_size
         song_base = _song_card_queryset().filter(artist=artist)
         top = song_base.annotate(total_plays=Coalesce(F('plays'), 0) + Count('play_counts')).order_by('-total_plays', '-created_at')
@@ -2032,8 +2071,7 @@ class AlbumDetailView(APIView):
         ).filter(pk=pk).first()
         if not album: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_ALBUM,
-                                                 album=album, defaults={'updated_at': timezone.now()})
+            _touch_user_history(request.user, UserHistory.TYPE_ALBUM, album=album)
         hydrate_album_metrics([album], request.user); hydrate_song_metrics(album._detail_songs, request.user, False)
         return Response(AlbumSerializer(album, context={'request': request}).data)
 
@@ -2529,8 +2567,7 @@ class SongDetailView(APIView):
         song = queryset.filter(pk=pk).first()
         if not song: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
-            UserHistory.objects.update_or_create(user=request.user, content_type=UserHistory.TYPE_SONG,
-                                                 song=song, defaults={'updated_at': timezone.now()})
+            _touch_user_history(request.user, UserHistory.TYPE_SONG, song=song)
         hydrate_song_metrics([song], request.user)
         data = SongSerializer(song, context={'request': request}).data
         artist_profile = getattr(request.user, 'artist_profile', None) if request.user.is_authenticated else None
@@ -2862,12 +2899,7 @@ class UnwrapStreamView(APIView):
         song = stream_access.song
 
         # Record history
-        UserHistory.objects.update_or_create(
-            user=request.user,
-            content_type=UserHistory.TYPE_SONG,
-            song=song,
-            defaults={'updated_at': timezone.now()}
-        )
+        _touch_user_history(request.user, UserHistory.TYPE_SONG, song=song)
         
         # Quality selection: Use user setting if available
         # if high quality was selected by user we only provide audio_url (128kbps/320kbps usually)
@@ -3762,12 +3794,7 @@ class UserProfilePublicView(APIView):
         # default: full public profile
         # Record profile view in history (skip if anonymous or viewing own profile)
         if request.user.is_authenticated and request.user.id != user.id:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_USER,
-                target_user=user,
-                defaults={'updated_at': timezone.now()}
-            )
+            _touch_user_history(request.user, UserHistory.TYPE_USER, target_user=user)
 
         serializer = UserPublicProfileSerializer(user, context={'request': request})
         data = serializer.data
@@ -3907,12 +3934,7 @@ class SedaBoxProfileView(APIView):
         profile_data['unique_id'] = 'sedabox'
 
         if request.user.is_authenticated and request.user.id != user.id:
-            UserHistory.objects.update_or_create(
-                user=request.user,
-                content_type=UserHistory.TYPE_USER,
-                target_user=user,
-                defaults={'updated_at': timezone.now()},
-            )
+            _touch_user_history(request.user, UserHistory.TYPE_USER, target_user=user)
 
         page, page_size = _page_values(request, default_size=20, max_size=100)
         end = page * page_size
@@ -8045,7 +8067,8 @@ class PremiumPlanPriceView(APIView):
             'price': price_val,
             'currency': 'TOMAN',
         }, status=status.HTTP_200_OK)
-        response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+        response['Cache-Control'] = 'no-store, max-age=0'
+        response['Pragma'] = 'no-cache'
         return response
 
 
@@ -8078,7 +8101,7 @@ class PremiumPlanActivateView(APIView):
             request.user.pk, gateway=gateway
         )
         payload = UserSerializer(user, context={'request': request}).data
-        return Response(
+        response = Response(
             {
                 'message': 'Premium activated successfully.',
                 'plan': user.plan,
@@ -8087,3 +8110,7 @@ class PremiumPlanActivateView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+        response['Cache-Control'] = 'private, no-store, max-age=0'
+        response['Pragma'] = 'no-cache'
+        response['Vary'] = 'Authorization, Accept-Language'
+        return response
