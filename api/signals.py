@@ -41,14 +41,29 @@ logger = logging.getLogger(__name__)
 
 
 def _get_user_display_name(user: User) -> str:
-    """Resolve a precise, non-sensitive display name for a user."""
+    """Resolve the public actor label used in user-facing notifications.
+
+    A user's chosen first/last name is the primary display identity.  The
+    public UID is only the fallback when no name has been set.  This mirrors
+    profile/search rendering and avoids follow notifications that expose only
+    an opaque identifier even though a readable name is available.
+    """
     if not user:
         return "یک کاربر"
+
+    full_name = " ".join(
+        part.strip()
+        for part in (
+            getattr(user, "first_name", "") or "",
+            getattr(user, "last_name", "") or "",
+        )
+        if part and part.strip()
+    ).strip()
+    if full_name:
+        return full_name
+
     unique_id = (getattr(user, "unique_id", None) or "").strip()
-    if unique_id:
-        return unique_id
-    full_name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
-    return full_name or "یک کاربر"
+    return unique_id or "یک کاربر"
 
 
 def _run_safely(label, callback):

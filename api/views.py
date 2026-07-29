@@ -38,6 +38,7 @@ from .serializers import (
     SongStreamSerializer,
     UserPlaylistSerializer,
     UserPlaylistCreateSerializer,
+    normalize_user_playlist_order,
     RecommendedPlaylistListSerializer,
     RecommendedPlaylistDetailSerializer,
     SearchResultSerializer,
@@ -3628,20 +3629,16 @@ class UserPlaylistAddSongView(APIView):
             )
 
         playlist.songs.add(song)
-        # Maintain playlist.order JSON (append new song id if not present)
-        try:
-            order = playlist.order or []
-            if not isinstance(order, list):
-                order = list(order)
-        except Exception:
-            order = []
-
+        # Keep one canonical ordering representation. Legacy object entries are
+        # normalized here so adding a song also repairs older playlists.
+        order = normalize_user_playlist_order(playlist.order)
         if song.id not in order:
             order.append(song.id)
-            playlist.order = order
-            playlist.save(update_fields=['order'])
+        playlist.order = order
+        playlist.save(update_fields=['order', 'updated_at'])
 
-        serializer = UserPlaylistSerializer(playlist, context={'request': request})
+        refreshed = _prepare_user_playlists(_user_playlist_queryset().filter(pk=playlist.pk), request.user)[0]
+        serializer = UserPlaylistSerializer(refreshed, context={'request': request})
         return Response(serializer.data)
 
 
@@ -3665,23 +3662,16 @@ class UserPlaylistRemoveSongView(APIView):
         try:
             song = Song.objects.get(id=song_id)
             playlist.songs.remove(song)
-            # Update playlist.order to remove this song id if present
-            try:
-                order = playlist.order or []
-                if not isinstance(order, list):
-                    order = list(order)
-            except Exception:
-                order = []
+            # Removing a song also repairs any legacy object-based order data.
+            playlist.order = [
+                ordered_id
+                for ordered_id in normalize_user_playlist_order(playlist.order)
+                if ordered_id != song.id
+            ]
+            playlist.save(update_fields=['order', 'updated_at'])
 
-            if song.id in order:
-                try:
-                    order.remove(song.id)
-                except ValueError:
-                    pass
-                playlist.order = order
-                playlist.save(update_fields=['order'])
-
-            serializer = UserPlaylistSerializer(playlist, context={'request': request})
+            refreshed = _prepare_user_playlists(_user_playlist_queryset().filter(pk=playlist.pk), request.user)[0]
+            serializer = UserPlaylistSerializer(refreshed, context={'request': request})
             return Response(serializer.data)
         except Song.DoesNotExist:
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)

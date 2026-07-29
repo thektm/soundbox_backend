@@ -1758,6 +1758,31 @@ class SongStreamSerializer(LocalizedModelSerializer):
         data=super().to_representation(instance); data['cover_image']=_signed_url(data.get('cover_image')); return data
 
 
+def normalize_user_playlist_order(value):
+    """Return a stable, duplicate-free list of integer song IDs.
+
+    Older clients stored entries as ``{"id": ..., "cover": ...}`` while the
+    model contract and newer clients use plain IDs.  Accept both shapes so old
+    playlists remain editable, but always persist/emit the canonical ID list.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    normalized = []
+    seen = set()
+    for item in value:
+        raw_id = item.get('id') if isinstance(item, dict) else item
+        try:
+            song_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if song_id <= 0 or song_id in seen:
+            continue
+        seen.add(song_id)
+        normalized.append(song_id)
+    return normalized
+
+
 class UserPlaylistSerializer(LocalizedModelSerializer):
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
     user_unique_id = serializers.CharField(source='user.unique_id', read_only=True)
@@ -1773,23 +1798,52 @@ class UserPlaylistSerializer(LocalizedModelSerializer):
     creator_unique_id = serializers.CharField(source='user.unique_id', read_only=True)
     creator_user_id = serializers.IntegerField(source='user_id', read_only=True)
     creator_name = serializers.SerializerMethodField()
+    is_owner = serializers.SerializerMethodField()
 
     class Meta:
         model = UserPlaylist
         fields = [
             'id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
             'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 'order',
-            'type', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name', 'created_at', 'updated_at',
+            'type', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name', 'is_owner', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count',
             'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type',
-            'songs', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name',
+            'songs', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name', 'is_owner',
         ]
 
     def get_creator_name(self, obj):
         name = f"{obj.user.first_name or ''} {obj.user.last_name or ''}".strip()
         return name or obj.user.unique_id or str(obj.user_id)
+
+    def get_is_owner(self, obj):
+        request = self.context.get('request')
+        return bool(
+            request
+            and getattr(request, 'user', None)
+            and request.user.is_authenticated
+            and request.user.id == obj.user_id
+        )
+
+    def validate_order(self, value):
+        normalized = normalize_user_playlist_order(value)
+        if self.instance is not None and normalized:
+            allowed_ids = set(
+                self.instance.songs.filter(id__in=normalized).values_list('id', flat=True)
+            )
+            unknown_ids = [song_id for song_id in normalized if song_id not in allowed_ids]
+            if unknown_ids:
+                raise serializers.ValidationError(
+                    'Order can only contain songs that belong to this playlist.'
+                )
+        return normalized
+
+    def validate_title(self, value):
+        title = str(value or '').strip()
+        if not title:
+            raise serializers.ValidationError('Playlist title cannot be empty.')
+        return title
 
     def _songs(self, obj):
         songs = getattr(obj, '_detail_songs', None)
@@ -1810,10 +1864,16 @@ class UserPlaylistSerializer(LocalizedModelSerializer):
     def get_songs(self, obj):
         songs = self._songs(obj)
         song_map = {song.id: song for song in songs}
-        order = obj.order if isinstance(obj.order, list) else []
-        ordered = [song_map[sid] for sid in order if sid in song_map]
-        ordered.extend(song for song in songs if song not in ordered)
+        order = normalize_user_playlist_order(obj.order)
+        ordered = [song_map[song_id] for song_id in order if song_id in song_map]
+        included_ids = {song.id for song in ordered}
+        ordered.extend(song for song in songs if song.id not in included_ids)
         return SongSummarySerializer(ordered, many=True, context=self.context).data
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['order'] = normalize_user_playlist_order(instance.order)
+        return data
 
     def get_top_three_song_covers(self, obj):
         covers = []
@@ -1833,6 +1893,15 @@ class UserPlaylistCreateSerializer(LocalizedModelSerializer):
     class Meta:
         model = __import__('api.models', fromlist=['UserPlaylist']).UserPlaylist
         fields = ['title', 'public', 'first_song_id', 'order']
+
+    def validate_order(self, value):
+        return normalize_user_playlist_order(value)
+
+    def validate_title(self, value):
+        title = str(value or '').strip()
+        if not title:
+            raise serializers.ValidationError('Playlist title cannot be empty.')
+        return title
     
     def create(self, validated_data):
         first_song_id = validated_data.pop('first_song_id', None)
