@@ -15,16 +15,25 @@ services:
       DB_PORT: '5432'
       DB_CONN_MAX_AGE: '60'
       REDIS_URL: 'redis://redis:6379/1'
+      CHANNEL_REDIS_URL: 'redis://redis:6379/2'
+      CHANNEL_CAPACITY: '100'
+      CHANNEL_MESSAGE_EXPIRY: '60'
+      CHANNEL_GROUP_EXPIRY: '86400'
+      CHANNEL_PREFIX: 'sedabox'
+      CHANNEL_REDIS_REQUIRED_ON_STARTUP: '1'
+      CHANNEL_REDIS_STARTUP_WAIT_SECONDS: '60'
       REDIS_CONNECT_TIMEOUT: '1'
       REDIS_SOCKET_TIMEOUT: '1'
       REDIS_MAX_CONNECTIONS: '40'
       REDIS_RETRY_SECONDS: '5'
-      REDIS_REQUIRED_ON_STARTUP: '0'
-      REDIS_STARTUP_WAIT_SECONDS: '5'
+      REDIS_REQUIRED_ON_STARTUP: '1'
+      REDIS_STARTUP_WAIT_SECONDS: '60'
       ALLOWED_HOSTS: '141.11.123.238,localhost'
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     ports:

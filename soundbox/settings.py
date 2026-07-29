@@ -24,6 +24,7 @@ ALLOWED_HOSTS = list(dict.fromkeys(_REQUIRED_ALLOWED_HOSTS + _csv_setting('ALLOW
 PUBLIC_API_BASE_URL = os.environ.get('PUBLIC_API_BASE_URL', 'https://api.sedabox.com').rstrip('/')
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -69,6 +70,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'soundbox.wsgi.application'
+ASGI_APPLICATION = 'soundbox.asgi.application'
 
 
 DATABASES = {
@@ -85,6 +87,21 @@ DATABASES = {
 
 
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/1')
+CHANNEL_REDIS_URL = os.environ.get('CHANNEL_REDIS_URL', REDIS_URL)
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [CHANNEL_REDIS_URL],
+            'prefix': os.environ.get('CHANNEL_PREFIX', 'sedabox'),
+            # Notifications are tiny and user-specific; bounded capacity avoids
+            # unbounded memory growth if a client disappears without closing.
+            'capacity': int(os.environ.get('CHANNEL_CAPACITY', '100')),
+            'expiry': int(os.environ.get('CHANNEL_MESSAGE_EXPIRY', '60')),
+            'group_expiry': int(os.environ.get('CHANNEL_GROUP_EXPIRY', '86400')),
+        },
+    },
+}
 CACHES = {
     'default': {
         'BACKEND': 'api.cache_backend.ResilientRedisCache',

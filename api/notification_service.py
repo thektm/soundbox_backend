@@ -14,6 +14,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import Notification, NotificationSetting, User
+from .realtime_notifications import (
+    schedule_notification_ids_publish,
+    schedule_notification_publish,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +123,11 @@ def send_user_notification(
             .first()
         )
         if existing:
+            # A still-unread match is the same logical event arriving through a
+            # duplicate signal path, so do not send a second toast. If the row
+            # was already read, reopening it is a new visible event and must be
+            # pushed after commit.
+            should_publish = bool(existing.has_read)
             Notification.objects.filter(pk=existing.pk).update(
                 has_read=False,
                 created_at=now,
@@ -127,8 +136,12 @@ def send_user_notification(
             existing.has_read = False
             existing.created_at = now
             existing.text_en = text_en or existing.text_en or text
+            if should_publish:
+                schedule_notification_publish(existing.pk)
             return existing
 
+        # Creation is published by the Notification post-save receiver after
+        # the outermost transaction commits.
         return Notification.objects.create(
             user_id=locked_user.pk,
             text=text,
@@ -179,13 +192,15 @@ def broadcast_user_notification(
             )
         )
         if len(batch) >= 1000:
-            Notification.objects.bulk_create(batch, batch_size=1000)
-            created += len(batch)
+            created_rows = Notification.objects.bulk_create(batch, batch_size=1000)
+            schedule_notification_ids_publish(row.pk for row in created_rows)
+            created += len(created_rows)
             batch.clear()
 
     if batch:
-        Notification.objects.bulk_create(batch, batch_size=1000)
-        created += len(batch)
+        created_rows = Notification.objects.bulk_create(batch, batch_size=1000)
+        schedule_notification_ids_publish(row.pk for row in created_rows)
+        created += len(created_rows)
     return created
 
 

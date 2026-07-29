@@ -27,4 +27,4 @@ RUN chmod +x /app/entrypoint.sh || true
 EXPOSE 8000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["gunicorn", "soundbox.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "--proxy-headers", "soundbox.asgi:application"]

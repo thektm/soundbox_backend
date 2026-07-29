@@ -14,6 +14,10 @@ from .models import (
 )
 from .models import BannerAd, BannerAdServeCounter
 from .localization import generated_term_en, get_request_language
+from .realtime_notifications import (
+    publish_all_notifications_read,
+    publish_notification_read,
+)
 from .serializers import (
     UserSerializer,PlaylistSerializer,NotificationSettingSerializer,
     RegisterSerializer, 
@@ -7930,7 +7934,8 @@ class NotificationMarkReadView(APIView):
             200: inline_serializer(
                 name='NotificationMarkReadResponse',
                 fields={
-                    'message': serializers.CharField()
+                    'message': serializers.CharField(),
+                    'read_through_id': serializers.IntegerField(required=False, allow_null=True),
                 }
             )
         }
@@ -7953,13 +7958,41 @@ class NotificationMarkReadView(APIView):
         if pk is not None:
             # Idempotent and ownership-safe: unauthorized ids are indistinguishable
             # from missing ids and an already-read row still returns success.
-            notification = get_object_or_404(owned, pk=pk)
-            if not notification.has_read:
-                owned.filter(pk=pk, has_read=False).update(has_read=True)
+            with transaction.atomic():
+                if not is_artist:
+                    # Notification producers lock this same user row. The lock
+                    # gives read-vs-create races a deterministic commit order.
+                    User.objects.select_for_update().only("id").get(pk=user.pk)
+                notification = get_object_or_404(owned.select_for_update(), pk=pk)
+                if not notification.has_read:
+                    owned.filter(pk=pk, has_read=False).update(has_read=True)
+                if not is_artist:
+                    transaction.on_commit(
+                        lambda user_id=user.pk, notification_id=notification.pk:
+                        publish_notification_read(user_id, notification_id)
+                    )
             return Response({"message": "Notification marked as read"})
 
-        owned.filter(has_read=False).update(has_read=True)
-        return Response({"message": "All notifications marked as read"})
+        with transaction.atomic():
+            if not is_artist:
+                User.objects.select_for_update().only("id").get(pk=user.pk)
+            read_through_id = owned.filter(has_read=False).aggregate(
+                max_id=Max("id")
+            )["max_id"]
+            if read_through_id is not None:
+                owned.filter(
+                    has_read=False,
+                    id__lte=read_through_id,
+                ).update(has_read=True)
+            if not is_artist:
+                transaction.on_commit(
+                    lambda user_id=user.pk, through=read_through_id:
+                    publish_all_notifications_read(user_id, through)
+                )
+        return Response({
+            "message": "All notifications marked as read",
+            "read_through_id": read_through_id,
+        })
 
 
 @extend_schema(

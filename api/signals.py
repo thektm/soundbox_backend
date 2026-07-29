@@ -12,6 +12,7 @@ from .models import (
     ArtistMonthlyListener,
     DepositRequest,
     Follow,
+    Notification,
     NotificationSetting,
     PlayCount,
     Playlist,
@@ -34,6 +35,7 @@ from .notification_service import (
     send_system_notification,
     send_user_notification,
 )
+from .realtime_notifications import schedule_notification_publish
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,13 @@ def _follower_recipient_user_ids(*, artist_ids=(), user_ids=()):
 def create_user_notification_settings(sender, instance, created, **kwargs):
     if created:
         NotificationSetting.objects.get_or_create(user=instance)
+
+
+@receiver(post_save, sender=Notification, dispatch_uid="api.notification.realtime.created")
+def publish_created_notification(sender, instance, created, **kwargs):
+    """Push committed unread user notifications to connected browser clients."""
+    if created and instance.user_id and not instance.has_read:
+        schedule_notification_publish(instance.pk)
 
 
 @receiver(post_save, sender=Follow, dispatch_uid="api.notification.follow.created")
