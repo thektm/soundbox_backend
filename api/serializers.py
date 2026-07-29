@@ -13,7 +13,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from urllib.parse import urlencode
 from django.urls import reverse
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.db.models.manager import BaseManager
 
@@ -714,13 +714,23 @@ class UserSerializer(LocalizedModelSerializer):
     def update(self, instance, validated_data):
         # Handle nested notification_setting update
         notification_data = self.context['request'].data.get('notification_setting')
-        if notification_data:
-            # Ensure the user has a notification setting record
-            notification_setting, created = NotificationSetting.objects.get_or_create(user=instance)
-            ns_serializer = NotificationSettingSerializer(notification_setting, data=notification_data, partial=True)
-            if ns_serializer.is_valid():
+        if notification_data is not None:
+            # Keep the legacy nested profile update path strict and atomic.  The
+            # dedicated notification-settings endpoint is preferred by clients,
+            # but malformed nested preferences must never be silently ignored.
+            with transaction.atomic():
+                notification_setting, _ = NotificationSetting.objects.get_or_create(user=instance)
+                notification_setting = NotificationSetting.objects.select_for_update().get(
+                    pk=notification_setting.pk
+                )
+                ns_serializer = NotificationSettingSerializer(
+                    notification_setting,
+                    data=notification_data,
+                    partial=True,
+                )
+                ns_serializer.is_valid(raise_exception=True)
                 ns_serializer.save()
-        
+
         return super().update(instance, validated_data)
 
     def get_recently_played(self, obj):

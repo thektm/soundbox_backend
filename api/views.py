@@ -626,12 +626,13 @@ class NotificationSettingUpdateView(APIView):
         responses={200: NotificationSettingSerializer}
     )
     def put(self, request):
-        setting, created = NotificationSetting.objects.get_or_create(user=request.user)
-        serializer = NotificationSettingSerializer(setting, data=request.data)
-        if serializer.is_valid():
+        with transaction.atomic():
+            setting, _ = NotificationSetting.objects.get_or_create(user=request.user)
+            setting = NotificationSetting.objects.select_for_update().get(pk=setting.pk)
+            serializer = NotificationSettingSerializer(setting, data=request.data)
+            serializer.is_valid(raise_exception=True)
             serializer.save()
             return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
         summary="به‌روزرسانی تنظیمات اعلان‌ها (جزئی)",
@@ -640,12 +641,13 @@ class NotificationSettingUpdateView(APIView):
         responses={200: NotificationSettingSerializer}
     )
     def patch(self, request):
-        setting, created = NotificationSetting.objects.get_or_create(user=request.user)
-        serializer = NotificationSettingSerializer(setting, data=request.data, partial=True)
-        if serializer.is_valid():
+        with transaction.atomic():
+            setting, _ = NotificationSetting.objects.get_or_create(user=request.user)
+            setting = NotificationSetting.objects.select_for_update().get(pk=setting.pk)
+            serializer = NotificationSettingSerializer(setting, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
             serializer.save()
             return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
@@ -7885,7 +7887,7 @@ class NotificationListView(generics.ListAPIView):
 
     @extend_schema(
         summary="لیست اعلان‌ها",
-        description="دریافت لیست اعلان‌های کاربر یا هنرمند با قابلیت گروه‌بندی هوشمند.",
+        description="دریافت هر اعلان خوانده‌نشده به‌صورت یک رکورد مستقل برای کاربر یا پنل هنرمند.",
         parameters=[
             OpenApiParameter("artist", OpenApiTypes.BOOL, description="دریافت اعلان‌های مربوط به پنل هنرمند")
         ],
@@ -7906,91 +7908,11 @@ class NotificationListView(generics.ListAPIView):
         return Notification.objects.filter(user=user, has_read=False).order_by('-created_at')
 
     def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
-        notifications = list(queryset)
-        
-        # Grouping logic
-        grouped = {} # (template, has_read) -> {sum, obj, uses_farsi, template}
-        
-        FARSI_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
-        ENG_DIGITS = "0123456789"
-        farsi_to_eng = str.maketrans(FARSI_DIGITS, ENG_DIGITS)
-        eng_to_farsi = str.maketrans(ENG_DIGITS, FARSI_DIGITS)
-
-        for n in notifications:
-            text = n.text
-            has_read = n.has_read
-            
-            # Detect Farsi digits
-            uses_farsi = any(c in FARSI_DIGITS for c in text)
-            
-            # Normalize to English digits for extraction
-            norm_text = text.translate(farsi_to_eng)
-            
-            # Find all numbers
-            numbers = re.findall(r'\d+', norm_text)
-            
-            # We only group if there is exactly one number (the "value" the user mentioned)
-            if len(numbers) != 1:
-                # No numbers or multiple numbers: group by exact text
-                key = (text, has_read)
-                if key not in grouped:
-                    grouped[key] = {'sum': None, 'obj': n, 'is_numeric': False}
-                continue
-            
-            # Template: replace the single number with a placeholder
-            template = re.sub(r'\d+', '{}', norm_text)
-            key = (template, has_read)
-            val = int(numbers[0])
-            
-            if key not in grouped:
-                grouped[key] = {
-                    'sum': val,
-                    'obj': n,
-                    'is_numeric': True,
-                    'uses_farsi': uses_farsi,
-                    'template': template
-                }
-            else:
-                grouped[key]['sum'] += val
-                # Keep the latest object for metadata (id, created_at)
-                if n.created_at > grouped[key]['obj'].created_at:
-                    grouped[key]['obj'] = n
-
-        # Reconstruct grouped notifications
-        result = []
-        for data in grouped.values():
-            obj = data['obj']
-            if data['is_numeric']:
-                final_val = str(data['sum'])
-                if data['uses_farsi']:
-                    final_val = final_val.translate(eng_to_farsi)
-                
-                # Reconstruct text using the template
-                # We use the original language (Farsi/English) based on detection
-                text_template = data['template']
-                if data['uses_farsi']:
-                    # If it was Farsi, the template (from norm_text) is in English, 
-                    # but we want to return Farsi text.
-                    # Actually, norm_text only changed digits. 
-                    # So we translate the template back to Farsi digits if needed.
-                    text_template = text_template.translate(eng_to_farsi)
-                
-                obj.text = text_template.format(final_val)
-            
-            result.append(obj)
-            
-        # Sort by created_at desc
-        result.sort(key=lambda x: x.created_at, reverse=True)
-        
-        # Apply pagination to the grouped list
-        page = self.paginate_queryset(result)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(result, many=True)
-        return Response(serializer.data)
+        # Return each unread row independently.  The previous text/number based
+        # grouping hid multiple database rows behind one id, so marking the
+        # visible item as read left invisible unread notifications that returned
+        # on the next refresh.
+        return super().list(request, *args, **kwargs)
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
@@ -8016,26 +7938,27 @@ class NotificationMarkReadView(APIView):
     def post(self, request, pk=None):
         user = request.user
         is_artist = request.query_params.get('artist', '').lower() == 'true'
-        
-        if pk:
-            # Mark specific notification as read
-            notification = get_object_or_404(Notification, pk=pk)
-            # Security check: ensure notification belongs to the user or their artist profile
-            if notification.user == user or (is_artist and hasattr(user, 'artist_profile') and notification.artist == user.artist_profile):
-                notification.has_read = True
-                notification.save()
-                return Response({"message": "Notification marked as read"})
-            return Response({"error": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
-        
-        # Mark all as read
+
         if is_artist:
-            if hasattr(user, 'artist_profile'):
-                Notification.objects.filter(artist=user.artist_profile, has_read=False).update(has_read=True)
-            else:
-                return Response({"error": "No artist profile found"}, status=status.HTTP_400_BAD_REQUEST)
+            artist = getattr(user, 'artist_profile', None)
+            if not artist:
+                return Response(
+                    {"error": "No artist profile found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            owned = Notification.objects.filter(artist=artist)
         else:
-            Notification.objects.filter(user=user, has_read=False).update(has_read=True)
-            
+            owned = Notification.objects.filter(user=user)
+
+        if pk is not None:
+            # Idempotent and ownership-safe: unauthorized ids are indistinguishable
+            # from missing ids and an already-read row still returns success.
+            notification = get_object_or_404(owned, pk=pk)
+            if not notification.has_read:
+                owned.filter(pk=pk, has_read=False).update(has_read=True)
+            return Response({"message": "Notification marked as read"})
+
+        owned.filter(has_read=False).update(has_read=True)
         return Response({"message": "All notifications marked as read"})
 
 

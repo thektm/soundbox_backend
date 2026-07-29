@@ -1,162 +1,618 @@
-from django.db.models.signals import post_save, post_delete, m2m_changed, pre_save
+import logging
+
+from django.db import transaction
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.dispatch import receiver
+
 from .models import (
-    User, Song, Album, Artist, Playlist, RecommendedPlaylist, Follow, UserPlaylist,
-    Notification, NotificationSetting, ArtistMonthlyListener, SongLike, AlbumLike,
-    PlaylistLike, PlayCount,
+    Album,
+    AlbumLike,
+    Artist,
+    ArtistAuth,
+    ArtistMonthlyListener,
+    DepositRequest,
+    Follow,
+    NotificationSetting,
+    PlayCount,
+    Playlist,
+    PaymentTransaction,
+    PlaylistLike,
+    RecommendedPlaylist,
+    Song,
+    SongLike,
+    User,
+    UserImageProfile,
+    UserPlaylist,
 )
-from django.utils.translation import gettext as _
-from django.utils import timezone
+from .notification_service import (
+    EVENT_NEW_ALBUM,
+    EVENT_NEW_FOLLOWER,
+    EVENT_NEW_LIKE,
+    EVENT_NEW_PLAYLIST,
+    EVENT_NEW_SONG,
+    broadcast_user_notification,
+    send_system_notification,
+    send_user_notification,
+)
 
-def _get_user_display_name(u: User):
-    """Helper to resolve a precise and friendly display name for a user."""
-    if not u:
+logger = logging.getLogger(__name__)
+
+
+def _get_user_display_name(user: User) -> str:
+    """Resolve a precise, non-sensitive display name for a user."""
+    if not user:
         return "یک کاربر"
-    
-    # 1. Prefer unique_id (ensure it's not just whitespace or None)
-    uid = getattr(u, 'unique_id', None)
-    if uid and str(uid).strip():
-        return str(uid).strip()
+    unique_id = (getattr(user, "unique_id", None) or "").strip()
+    if unique_id:
+        return unique_id
+    full_name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+    return full_name or "یک کاربر"
 
-    # 2. Prefer first_name + last_name
-    first = getattr(u, 'first_name', '') or ''
-    last = getattr(u, 'last_name', '') or ''
-    names = f"{first} {last}".strip()
-    if names:
-        return names
-    
-    # 3. Fallback to a generic string (could also use partially hidden phone if preferred)
-    return "یک کاربر"
 
-def _send_or_update_notification(user_or_artist, text, text_en=None):
+def _run_safely(label, callback):
+    try:
+        callback()
+    except Exception:
+        # Never break the originating write, but never hide delivery failures.
+        logger.exception("Notification job failed: %s", label)
+
+
+def _after_commit(label, callback):
+    transaction.on_commit(lambda: _run_safely(label, callback))
+
+
+def _linked_user(artist: Artist | None) -> User | None:
+    return getattr(artist, "user", None) if artist else None
+
+
+def _follower_recipient_user_ids(*, artist_ids=(), user_ids=()):
+    """Return real user accounts following any supplied artist/user target.
+
+    Both normal-user followers and artist-profile followers are supported; an
+    artist follower receives the notification through its linked user account.
     """
-    Creates a new notification or updates an existing one if the text is identical.
-    Ensures 'created_at' is updated to now and 'has_read' is reset to False.
-    """
-    now = timezone.now()
-    if isinstance(user_or_artist, User):
-        lookup = {'user': user_or_artist, 'text': text}
-    else: # Artist
-        lookup = {'artist': user_or_artist, 'text': text}
-    
-    # Try to find an existing notification to avoid duplicates from follow/unfollow cycles
-    existing = Notification.objects.filter(**lookup).first()
-    if existing:
-        # Update existing record and move to top
-        existing.has_read = False
-        existing.created_at = now
-        # We need to use update() to bypass auto_now_add if we want to force time change efficiently
-        # OR just call save() which usually doesn't update auto_now_add.
-        # However, for the user's "time is wrong" fix, we will manually update via queryset.
-        Notification.objects.filter(pk=existing.pk).update(has_read=False, created_at=now, text_en=text_en or existing.text_en)
+    qs = Follow.objects.all()
+    if artist_ids and user_ids:
+        from django.db.models import Q
+        qs = qs.filter(Q(followed_artist_id__in=artist_ids) | Q(followed_user_id__in=user_ids))
+    elif artist_ids:
+        qs = qs.filter(followed_artist_id__in=artist_ids)
+    elif user_ids:
+        qs = qs.filter(followed_user_id__in=user_ids)
     else:
-        Notification.objects.create(**lookup, text_en=text_en or text)
+        return set()
 
-@receiver(post_save, sender=User)
+    recipient_ids = set()
+    for follower_user_id, follower_artist_user_id in qs.values_list(
+        "follower_user_id", "follower_artist__user_id"
+    ):
+        recipient_id = follower_user_id or follower_artist_user_id
+        if recipient_id:
+            recipient_ids.add(recipient_id)
+    return recipient_ids
+
+
+@receiver(post_save, sender=User, dispatch_uid="api.notification.settings.create")
 def create_user_notification_settings(sender, instance, created, **kwargs):
-    """Automatically create notification settings for new users."""
     if created:
         NotificationSetting.objects.get_or_create(user=instance)
 
-@receiver(post_save, sender=Follow)
+
+@receiver(post_save, sender=Follow, dispatch_uid="api.notification.follow.created")
 def notify_new_follower(sender, instance, created, **kwargs):
-    """Notify a user when someone starts following them."""
-    if created and instance.followed_user:
-        target_user = instance.followed_user
-        try:
-            # Refresh from DB to ensure setting exists
-            setting, _ = NotificationSetting.objects.get_or_create(user=target_user)
-            if setting.new_follower:
-                # Resolve a friendly display name for the follower carefully:
-                if instance.follower_user:
-                    follower_name = _get_user_display_name(instance.follower_user)
-                    follower_name_en = follower_name
-                elif instance.follower_artist:
-                    follower_name = instance.follower_artist.name
-                    follower_name_en = instance.follower_artist.name_en or follower_name
-                else:
-                    follower_name = "یک کاربر"
-                    follower_name_en = "A user"
+    if not created:
+        return
+    follow_id = instance.pk
 
-                text = f"{follower_name} شروع به دنبال کردن شما کرد."
-                text_en = f"{follower_name_en} started following you."
-                _send_or_update_notification(target_user, text, text_en)
-        except Exception:
-            pass
+    def deliver():
+        follow = (
+            Follow.objects.select_related(
+                "follower_user", "follower_artist", "follower_artist__user",
+                "followed_user", "followed_artist", "followed_artist__user",
+            )
+            .filter(pk=follow_id)
+            .first()
+        )
+        if not follow:
+            return
 
-@receiver(m2m_changed, sender=UserPlaylist.liked_by.through)
-def notify_playlist_like(sender, instance, action, pk_set, **kwargs):
-    """Notify playlist owner when someone likes their playlist."""
-    if action == "post_add":
-        owner = instance.user
-        try:
-            setting, _ = NotificationSetting.objects.get_or_create(user=owner)
-            if setting.new_likes:
-                for pk in pk_set:
-                    if pk != owner.id:
-                        try:
-                            liker = User.objects.get(pk=pk)
-                            liker_name = _get_user_display_name(liker)
-                            text = f"{liker_name} لیست پخش '{instance.title}' شما را لایک کرد."
-                            text_en = f"{liker_name} liked your playlist '{instance.title}'."
-                            _send_or_update_notification(owner, text, text_en)
-                        except User.DoesNotExist:
-                            continue
-        except Exception:
-            pass
+        actor_count = int(bool(follow.follower_user_id)) + int(bool(follow.follower_artist_id))
+        target_count = int(bool(follow.followed_user_id)) + int(bool(follow.followed_artist_id))
+        if actor_count != 1 or target_count != 1:
+            logger.warning("Skipping malformed Follow row %s", follow.pk)
+            return
 
-@receiver(pre_save, sender=Song)
-def capture_old_song_status(sender, instance, **kwargs):
-    """Capture the status of a song before saving to detect changes."""
-    if instance.pk:
-        try:
-            old_obj = Song.objects.get(pk=instance.pk)
-            instance._old_status = old_obj.status
-        except Song.DoesNotExist:
-            instance._old_status = None
+        recipient = follow.followed_user or _linked_user(follow.followed_artist)
+        actor_user = follow.follower_user or _linked_user(follow.follower_artist)
+        if not recipient or (actor_user and actor_user.pk == recipient.pk):
+            return
+
+        if follow.follower_user:
+            actor_fa = _get_user_display_name(follow.follower_user)
+            actor_en = actor_fa
+        elif follow.follower_artist:
+            actor_fa = follow.follower_artist.name
+            actor_en = follow.follower_artist.name_en or actor_fa
+        else:
+            actor_fa, actor_en = "یک کاربر", "A user"
+
+        if follow.followed_artist:
+            text = f"{actor_fa} صفحه هنرمندی شما را دنبال کرد."
+            text_en = f"{actor_en} followed your artist profile."
+        else:
+            text = f"{actor_fa} شروع به دنبال کردن شما کرد."
+            text_en = f"{actor_en} started following you."
+
+        send_user_notification(
+            user=recipient,
+            event=EVENT_NEW_FOLLOWER,
+            text=text,
+            text_en=text_en,
+        )
+
+    _after_commit(f"follow:{follow_id}", deliver)
+
+
+def _deliver_user_playlist_likes(playlist_id, liker_ids):
+    playlist = UserPlaylist.objects.select_related("user").filter(pk=playlist_id).first()
+    if not playlist:
+        return
+    current_liker_ids = set(
+        playlist.liked_by.filter(id__in=liker_ids).values_list("id", flat=True)
+    )
+    for liker in User.objects.filter(id__in=current_liker_ids, is_active=True):
+        if liker.pk == playlist.user_id:
+            continue
+        liker_name = _get_user_display_name(liker)
+        send_user_notification(
+            user=playlist.user,
+            event=EVENT_NEW_LIKE,
+            text=f"{liker_name} پلی‌لیست «{playlist.title}» شما را پسندید.",
+            text_en=f"{liker_name} liked your playlist '{playlist.title}'.",
+        )
+
+
+@receiver(
+    m2m_changed,
+    sender=UserPlaylist.liked_by.through,
+    dispatch_uid="api.notification.user-playlist.like",
+)
+def notify_user_playlist_like(sender, instance, action, reverse, pk_set, **kwargs):
+    if action != "post_add" or not pk_set:
+        return
+
+    if reverse:
+        liker_ids = (instance.pk,)
+        playlist_ids = tuple(pk_set)
     else:
+        liker_ids = tuple(pk_set)
+        playlist_ids = (instance.pk,)
+
+    for playlist_id in playlist_ids:
+        _after_commit(
+            f"user-playlist-like:{playlist_id}",
+            lambda playlist_id=playlist_id, liker_ids=liker_ids: _deliver_user_playlist_likes(
+                playlist_id, liker_ids
+            ),
+        )
+
+
+@receiver(post_save, sender=SongLike, dispatch_uid="api.notification.song.like")
+def notify_song_like(sender, instance, created, **kwargs):
+    if not created:
+        return
+    like_id = instance.pk
+
+    def deliver():
+        like = (
+            SongLike.objects.select_related("user", "song", "song__artist", "song__artist__user")
+            .filter(pk=like_id)
+            .first()
+        )
+        if not like:
+            return
+        recipient = _linked_user(like.song.artist)
+        if not recipient or recipient.pk == like.user_id:
+            return
+        liker_name = _get_user_display_name(like.user)
+        send_user_notification(
+            user=recipient,
+            event=EVENT_NEW_LIKE,
+            text=f"{liker_name} آهنگ «{like.song.title}» شما را پسندید.",
+            text_en=f"{liker_name} liked your song '{like.song.title_en or like.song.title}'.",
+        )
+
+    _after_commit(f"song-like:{like_id}", deliver)
+
+
+@receiver(post_save, sender=AlbumLike, dispatch_uid="api.notification.album.like")
+def notify_album_like(sender, instance, created, **kwargs):
+    if not created:
+        return
+    like_id = instance.pk
+
+    def deliver():
+        like = (
+            AlbumLike.objects.select_related("user", "album", "album__artist", "album__artist__user")
+            .filter(pk=like_id)
+            .first()
+        )
+        if not like:
+            return
+        recipient = _linked_user(like.album.artist)
+        if not recipient or recipient.pk == like.user_id:
+            return
+        liker_name = _get_user_display_name(like.user)
+        send_user_notification(
+            user=recipient,
+            event=EVENT_NEW_LIKE,
+            text=f"{liker_name} آلبوم «{like.album.title}» شما را پسندید.",
+            text_en=f"{liker_name} liked your album '{like.album.title_en or like.album.title}'.",
+        )
+
+    _after_commit(f"album-like:{like_id}", deliver)
+
+
+@receiver(pre_save, sender=Song, dispatch_uid="api.notification.song.capture-status")
+def capture_old_song_status(sender, instance, **kwargs):
+    if not instance.pk:
         instance._old_status = None
+        return
+    instance._old_status = (
+        Song.objects.filter(pk=instance.pk).values_list("status", flat=True).first()
+    )
 
-@receiver(post_save, sender=Song)
+
+def _deliver_song_release(song_id, followed_artist_ids=None):
+    song = (
+        Song.objects.select_related("artist", "artist__user")
+        .prefetch_related("featured_artists__user")
+        .filter(pk=song_id, status=Song.STATUS_PUBLISHED)
+        .first()
+    )
+    if not song:
+        return
+
+    contributors = [song.artist, *list(song.featured_artists.all())]
+    all_artist_ids = {artist.pk for artist in contributors}
+    artist_ids = set(followed_artist_ids or all_artist_ids)
+    artist_ids &= all_artist_ids
+    if not artist_ids:
+        return
+
+    excluded = {artist.user_id for artist in contributors if artist.user_id}
+    recipient_ids = _follower_recipient_user_ids(artist_ids=artist_ids) - excluded
+    recipients = User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
+        "notification_setting"
+    )
+    artist_name_fa = song.artist.name
+    artist_name_en = song.artist.name_en or artist_name_fa
+    for recipient in recipients.iterator(chunk_size=500):
+        send_user_notification(
+            user=recipient,
+            event=EVENT_NEW_SONG,
+            text=f"آهنگ جدید «{song.title}» از {artist_name_fa} منتشر شد!",
+            text_en=f"New song '{song.title_en or song.title}' by {artist_name_en} is out!",
+        )
+
+
+@receiver(post_save, sender=Song, dispatch_uid="api.notification.song.published")
 def notify_new_song_published(sender, instance, created, **kwargs):
-    """Notify followers when a song is published."""
-    old_status = getattr(instance, '_old_status', None)
-    
-    # Trigger notification if status just changed to published (or created as published)
-    if instance.status == Song.STATUS_PUBLISHED and old_status != Song.STATUS_PUBLISHED:
-        artist = instance.artist
-        # Find all users following this artist
-        followers = Follow.objects.filter(followed_artist=artist).select_related('follower_user')
-        for follow in followers:
-            if follow.follower_user:
-                user = follow.follower_user
-                try:
-                    setting, _ = NotificationSetting.objects.get_or_create(user=user)
-                    if setting.new_song_followed_artists:
-                        text = f"آهنگ جدید '{instance.title}' از {artist.name} منتشر شد!"
-                        text_en = f"New song '{instance.title_en or instance.title}' by {artist.name_en or artist.name} is out!"
-                        _send_or_update_notification(user, text, text_en)
-                except Exception:
-                    pass
+    old_status = getattr(instance, "_old_status", None)
+    if instance.status != Song.STATUS_PUBLISHED or old_status == Song.STATUS_PUBLISHED:
+        return
+    song_id = instance.pk
+    _after_commit(f"song-published:{song_id}", lambda: _deliver_song_release(song_id))
 
-@receiver(post_save, sender=Album)
-def notify_new_album_published(sender, instance, created, **kwargs):
-    """Notify followers when a new album is released."""
-    if created:
-        artist = instance.artist
-        # Find all users following this artist
-        followers = Follow.objects.filter(followed_artist=artist).select_related('follower_user')
-        for follow in followers:
-            if follow.follower_user:
-                user = follow.follower_user
-                try:
-                    setting, _ = NotificationSetting.objects.get_or_create(user=user)
-                    if setting.new_album_followed_artists:
-                        text = f"آلبوم جدید '{instance.title}' از {artist.name} منتشر شد!"
-                        text_en = f"New album '{instance.title_en or instance.title}' by {artist.name_en or artist.name} is out!"
-                        _send_or_update_notification(user, text, text_en)
-                except Exception:
-                    pass
+
+@receiver(
+    m2m_changed,
+    sender=Song.featured_artists.through,
+    dispatch_uid="api.notification.song.featured-artists",
+)
+def notify_published_song_featured_artist_followers(sender, instance, action, reverse, pk_set, **kwargs):
+    if action != "post_add" or not pk_set:
+        return
+
+    if reverse:
+        artist_id = instance.pk
+        for song_id in tuple(pk_set):
+            _after_commit(
+                f"song-featured:{song_id}:{artist_id}",
+                lambda song_id=song_id, artist_id=artist_id: _deliver_song_release(
+                    song_id, {artist_id}
+                ),
+            )
+    elif instance.status == Song.STATUS_PUBLISHED:
+        song_id = instance.pk
+        artist_ids = set(pk_set)
+        _after_commit(
+            f"song-featured:{song_id}",
+            lambda: _deliver_song_release(song_id, artist_ids),
+        )
+
+
+@receiver(post_save, sender=Album, dispatch_uid="api.notification.album.created")
+def notify_new_album_created(sender, instance, created, **kwargs):
+    if not created:
+        return
+    album_id = instance.pk
+
+    def deliver():
+        album = (
+            Album.objects.select_related("artist", "artist__user")
+            .filter(pk=album_id)
+            .first()
+        )
+        if not album:
+            return
+        excluded = {album.artist.user_id} if album.artist.user_id else set()
+        recipient_ids = _follower_recipient_user_ids(artist_ids={album.artist_id}) - excluded
+        recipients = User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
+            "notification_setting"
+        )
+        for recipient in recipients.iterator(chunk_size=500):
+            send_user_notification(
+                user=recipient,
+                event=EVENT_NEW_ALBUM,
+                text=f"آلبوم جدید «{album.title}» از {album.artist.name} منتشر شد!",
+                text_en=(
+                    f"New album '{album.title_en or album.title}' by "
+                    f"{album.artist.name_en or album.artist.name} is out!"
+                ),
+            )
+
+    _after_commit(f"album-created:{album_id}", deliver)
+
+
+@receiver(pre_save, sender=UserPlaylist, dispatch_uid="api.notification.user-playlist.capture-public")
+def capture_old_user_playlist_public(sender, instance, **kwargs):
+    if not instance.pk:
+        instance._old_public = False
+        return
+    instance._old_public = bool(
+        UserPlaylist.objects.filter(pk=instance.pk).values_list("public", flat=True).first()
+    )
+
+
+@receiver(post_save, sender=UserPlaylist, dispatch_uid="api.notification.user-playlist.public")
+def notify_public_user_playlist(sender, instance, created, **kwargs):
+    became_public = instance.public and (created or not getattr(instance, "_old_public", False))
+    if not became_public:
+        return
+    playlist_id = instance.pk
+
+    def deliver():
+        playlist = UserPlaylist.objects.select_related("user").filter(pk=playlist_id, public=True).first()
+        if not playlist:
+            return
+        recipient_ids = _follower_recipient_user_ids(user_ids={playlist.user_id}) - {playlist.user_id}
+        owner_name = _get_user_display_name(playlist.user)
+        for recipient in User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
+            "notification_setting"
+        ).iterator(chunk_size=500):
+            send_user_notification(
+                user=recipient,
+                event=EVENT_NEW_PLAYLIST,
+                text=f"{owner_name} پلی‌لیست عمومی جدید «{playlist.title}» را منتشر کرد.",
+                text_en=f"{owner_name} published a new public playlist, '{playlist.title}'.",
+            )
+
+    _after_commit(f"user-playlist-public:{playlist_id}", deliver)
+
+
+@receiver(post_save, sender=Playlist, dispatch_uid="api.notification.catalog-playlist.created")
+def notify_new_catalog_playlist(sender, instance, created, **kwargs):
+    if not created or instance.created_by not in {
+        Playlist.CREATED_BY_ADMIN,
+        Playlist.CREATED_BY_SYSTEM,
+    }:
+        return
+    playlist_id = instance.pk
+
+    def deliver():
+        playlist = Playlist.objects.filter(
+            pk=playlist_id,
+            created_by__in={Playlist.CREATED_BY_ADMIN, Playlist.CREATED_BY_SYSTEM},
+        ).first()
+        if not playlist:
+            return
+        broadcast_user_notification(
+            event=EVENT_NEW_PLAYLIST,
+            text=f"پلی‌لیست جدید «{playlist.title}» به صداباکس اضافه شد.",
+            text_en=f"New playlist '{playlist.title_en or playlist.title}' was added to Sedabox.",
+        )
+
+    _after_commit(f"catalog-playlist-created:{playlist_id}", deliver)
+
+
+
+def _capture_previous_status(instance, model):
+    if not instance.pk:
+        instance._notification_old_status = None
+        return
+    instance._notification_old_status = (
+        model.objects.filter(pk=instance.pk).values_list("status", flat=True).first()
+    )
+
+
+def _status_changed(instance) -> bool:
+    return getattr(instance, "_notification_old_status", None) != instance.status
+
+
+@receiver(pre_save, sender=ArtistAuth, dispatch_uid="api.notification.artist-auth.capture-status")
+def capture_old_artist_auth_status(sender, instance, **kwargs):
+    _capture_previous_status(instance, ArtistAuth)
+
+
+@receiver(post_save, sender=ArtistAuth, dispatch_uid="api.notification.artist-auth.status")
+def notify_artist_auth_status(sender, instance, created, **kwargs):
+    if not _status_changed(instance) or instance.status not in {
+        ArtistAuth.STATUS_ACCEPTED,
+        ArtistAuth.STATUS_REJECTED,
+    }:
+        return
+    auth_id = instance.pk
+    expected_status = instance.status
+
+    def deliver():
+        auth = ArtistAuth.objects.select_related("user").filter(
+            pk=auth_id,
+            status=expected_status,
+        ).first()
+        if not auth or not auth.user:
+            return
+        if expected_status == ArtistAuth.STATUS_ACCEPTED:
+            text = "درخواست احراز هویت هنرمندی شما تأیید شد."
+            text_en = "Your artist verification request was approved."
+        else:
+            text = "درخواست احراز هویت هنرمندی شما رد شد. برای جزئیات با پشتیبانی تماس بگیرید."
+            text_en = "Your artist verification request was rejected. Contact support for details."
+        send_system_notification(user=auth.user, text=text, text_en=text_en)
+
+    _after_commit(f"artist-auth-status:{auth_id}:{expected_status}", deliver)
+
+
+@receiver(pre_save, sender=UserImageProfile, dispatch_uid="api.notification.profile-image.capture-status")
+def capture_old_profile_image_status(sender, instance, **kwargs):
+    _capture_previous_status(instance, UserImageProfile)
+
+
+@receiver(post_save, sender=UserImageProfile, dispatch_uid="api.notification.profile-image.status")
+def notify_profile_image_status(sender, instance, created, **kwargs):
+    if not _status_changed(instance) or instance.status not in {
+        UserImageProfile.STATUS_PUBLISHED,
+        UserImageProfile.STATUS_REJECTED,
+    }:
+        return
+    profile_id = instance.pk
+    expected_status = instance.status
+
+    def deliver():
+        profile = UserImageProfile.objects.select_related("user").filter(
+            pk=profile_id,
+            status=expected_status,
+        ).first()
+        if not profile:
+            return
+        if expected_status == UserImageProfile.STATUS_PUBLISHED:
+            text = "تصویر پروفایل شما تأیید و منتشر شد."
+            text_en = "Your profile image was approved and published."
+        else:
+            text = "تصویر پروفایل شما تأیید نشد. لطفاً تصویر دیگری بارگذاری کنید."
+            text_en = "Your profile image was not approved. Please upload a different image."
+        send_system_notification(user=profile.user, text=text, text_en=text_en)
+
+    _after_commit(f"profile-image-status:{profile_id}:{expected_status}", deliver)
+
+
+@receiver(pre_save, sender=PaymentTransaction, dispatch_uid="api.notification.payment.capture-status")
+def capture_old_payment_status(sender, instance, **kwargs):
+    _capture_previous_status(instance, PaymentTransaction)
+
+
+@receiver(post_save, sender=PaymentTransaction, dispatch_uid="api.notification.payment.status")
+def notify_payment_status(sender, instance, created, **kwargs):
+    if not _status_changed(instance) or instance.status not in {
+        PaymentTransaction.STATUS_SUCCESS,
+        PaymentTransaction.STATUS_FAILED,
+    }:
+        return
+    transaction_pk = instance.pk
+    expected_status = instance.status
+
+    def deliver():
+        payment = PaymentTransaction.objects.select_related("user").filter(
+            pk=transaction_pk,
+            status=expected_status,
+        ).first()
+        if not payment:
+            return
+        reference = payment.transaction_id
+        if expected_status == PaymentTransaction.STATUS_SUCCESS:
+            text = f"پرداخت شما با شناسه «{reference}» با موفقیت انجام شد."
+            text_en = f"Your payment with reference '{reference}' was successful."
+        else:
+            text = f"پرداخت شما با شناسه «{reference}» ناموفق بود."
+            text_en = f"Your payment with reference '{reference}' failed."
+        send_system_notification(user=payment.user, text=text, text_en=text_en)
+
+    _after_commit(f"payment-status:{transaction_pk}:{expected_status}", deliver)
+
+
+@receiver(pre_save, sender=DepositRequest, dispatch_uid="api.notification.deposit.capture-status")
+def capture_old_deposit_status(sender, instance, **kwargs):
+    _capture_previous_status(instance, DepositRequest)
+
+
+@receiver(post_save, sender=DepositRequest, dispatch_uid="api.notification.deposit.status")
+def notify_deposit_status(sender, instance, created, **kwargs):
+    if not _status_changed(instance) or instance.status not in {
+        DepositRequest.STATUS_APPROVED,
+        DepositRequest.STATUS_REJECTED,
+        DepositRequest.STATUS_DONE,
+    }:
+        return
+    deposit_id = instance.pk
+    expected_status = instance.status
+
+    def deliver():
+        deposit = DepositRequest.objects.select_related("artist", "artist__user").filter(
+            pk=deposit_id,
+            status=expected_status,
+        ).first()
+        if not deposit or not deposit.artist.user:
+            return
+        if expected_status == DepositRequest.STATUS_APPROVED:
+            text = "درخواست تسویه شما تأیید شد و در صف پرداخت قرار گرفت."
+            text_en = "Your payout request was approved and queued for payment."
+        elif expected_status == DepositRequest.STATUS_DONE:
+            text = "تسویه شما با موفقیت انجام شد."
+            text_en = "Your payout was completed successfully."
+        else:
+            text = "درخواست تسویه شما رد شد. برای جزئیات با پشتیبانی تماس بگیرید."
+            text_en = "Your payout request was rejected. Contact support for details."
+        send_system_notification(user=deposit.artist.user, text=text, text_en=text_en)
+
+    _after_commit(f"deposit-status:{deposit_id}:{expected_status}", deliver)
+
+
+def _deliver_song_owner_status(song_id, expected_status):
+    song = Song.objects.select_related("artist", "artist__user").filter(
+        pk=song_id,
+        status=expected_status,
+    ).first()
+    if not song or not song.artist.user:
+        return
+
+    if expected_status == Song.STATUS_APPROVED:
+        text = f"آهنگ «{song.title}» تأیید شد."
+        text_en = f"Your song '{song.title_en or song.title}' was approved."
+    elif expected_status == Song.STATUS_PUBLISHED:
+        text = f"آهنگ «{song.title}» منتشر شد."
+        text_en = f"Your song '{song.title_en or song.title}' was published."
+    else:
+        text = f"آهنگ «{song.title}» تأیید نشد. برای جزئیات با پشتیبانی تماس بگیرید."
+        text_en = f"Your song '{song.title_en or song.title}' was rejected. Contact support for details."
+    send_system_notification(user=song.artist.user, text=text, text_en=text_en)
+
+
+@receiver(post_save, sender=Song, dispatch_uid="api.notification.song.owner-status")
+def notify_song_owner_status(sender, instance, created, **kwargs):
+    old_status = getattr(instance, "_old_status", None)
+    if old_status == instance.status or instance.status not in {
+        Song.STATUS_APPROVED,
+        Song.STATUS_REJECTED,
+        Song.STATUS_PUBLISHED,
+    }:
+        return
+    song_id = instance.pk
+    expected_status = instance.status
+    _after_commit(
+        f"song-owner-status:{song_id}:{expected_status}",
+        lambda: _deliver_song_owner_status(song_id, expected_status),
+    )
+
 
 # Keep cached similarity rankings fresh without caching response payloads.
 from .performance import (

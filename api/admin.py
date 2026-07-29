@@ -13,6 +13,7 @@ from .models import (
 from .models import OtpCode
 from .models import ActivePlayback
 from django.utils import timezone
+from django.db import transaction
 
 User = get_user_model()
 
@@ -338,21 +339,36 @@ class SongAdmin(admin.ModelAdmin):
     
     actions = ['mark_as_published', 'mark_as_draft', 'mark_as_pending']
     
+    @staticmethod
+    def _bulk_change_status(queryset, new_status):
+        # QuerySet.update() bypasses pre_save/post_save and therefore bypasses
+        # release, owner-status, cache, and notification hooks. Save each changed
+        # song inside one transaction so every normal lifecycle hook is preserved.
+        changed = 0
+        with transaction.atomic():
+            for song in queryset.select_for_update().only('id', 'status'):
+                if song.status == new_status:
+                    continue
+                song.status = new_status
+                song.save(update_fields=['status'])
+                changed += 1
+        return changed
+
     def mark_as_published(self, request, queryset):
-        """Bulk action to publish songs"""
-        count = queryset.update(status=Song.STATUS_PUBLISHED)
+        """Bulk action to publish songs without bypassing lifecycle hooks."""
+        count = self._bulk_change_status(queryset, Song.STATUS_PUBLISHED)
         self.message_user(request, f'{count} song(s) marked as published.')
     mark_as_published.short_description = 'Mark selected as Published'
     
     def mark_as_draft(self, request, queryset):
-        """Bulk action to mark as draft"""
-        count = queryset.update(status=Song.STATUS_DRAFT)
+        """Bulk action to mark as draft without bypassing lifecycle hooks."""
+        count = self._bulk_change_status(queryset, Song.STATUS_DRAFT)
         self.message_user(request, f'{count} song(s) marked as draft.')
     mark_as_draft.short_description = 'Mark selected as Draft'
     
     def mark_as_pending(self, request, queryset):
-        """Bulk action to mark as pending"""
-        count = queryset.update(status=Song.STATUS_PENDING)
+        """Bulk action to mark as pending without bypassing lifecycle hooks."""
+        count = self._bulk_change_status(queryset, Song.STATUS_PENDING)
         self.message_user(request, f'{count} song(s) marked as pending review.')
     mark_as_pending.short_description = 'Mark selected as Pending Review'
 
@@ -418,15 +434,28 @@ class UserPlaylistAdmin(admin.ModelAdmin):
     
     actions = ['make_public', 'make_private', 'clear_likes']
     
+    @staticmethod
+    def _bulk_change_visibility(queryset, is_public):
+        # Preserve the public-playlist notification transition signal.
+        changed = 0
+        with transaction.atomic():
+            for playlist in queryset.select_for_update().only('id', 'public'):
+                if playlist.public == is_public:
+                    continue
+                playlist.public = is_public
+                playlist.save(update_fields=['public', 'updated_at'])
+                changed += 1
+        return changed
+
     def make_public(self, request, queryset):
-        """Bulk action to make playlists public"""
-        count = queryset.update(public=True)
+        """Bulk action to make playlists public without bypassing hooks."""
+        count = self._bulk_change_visibility(queryset, True)
         self.message_user(request, f'{count} playlist(s) made public.')
     make_public.short_description = 'Make selected playlists public'
     
     def make_private(self, request, queryset):
-        """Bulk action to make playlists private"""
-        count = queryset.update(public=False)
+        """Bulk action to make playlists private without bypassing hooks."""
+        count = self._bulk_change_visibility(queryset, False)
         self.message_user(request, f'{count} playlist(s) made private.')
     make_private.short_description = 'Make selected playlists private'
     
