@@ -1809,7 +1809,7 @@ class RecommendedPlaylistListSerializer(PlaylistSummarySerializer):
             'id', 'unique_id', 'title', 'description', 'playlist_type', 'cover_image',
             'top_three_song_covers', 'covers', 'songs_count', 'is_liked', 'is_saved',
             'likes_count', 'views', 'relevance_score', 'match_percentage', 'created_at',
-            'genre_names', 'mood_names', 'type', 'generated_by', 'creator_unique_id',
+            'genres', 'genre_names', 'mood_names', 'type', 'generated_by', 'creator_unique_id',
         ]
         read_only_fields = fields
 
