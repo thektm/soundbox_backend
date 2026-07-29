@@ -77,7 +77,7 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast, Concat
 from django.utils import timezone
 from django.conf import settings
-from django.http import StreamingHttpResponse
+from django.http import Http404, StreamingHttpResponse
 from django.core.cache import cache
 from .utils import (
     absolute_api_url, upload_file_to_r2, generate_signed_r2_url,
@@ -3731,7 +3731,20 @@ class UserProfilePublicView(APIView):
         responses={200: UserPublicProfileSerializer}
     )
     def get(self, request, unique_id):
-        user = get_object_or_404(User, unique_id=unique_id)
+        # Canonical links use the public unique_id, but legacy list entries in
+        # older clients sometimes routed with the database id. Resolve the
+        # public identifier first, then fall back to pk for numeric legacy
+        # links. UserDetail replaces the browser URL with the canonical route
+        # immediately after this response loads.
+        lookup_mode = (request.query_params.get('lookup') or '').strip().lower()
+        if lookup_mode == 'pk' and str(unique_id).isdigit():
+            user = User.objects.filter(pk=int(unique_id)).first()
+        else:
+            user = User.objects.filter(unique_id=unique_id).first()
+            if user is None and str(unique_id).isdigit():
+                user = User.objects.filter(pk=int(unique_id)).first()
+        if user is None:
+            raise Http404
         # If caller requests followers/following lists via query params, return paginated lists.
         # Supported params:
         # - followers=1 : return followers page using f_page & f_page_size
@@ -5623,6 +5636,26 @@ def _normalize_directory_search(value):
     return _SEARCH_FILTER_MARKS_RE.sub('', normalized)
 
 
+_SEDABOX_SEARCH_ALIASES = {
+    'sedabox',
+    'sedaboxofficial',
+    'officialsedabox',
+    'صداباکس',
+    'صداباکسرسمی',
+    'حسابرسمیصداباکس',
+}
+
+
+def _is_sedabox_search_query(value):
+    return _normalize_directory_search(value) in _SEDABOX_SEARCH_ALIASES
+
+
+def _sedabox_user_filter():
+    return Q(unique_id__iexact='sedabox') | (
+        Q(first_name__istartswith='SedaBox') & Q(last_name__icontains='صداباکس')
+    )
+
+
 def _normalized_directory_expression(*field_names):
     """Build one typed normalized SQL expression shared by artists and users."""
     pieces = []
@@ -5667,7 +5700,7 @@ class SearchView(APIView):
             )
 
         key = stable_cache_key(
-            'search-ids-v12',
+            'search-ids-v13',
             query.casefold(),
             search_type or 'mixed',
             moods,
@@ -5815,30 +5848,38 @@ class SearchView(APIView):
         if moods: qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
         return qs.distinct().order_by('-created_at')
     def _search_users(self,q,moods,request):
-        qs=User.objects.filter(
+        official_filter = _sedabox_user_filter()
+        qs = User.objects.filter(
             is_active=True,
             is_banned=False,
-            roles__contains=User.ROLE_AUDIENCE,
+        ).filter(
+            Q(roles__contains=User.ROLE_AUDIENCE) | official_filter
         ).exclude(Q(unique_id__isnull=True)|Q(unique_id=''))
         if request.user.is_authenticated:
             qs=qs.exclude(pk=request.user.pk)
         if q:
             normalized = _normalize_directory_search(q)
+            official_alias = _is_sedabox_search_query(q)
             qs = qs.annotate(
                 directory_search=_normalized_directory_expression(
                     'first_name', 'last_name', 'unique_id'
                 ),
                 search_rank=Case(
+                    When(official_filter, then=Value(-1 if official_alias else 0)),
                     When(unique_id__iexact=q, then=Value(0)),
                     When(first_name__iexact=q, then=Value(1)),
                     When(last_name__iexact=q, then=Value(1)),
                     default=Value(2),
                     output_field=IntegerField(),
                 ),
-            ).filter(
+            )
+            query_filter = (
                 Q(unique_id__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q)|
                 (Q(directory_search__icontains=normalized) if normalized else Q())
             )
+            if official_alias:
+                query_filter |= official_filter
+            qs = qs.filter(query_filter)
             return qs.order_by('search_rank', '-date_joined')
         return qs.order_by('-date_joined')
 

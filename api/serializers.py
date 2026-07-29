@@ -813,15 +813,16 @@ class UserHistorySerializer(LocalizedModelSerializer):
 
 
 class UserSearchSummarySerializer(LocalizedModelSerializer):
-    """Lightweight serializer for users in search results"""
+    """Lightweight serializer for users in search results."""
     followers_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
     image_profile = serializers.SerializerMethodField()
+    is_official = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='user')
 
     class Meta:
         model = User
-        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'image_profile', 'plan', 'type']
+        fields = ['id', 'unique_id', 'first_name', 'last_name', 'followers_count', 'is_following', 'image_profile', 'plan', 'is_official', 'type']
 
     def get_followers_count(self, obj):
         return int(_metric(obj, '_followers_count', lambda: Follow.objects.filter(followed_user=obj).count()))
@@ -844,6 +845,12 @@ class UserSearchSummarySerializer(LocalizedModelSerializer):
             follower_user=request.user, followed_user=obj
         ).exists()))
 
+    def get_is_official(self, obj):
+        return (obj.unique_id or '').strip().casefold() == 'sedabox' or (
+            (obj.first_name or '').strip().casefold().startswith('sedabox')
+            and 'صداباکس' in (obj.last_name or '').replace(' ', '').replace('\u200c', '')
+        )
+
 
 class UserPublicProfileSerializer(LocalizedModelSerializer):
     """Serializer for a user's public profile"""
@@ -853,6 +860,7 @@ class UserPublicProfileSerializer(LocalizedModelSerializer):
     is_yours = serializers.SerializerMethodField()
     image_profile = serializers.SerializerMethodField()
     user_playlists = serializers.SerializerMethodField()
+    is_official = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -860,7 +868,7 @@ class UserPublicProfileSerializer(LocalizedModelSerializer):
             'id', 'unique_id', 'first_name', 'last_name', 
             'followers_count', 'following_count', 'is_following',
             'is_yours',
-            'image_profile', 'plan', 'user_playlists'
+            'image_profile', 'plan', 'user_playlists', 'is_official'
         ]
 
     def get_image_profile(self, obj):
@@ -886,6 +894,12 @@ class UserPublicProfileSerializer(LocalizedModelSerializer):
         if request and request.user.is_authenticated:
             return Follow.objects.filter(follower_user=request.user, followed_user=obj).exists()
         return False
+
+    def get_is_official(self, obj):
+        return (obj.unique_id or '').strip().casefold() == 'sedabox' or (
+            (obj.first_name or '').strip().casefold().startswith('sedabox')
+            and 'صداباکس' in (obj.last_name or '').replace(' ', '').replace('\u200c', '')
+        )
 
     def get_is_yours(self, obj):
         request = self.context.get('request')
@@ -1757,19 +1771,25 @@ class UserPlaylistSerializer(LocalizedModelSerializer):
     songs = serializers.SerializerMethodField()
     generated_by = serializers.ReadOnlyField(default='audience')
     creator_unique_id = serializers.CharField(source='user.unique_id', read_only=True)
+    creator_user_id = serializers.IntegerField(source='user_id', read_only=True)
+    creator_name = serializers.SerializerMethodField()
 
     class Meta:
         model = UserPlaylist
         fields = [
             'id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
             'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 'order',
-            'type', 'generated_by', 'creator_unique_id', 'created_at', 'updated_at',
+            'type', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count',
             'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type',
-            'songs', 'generated_by', 'creator_unique_id',
+            'songs', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name',
         ]
+
+    def get_creator_name(self, obj):
+        name = f"{obj.user.first_name or ''} {obj.user.last_name or ''}".strip()
+        return name or obj.user.unique_id or str(obj.user_id)
 
     def _songs(self, obj):
         songs = getattr(obj, '_detail_songs', None)
@@ -1951,8 +1971,19 @@ class SearchResultSerializer(serializers.Serializer):
             bio = localized_value(obj, 'bio', request)
             return {'unique_id':obj.unique_id,'verified':obj.verified,'bio':bio[:100] if bio else ''}
         if isinstance(obj,Album): return {'release_date':obj.release_date,'artist_id':obj.artist_id,'artist_name':localized_value(obj.artist, 'name', request) if obj.artist else None}
-        if isinstance(obj,User): return {'unique_id':obj.unique_id,'first_name':obj.first_name,'last_name':obj.last_name,
-                                         'plan':obj.plan,'is_verified':obj.is_verified}
+        if isinstance(obj,User):
+            is_official = (obj.unique_id or '').strip().casefold() == 'sedabox' or (
+                (obj.first_name or '').strip().casefold().startswith('sedabox')
+                and 'صداباکس' in (obj.last_name or '').replace(' ', '').replace('\u200c', '')
+            )
+            return {
+                'unique_id': obj.unique_id,
+                'first_name': obj.first_name,
+                'last_name': obj.last_name,
+                'plan': obj.plan,
+                'is_verified': obj.is_verified,
+                'is_official': is_official,
+            }
         return {}
 
 
