@@ -76,7 +76,6 @@ from django.db.models import (
 )
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast, Concat
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.core.cache import cache
@@ -229,98 +228,6 @@ def _prepare_history(entries, user):
             entry.target_user._is_following = entry.target_user_id in followed
             entry.target_user._followers_count = follower_counts.get(entry.target_user_id, 0)
     return entries
-
-
-def _recommended_history_view_key(user_id, playlist_id):
-    return f'recommended-library-viewed-at:v1:{int(user_id)}:{int(playlist_id)}'
-
-
-def _remember_recommended_history_view(user_id, playlist_id, viewed_at=None):
-    """Persist per-user recommendation recency without duplicating view logic.
-
-    ``viewed_by`` remains the durable membership/source of truth. The cache only
-    stores the per-user last-viewed timestamp needed to merge recommendations
-    into the normal Library history ordering. If Redis is flushed, membership is
-    preserved and ``updated_at`` is used as a safe fallback.
-    """
-    moment = viewed_at or timezone.now()
-    cache.set(
-        _recommended_history_view_key(user_id, playlist_id),
-        moment.isoformat(),
-        timeout=None,
-    )
-    return moment
-
-
-def _recommended_history_items(request):
-    """Return recommendation rows already viewed by this user.
-
-    The existing ``viewed_by`` relation and detail-view counter stay untouched;
-    this helper only projects those durable views into the Library response.
-    """
-    requested_type = request.query_params.get('type')
-    if requested_type and requested_type != UserHistory.TYPE_PLAYLIST:
-        return []
-
-    queryset = _home_playlist_queryset(request.user).filter(
-        viewed_by=request.user,
-    ).distinct()
-
-    query = request.query_params.get('q', '').strip()
-    if query:
-        queryset = queryset.filter(
-            Q(title__icontains=query)
-            | Q(title_en__icontains=query)
-            | Q(description__icontains=query)
-            | Q(description_en__icontains=query)
-            | Q(songs__title__icontains=query)
-            | Q(songs__title_en__icontains=query)
-            | Q(songs__artist__name__icontains=query)
-            | Q(songs__artist__name_en__icontains=query)
-        ).distinct()
-
-    items = list(queryset)
-    _attach_recommended_metrics(items, request.user)
-
-    cache_keys = {
-        item.pk: _recommended_history_view_key(request.user.pk, item.pk)
-        for item in items
-    }
-    cached_times = cache.get_many(cache_keys.values()) if cache_keys else {}
-
-    date_from = request.query_params.get('date_from')
-    date_to = request.query_params.get('date_to')
-    prepared = []
-    for item in items:
-        raw_value = cached_times.get(cache_keys[item.pk])
-        viewed_at = parse_datetime(raw_value) if isinstance(raw_value, str) else None
-        viewed_at = viewed_at or item.updated_at or item.created_at
-        if timezone.is_naive(viewed_at):
-            viewed_at = timezone.make_aware(viewed_at, timezone.get_current_timezone())
-
-        viewed_date = viewed_at.date()
-        if date_from and viewed_date.isoformat() < date_from:
-            continue
-        if date_to and viewed_date.isoformat() > date_to:
-            continue
-
-        item._library_viewed_at = viewed_at
-        prepared.append(item)
-
-    prepared.sort(
-        key=lambda item: (item._library_viewed_at, item.pk),
-        reverse=True,
-    )
-    return prepared
-
-
-def _history_page_link(request, page_number):
-    if not page_number:
-        return None
-    params = request.query_params.copy()
-    params['page'] = str(page_number)
-    path = request.path + (f'?{params.urlencode()}' if params else '')
-    return absolute_api_url(request, path)
 
 
 def _page_values(request, default_size=20, max_size=100):
@@ -1003,62 +910,11 @@ class UserHistoryView(generics.ListAPIView):
         return queryset
 
     def list(self, request, *args, **kwargs):
-        regular_queryset = self.filter_queryset(self.get_queryset())
-        recommended_items = _recommended_history_items(request)
-
-        page_number, page_size = _page_values(request, 20, 100)
-        offset = (page_number - 1) * page_size
-        regular_count = regular_queryset.count()
-        total_count = regular_count + len(recommended_items)
-
-        # Recommendations are bounded (the feed itself is bounded), while the
-        # normal history can be large. Fetch only enough normal rows to fill the
-        # requested merged page after all recommendation insertions.
-        regular_limit = offset + page_size + len(recommended_items)
-        regular_items = list(regular_queryset[:regular_limit])
-
-        merged = [
-            ('history', item.updated_at, item.pk, item)
-            for item in regular_items
-        ] + [
-            ('recommended', item._library_viewed_at, item.pk, item)
-            for item in recommended_items
-        ]
-        merged.sort(key=lambda row: (row[1], row[2]), reverse=True)
-        selected = merged[offset:offset + page_size]
-
-        results = []
-        regular_selected = [item for kind, _, _, item in selected if kind == 'history']
-        prepared_regular = {
-            item.pk: item for item in _prepare_history(regular_selected, request.user)
-        }
-
-        for kind, viewed_at, _, item in selected:
-            if kind == 'history':
-                serialized = UserHistorySerializer(
-                    prepared_regular[item.pk],
-                    context={'request': request},
-                ).data
-                results.append(serialized)
-                continue
-
-            results.append({
-                'id': f'recommended:{item.pk}',
-                'type': UserHistory.TYPE_PLAYLIST,
-                'item': PlaylistSummarySerializer(
-                    item,
-                    context={'request': request},
-                ).data,
-                'updated_at': viewed_at,
-            })
-
-        has_next = total_count > offset + page_size
-        return Response({
-            'count': total_count,
-            'next': _history_page_link(request, page_number + 1) if has_next else None,
-            'previous': _history_page_link(request, page_number - 1) if page_number > 1 else None,
-            'results': results,
-        })
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        items = _prepare_history(page if page is not None else queryset, request.user)
+        data = self.get_serializer(items, many=True).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
@@ -5528,11 +5384,6 @@ class PlaylistRecommendationDetailView(generics.RetrieveAPIView):
         instance.expires_at = None
         if request.user.is_authenticated:
             instance.viewed_by.add(request.user)
-            _remember_recommended_history_view(
-                request.user.pk,
-                instance.pk,
-                timezone.now(),
-            )
         mark_generated_playlist_usage([instance])
 
         songs = list(getattr(instance, '_detail_songs', []))
@@ -5777,35 +5628,98 @@ class SearchView(APIView):
     TYPES = ('song', 'artist', 'album', 'playlist', 'user')
 
     def get(self, request):
-        query = request.query_params.get('q', '').strip(); search_type = request.query_params.get('type') or None
-        moods = sorted(request.query_params.getlist('moods')); page, page_size = _page_values(request, 20, 100)
+        query = request.query_params.get('q', '').strip()
+        search_type = (request.query_params.get('type') or '').strip().lower() or None
+        moods = sorted(value for value in request.query_params.getlist('moods') if value)
+        page, page_size = _page_values(request, 20, 100)
+
         if search_type and search_type not in self.TYPES:
-            return Response({'error': 'Invalid type. Must be song, artist, album, playlist, or user.'}, status=400)
-        key = stable_cache_key('search-ids-v11', query.casefold(), search_type or 'mixed', moods, page, page_size, cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY))
+            return Response(
+                {'error': 'Invalid type. Must be song, artist, album, playlist, or user.'},
+                status=400,
+            )
+
+        key = stable_cache_key(
+            'search-ids-v12',
+            query.casefold(),
+            search_type or 'mixed',
+            moods,
+            page,
+            page_size,
+            cache_version(CATALOG_VERSION_KEY),
+            cache_version(USER_DIRECTORY_VERSION_KEY),
+        )
         cached, _ = cache_get_or_claim(key)
+
         if cached is None:
+            offset = (page - 1) * page_size
+
             if search_type:
                 queryset = self._queryset(search_type, query, moods, request)
-                offset=(page-1)*page_size; ids=list(queryset.values_list('id',flat=True)[offset:offset+page_size+1])
-                cached={'refs':[(search_type,x) for x in ids[:page_size]],'has_next':len(ids)>page_size}
+                ids = list(
+                    queryset.values_list('id', flat=True)[
+                        offset:offset + page_size + 1
+                    ]
+                )
+                cached = {
+                    'refs': [(search_type, pk) for pk in ids[:page_size]],
+                    'has_next': len(ids) > page_size,
+                }
             else:
-                per_type=max(1,(page_size+len(self.TYPES)-1)//len(self.TYPES)); type_offset=(page-1)*per_type
-                groups=[]; has_next=False
+                # Build one deterministic, globally paginated mixed stream.
+                # The old per-type offset skipped valid results whenever a small
+                # page was truncated before all categories were emitted.
+                window_end = offset + page_size + 1
+                groups = []
                 for kind in self.TYPES:
-                    ids=list(self._queryset(kind,query,moods,request).values_list('id',flat=True)[type_offset:type_offset+per_type+1])
-                    has_next = has_next or len(ids)>per_type; groups.append([(kind,x) for x in ids[:per_type]])
-                refs=[]
-                for index in range(max((len(group) for group in groups),default=0)):
+                    ids = list(
+                        self._queryset(kind, query, moods, request)
+                        .values_list('id', flat=True)[:window_end]
+                    )
+                    groups.append([(kind, pk) for pk in ids])
+
+                mixed_refs = []
+                max_group_size = max((len(group) for group in groups), default=0)
+                for index in range(max_group_size):
                     for group in groups:
-                        if index<len(group): refs.append(group[index])
-                        if len(refs)>=page_size: break
-                    if len(refs)>=page_size: break
-                cached={'refs':refs,'has_next':has_next}
-            cache_set(key,cached,getattr(settings,'CACHE_TTL_SEARCH',45))
-        results=self._hydrate(cached['refs'],request)
-        return Response({'results':SearchResultSerializer(results,many=True,context={'request':request}).data,
-                         'page':page,'page_size':page_size,'has_next':cached['has_next'],'query':query,
-                         'moods':moods,'type':search_type or 'mixed'})
+                        if index < len(group):
+                            mixed_refs.append(group[index])
+                            if len(mixed_refs) >= window_end:
+                                break
+                    if len(mixed_refs) >= window_end:
+                        break
+
+                cached = {
+                    'refs': mixed_refs[offset:offset + page_size],
+                    'has_next': len(mixed_refs) > offset + page_size,
+                }
+
+            cache_set(key, cached, getattr(settings, 'CACHE_TTL_SEARCH', 45))
+
+        results = self._hydrate(cached.get('refs') or [], request)
+        serialized_results = SearchResultSerializer(
+            results,
+            many=True,
+            context={'request': request},
+        ).data
+        counts = {kind: 0 for kind in self.TYPES}
+        for item in serialized_results:
+            item_type = item.get('type')
+            if item_type in counts:
+                counts[item_type] += 1
+
+        return Response({
+            'results': serialized_results,
+            'page': page,
+            'page_size': page_size,
+            'has_next': bool(cached.get('has_next', False)),
+            'query': query,
+            'moods': moods,
+            'type': search_type or 'mixed',
+            'counts': counts,
+            'total_results': len(serialized_results),
+            'is_empty': not serialized_results,
+        })
 
     def _queryset(self, kind, query, moods, request):
         return {'song':self._search_songs,'artist':self._search_artists,'album':self._search_albums,
