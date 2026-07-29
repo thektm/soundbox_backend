@@ -5006,7 +5006,7 @@ class HomeSummaryView(APIView):
             'rec': 'sr_page', 'latest': 'lr_page', 'artists': 'pa_page', 'albums': 'pal_page',
             'playlists': 'pr_page', 'discoveries': 'ds_page',
         }.items()}
-        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, 'v12')
+        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, 'v13')
         cached, claimed = cache_get_or_claim(cache_key) if not user.is_authenticated else (None, False)
         if cached is not None:
             return Response(cached)
