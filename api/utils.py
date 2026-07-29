@@ -27,6 +27,68 @@ def absolute_api_url(request, path):
     except Exception:
         return value
 
+
+def public_media_url(request, file_value, version=None):
+    """Return a stable, absolute and cache-safe URL for a local media file.
+
+    ``ImageField.url`` is relative when serializers are created without a request
+    and may use an internal Docker host when proxy headers are incomplete.  User
+    avatars are public assets, so always anchor them to ``PUBLIC_API_BASE_URL``
+    and append a version derived from ``updated_at`` to invalidate browser and
+    CDN caches after a replacement upload.
+    """
+    if not file_value:
+        return ''
+
+    try:
+        raw_url = file_value.url
+    except (AttributeError, ValueError):
+        raw_url = str(file_value or '')
+
+    if not raw_url:
+        return ''
+
+    url = absolute_api_url(request, raw_url) or ''
+    if not url:
+        return ''
+
+    if version is not None:
+        try:
+            token = int(version.timestamp())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            token = str(version).strip()
+        if token:
+            separator = '&' if '?' in url else '?'
+            url = f"{url}{separator}v={token}"
+
+    return url
+
+
+def user_profile_image_url(user, request=None, *, include_unpublished=False):
+    """Resolve a normal user's current avatar consistently across APIs."""
+    if not user:
+        return ''
+
+    try:
+        profile = user.image_profile
+    except Exception:
+        profile = None
+
+    if profile and getattr(profile, 'image', None):
+        status = getattr(profile, 'status', '')
+        if include_unpublished or status == 'published':
+            return public_media_url(
+                request,
+                profile.image,
+                version=getattr(profile, 'updated_at', None),
+            )
+
+    settings_value = getattr(user, 'settings', None)
+    if isinstance(settings_value, dict):
+        legacy = settings_value.get('profile_image') or ''
+        return absolute_api_url(request, legacy) or ''
+    return ''
+
 def make_safe_filename(s: str) -> str:
     """Sanitize a filename base by removing problematic characters and collapsing whitespace."""
     if not s:

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .utils import absolute_api_url, generate_signed_r2_url
+from .utils import absolute_api_url, generate_signed_r2_url, public_media_url, user_profile_image_url
 from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
@@ -535,8 +535,7 @@ class FollowableEntitySerializer(serializers.Serializer):
                 signed = generate_signed_r2_url(obj.profile_image)
                 return signed if signed else obj.profile_image
             return obj.profile_image
-        # Users might store profile image in settings or we can return empty
-        return obj.settings.get('profile_image', '') if isinstance(obj.settings, dict) else ''
+        return user_profile_image_url(obj, self.context.get('request'))
 
     def get_is_verified(self, obj):
         if isinstance(obj, Artist):
@@ -588,6 +587,15 @@ class UserImageProfileSerializer(LocalizedModelSerializer):
         model = UserImageProfile
         fields = ['id', 'image', 'status', 'created_at', 'updated_at']
         read_only_fields = ['id', 'status', 'created_at', 'updated_at']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['image'] = public_media_url(
+            self.context.get('request'),
+            instance.image,
+            version=instance.updated_at,
+        )
+        return data
 
 
 class UserSerializer(LocalizedModelSerializer):
@@ -808,7 +816,7 @@ class UserSearchSummarySerializer(LocalizedModelSerializer):
     """Lightweight serializer for users in search results"""
     followers_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
-    image_profile = UserImageProfileSerializer(read_only=True)
+    image_profile = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='user')
 
     class Meta:
@@ -817,6 +825,18 @@ class UserSearchSummarySerializer(LocalizedModelSerializer):
 
     def get_followers_count(self, obj):
         return int(_metric(obj, '_followers_count', lambda: Follow.objects.filter(followed_user=obj).count()))
+
+    def get_image_profile(self, obj):
+        try:
+            profile = obj.image_profile
+        except Exception:
+            return None
+        if profile.status != UserImageProfile.STATUS_PUBLISHED or not profile.image:
+            return None
+        return UserImageProfileSerializer(
+            profile,
+            context=self.context,
+        ).data
 
     def get_is_following(self, obj):
         request = self.context.get('request')
@@ -831,7 +851,7 @@ class UserPublicProfileSerializer(LocalizedModelSerializer):
     following_count = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
     is_yours = serializers.SerializerMethodField()
-    image_profile = UserImageProfileSerializer(read_only=True)
+    image_profile = serializers.SerializerMethodField()
     user_playlists = serializers.SerializerMethodField()
 
     class Meta:
@@ -842,6 +862,18 @@ class UserPublicProfileSerializer(LocalizedModelSerializer):
             'is_yours',
             'image_profile', 'plan', 'user_playlists'
         ]
+
+    def get_image_profile(self, obj):
+        try:
+            profile = obj.image_profile
+        except Exception:
+            return None
+        if profile.status != UserImageProfile.STATUS_PUBLISHED or not profile.image:
+            return None
+        return UserImageProfileSerializer(
+            profile,
+            context=self.context,
+        ).data
 
     def get_followers_count(self, obj):
         return Follow.objects.filter(followed_user=obj).count()
@@ -1900,9 +1932,7 @@ class SearchResultSerializer(serializers.Serializer):
         return ''
     def get_image(self,obj):
         if isinstance(obj,User):
-            profile=getattr(obj,'image_profile',None)
-            if profile and profile.status == UserImageProfile.STATUS_PUBLISHED: return profile.image.url
-            return obj.settings.get('profile_image','') if isinstance(obj.settings,dict) else ''
+            return user_profile_image_url(obj, self.context.get('request'))
         return _signed_url(getattr(obj,'cover_image',None) or getattr(obj,'profile_image',None)) or ''
     def get_is_following(self,obj):
         if not isinstance(obj,(Artist,User)): return None

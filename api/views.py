@@ -81,7 +81,8 @@ from django.http import StreamingHttpResponse
 from django.core.cache import cache
 from .utils import (
     absolute_api_url, upload_file_to_r2, generate_signed_r2_url,
-    get_audio_info, convert_to_128kbps,
+    get_audio_info, convert_to_128kbps, public_media_url,
+    user_profile_image_url,
 )
 from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
@@ -468,12 +469,11 @@ class UserProfileView(APIView):
         data = serializer.data
         
         # Add 'image' field for main user from image_profile
-        data['image'] = ""
-        try:
-            if hasattr(request.user, 'image_profile') and request.user.image_profile.status == 'published' and request.user.image_profile.image:
-                data['image'] = absolute_api_url(request, request.user.image_profile.image.url)
-        except Exception:
-            pass
+        data['image'] = user_profile_image_url(
+            request.user,
+            request,
+            include_unpublished=True,
+        )
 
         # Patch 'image' field for user items in followers and following lists
         user_ids_to_fetch = []
@@ -488,7 +488,7 @@ class UserProfileView(APIView):
                 p.user_id: p for p in UserImageProfile.objects.filter(
                     user_id__in=user_ids_to_fetch, 
                     status='published'
-                ).only('user_id', 'image')
+                ).only('user_id', 'image', 'updated_at')
             }
             for key in ['followers', 'following']:
                 if key in data and isinstance(data[key], dict) and 'items' in data[key]:
@@ -496,7 +496,7 @@ class UserProfileView(APIView):
                         if item.get('type') == 'user':
                             profile = profiles.get(item.get('id'))
                             if profile and profile.image:
-                                item['image'] = absolute_api_url(request, profile.image.url)
+                                item['image'] = public_media_url(request, profile.image, version=profile.updated_at)
 
         response = Response(data)
         response['Cache-Control'] = 'private, no-store, max-age=0'
@@ -529,23 +529,53 @@ class UserImageProfileView(APIView):
         request=UserImageProfileSerializer,
         responses={201: UserImageProfileSerializer}
     )
+    @transaction.atomic
     def post(self, request, *args, **kwargs):
-        # Remove existing record if any as per requirements
-        existing_profile = UserImageProfile.objects.filter(user=request.user).first()
-        if existing_profile:
-            if existing_profile.image:
-                try:
-                    if os.path.isfile(existing_profile.image.path):
-                        os.remove(existing_profile.image.path)
-                except (ValueError, FileNotFoundError, NotImplementedError):
-                    pass
-            existing_profile.delete()
-        
-        serializer = UserImageProfileSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save(user=request.user)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Update the OneToOne row in place. Deleting the existing row before the
+        # replacement is validated made a transient upload failure erase the
+        # user's working avatar and also created cache races in the client.
+        existing_profile = (
+            UserImageProfile.objects.select_for_update()
+            .filter(user=request.user)
+            .first()
+        )
+        previous_name = (
+            existing_profile.image.name
+            if existing_profile and existing_profile.image
+            else ''
+        )
+        previous_storage = (
+            existing_profile.image.storage
+            if existing_profile and existing_profile.image
+            else None
+        )
+
+        serializer = UserImageProfileSerializer(
+            existing_profile,
+            data=request.data,
+            partial=existing_profile is not None,
+            context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        profile = serializer.save(
+            user=request.user,
+            status=UserImageProfile.STATUS_PENDING,
+        )
+
+        current_name = profile.image.name if profile.image else ''
+        if previous_storage and previous_name and previous_name != current_name:
+            transaction.on_commit(
+                lambda storage=previous_storage, name=previous_name: storage.delete(name)
+            )
+
+        output = UserImageProfileSerializer(
+            profile,
+            context={'request': request},
+        )
+        response_status = status.HTTP_200_OK if existing_profile else status.HTTP_201_CREATED
+        response = Response(output.data, status=response_status)
+        response['Cache-Control'] = 'private, no-store, max-age=0'
+        return response
 
     @extend_schema(
         summary="مشاهده تصویر پروفایل کاربر",
@@ -554,8 +584,10 @@ class UserImageProfileView(APIView):
     )
     def get(self, request, *args, **kwargs):
         profile = get_object_or_404(UserImageProfile, user=request.user)
-        serializer = UserImageProfileSerializer(profile)
-        return Response(serializer.data)
+        serializer = UserImageProfileSerializer(profile, context={'request': request})
+        response = Response(serializer.data)
+        response['Cache-Control'] = 'private, no-store, max-age=0'
+        return response
 
 
 class UserImageProfileDetailView(APIView):
@@ -3742,7 +3774,7 @@ class UserProfilePublicView(APIView):
                         user_obj = items[i]
                         try:
                             if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
-                                item_data['image'] = absolute_api_url(request, user_obj.image_profile.image.url)
+                                item_data['image'] = user_profile_image_url(user_obj, request)
                         except Exception: pass
 
                 result['followers'] = {
@@ -3784,7 +3816,7 @@ class UserProfilePublicView(APIView):
                         user_obj = items[i]
                         try:
                             if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
-                                item_data['image'] = absolute_api_url(request, user_obj.image_profile.image.url)
+                                item_data['image'] = user_profile_image_url(user_obj, request)
                         except Exception: pass
 
                 result['following'] = {
@@ -3806,12 +3838,7 @@ class UserProfilePublicView(APIView):
         data = serializer.data
         
         # Add 'image' field for main user from image_profile
-        data['image'] = ""
-        try:
-            if hasattr(user, 'image_profile') and user.image_profile.status == 'published' and user.image_profile.image:
-                data['image'] = absolute_api_url(request, user.image_profile.image.url)
-        except Exception:
-            pass
+        data['image'] = user_profile_image_url(user, request)
 
         return Response(data)
 
@@ -3870,7 +3897,7 @@ def _sedabox_preview_payload(request, user, page_size=10):
         if user.image_profile.status == 'published' and user.image_profile.image:
             image_profile = {
                 'id': user.image_profile.id,
-                'image': absolute_api_url(request, user.image_profile.image.url),
+                'image': user_profile_image_url(user, request),
                 'status': user.image_profile.status,
             }
     except Exception:

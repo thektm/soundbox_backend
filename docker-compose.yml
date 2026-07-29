@@ -8,6 +8,8 @@ services:
     environment:
       DJANGO_DEBUG: 'False'
       DJANGO_SECRET: 'replace-with-a-long-random-secret'
+      PUBLIC_API_BASE_URL: 'https://api.sedabox.com'
+      SERVE_MEDIA_FILES: '1'
       DB_NAME: 'soundbox_db'
       DB_USER: 'soundbox_user'
       DB_PASSWORD: 'postgres'

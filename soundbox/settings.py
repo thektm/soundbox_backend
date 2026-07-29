@@ -169,6 +169,7 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 # Media files (user-uploaded files)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+SERVE_MEDIA_FILES = os.environ.get('SERVE_MEDIA_FILES', '1').lower() in {'1', 'true', 'yes', 'on'}
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST framework defaults
