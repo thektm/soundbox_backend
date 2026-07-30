@@ -3720,7 +3720,28 @@ class UserProfilePublicView(APIView):
         responses={200: UserPublicProfileSerializer}
     )
     def get(self, request, unique_id):
-        user = get_object_or_404(User, unique_id=unique_id)
+        # Canonical public links use unique_id. Named canonical routes and old
+        # numeric links may explicitly request a database-primary-key lookup.
+        # Keep both forms supported so navigation cannot strand a valid user.
+        lookup_mode = str(request.query_params.get('lookup', '')).strip().lower()
+        users = User.objects.select_related('image_profile')
+
+        if lookup_mode in {'pk', 'id'}:
+            try:
+                user_pk = int(str(unique_id).strip())
+            except (TypeError, ValueError):
+                raise Http404('User not found')
+            user = get_object_or_404(users, pk=user_pk)
+        else:
+            user = users.filter(unique_id=unique_id).first()
+            # Backward compatibility for legacy /user/{numeric-id} links.
+            # An explicit unique_id match always wins, so numeric public UIDs
+            # continue to work correctly.
+            if user is None and str(unique_id).strip().isdigit():
+                user = users.filter(pk=int(str(unique_id).strip())).first()
+            if user is None:
+                raise Http404('User not found')
+
         # If caller requests followers/following lists via query params, return paginated lists.
         # Supported params:
         # - followers=1 : return followers page using f_page & f_page_size
