@@ -1242,6 +1242,7 @@ class AlbumSerializer(LocalizedModelSerializer):
     artist_id = serializers.IntegerField(read_only=True)
     artist_unique_id = serializers.CharField(source='artist.unique_id', read_only=True)
     likes_count = serializers.SerializerMethodField()
+    songs_count = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     genre_ids_write = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False, write_only=True)
     sub_genre_ids_write = serializers.PrimaryKeyRelatedField(queryset=SubGenre.objects.all(), many=True, source='sub_genres', required=False, write_only=True)
@@ -1256,11 +1257,12 @@ class AlbumSerializer(LocalizedModelSerializer):
     class Meta:
         model = Album
         fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'release_date',
-                  'description', 'description_en', 'created_at', 'likes_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
+                  'description', 'description_en', 'created_at', 'likes_count', 'songs_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
                   'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'songs', 'song_genre_names', 'song_mood_names']
         read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
     def get_likes_count(self, obj): return int(_metric(obj, '_likes_count', lambda: AlbumLike.objects.filter(album=obj).count()))
+    def get_songs_count(self, obj): return len(self._songs(obj))
     def get_is_liked(self, obj):
         request = self.context.get('request')
         return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and AlbumLike.objects.filter(user=request.user, album=obj).exists()))

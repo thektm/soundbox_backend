@@ -840,13 +840,14 @@ class LikedAlbumsView(APIView):
     def get(self, request):
         songs = _song_card_queryset()
         queryset = AlbumLike.objects.filter(user=request.user).select_related('album__artist').prefetch_related(
-            'album__genres', 'album__sub_genres', 'album__moods', Prefetch('album__songs', queryset=songs)
+            'album__genres', 'album__sub_genres', 'album__moods',
+            Prefetch('album__songs', queryset=songs, to_attr='_detail_songs'),
         ).order_by('-created_at')
         paginator = PageNumberPagination(); paginator.page_size = 10
         page = list(paginator.paginate_queryset(queryset, request))
         albums = [item.album for item in page]
         hydrate_album_metrics(albums, request.user)
-        all_songs = [song for album in albums for song in album.songs.all()]
+        all_songs = [song for album in albums for song in getattr(album, '_detail_songs', [])]
         hydrate_song_metrics(all_songs, request.user, False)
         return paginator.get_paginated_response(LikedAlbumSerializer(page, many=True, context={'request': request}).data)
 
@@ -860,18 +861,35 @@ class LikedPlaylistsView(APIView):
         take = page * page_size + 1
         songs = _song_card_queryset()
         admin = list(PlaylistLike.objects.filter(user=request.user).select_related('playlist').prefetch_related(
-            'playlist__genres', 'playlist__moods', 'playlist__tags', Prefetch('playlist__songs', queryset=songs)
+            'playlist__genres', 'playlist__moods', 'playlist__tags',
+            Prefetch('playlist__songs', queryset=songs, to_attr='_card_songs'),
         ).order_by('-created_at')[:take])
-        users = list(UserPlaylist.objects.filter(liked_by=request.user).select_related('user').prefetch_related(
-            Prefetch('songs', queryset=songs)
-        ).order_by('-created_at')[:take])
-        recommended = list(RecommendedPlaylist.objects.filter(liked_by=request.user).select_related('playlist_ref').prefetch_related(
-            Prefetch('songs', queryset=songs)
-        ).order_by('-created_at')[:take])
+        users = list(
+            _user_playlist_queryset()
+            .filter(liked_by=request.user)
+            .distinct()
+            .order_by('-created_at')[:take]
+        )
+        recommended = list(
+            RecommendedPlaylist.objects.filter(liked_by=request.user)
+            .select_related('playlist_ref')
+            .annotate(
+                songs_count_value=Count(
+                    'songs',
+                    filter=Q(songs__status=Song.STATUS_PUBLISHED),
+                    distinct=True,
+                )
+            )
+            .prefetch_related(Prefetch('songs', queryset=songs, to_attr='_card_songs'))
+            .distinct()
+            .order_by('-created_at')[:take]
+        )
         merged = [(x.created_at, 'admin', x) for x in admin] + [(x.created_at, 'user', x) for x in users] + [(x.created_at, 'recommended', x) for x in recommended]
         merged.sort(key=lambda item: item[0], reverse=True)
         start = (page - 1) * page_size; selected = merged[start:start + page_size]
         admin_playlists = [item.playlist for _, kind, item in selected if kind == 'admin']
+        for playlist in admin_playlists:
+            playlist._songs_count = len(getattr(playlist, '_card_songs', []))
         hydrate_playlist_metrics(admin_playlists, request.user)
         recommended_items = [item for _, kind, item in selected if kind == 'recommended']
         _attach_recommended_metrics(recommended_items, request.user)
@@ -880,7 +898,9 @@ class LikedPlaylistsView(APIView):
         payload = []
         for liked_at, kind, item in selected:
             if kind == 'admin':
-                data = PlaylistSerializer(item.playlist, context={'request': request}).data
+                # Use the card serializer so every liked-playlist type exposes the
+                # same songs_count/type/top-cover contract to the client.
+                data = SimplePlaylistSerializer(item.playlist, context={'request': request}).data
             elif kind == 'user':
                 data = UserPlaylistSerializer(item, context={'request': request}).data
             else:
@@ -1833,7 +1853,10 @@ class LikedPlaylistsSearchView(APIView):
         # Fetch and filter each type
         # 1. Admin Playlists (via PlaylistLike)
         liked_admin_ids = PlaylistLike.objects.filter(user=user).values_list('playlist_id', flat=True)
-        p_qs = Playlist.objects.filter(id__in=liked_admin_ids).distinct()
+        p_qs = Playlist.objects.filter(id__in=liked_admin_ids).prefetch_related(
+            'genres', 'moods',
+            Prefetch('songs', queryset=_song_card_queryset(), to_attr='_card_songs'),
+        ).distinct()
         for token in parts:
             token = token.strip()
             if not token: continue
@@ -1841,7 +1864,7 @@ class LikedPlaylistsSearchView(APIView):
             p_qs = p_qs.filter(q)
         
         # 2. User Playlists
-        up_qs = UserPlaylist.objects.filter(liked_by=user).distinct()
+        up_qs = _user_playlist_queryset().filter(liked_by=user).distinct()
         for token in parts:
             token = token.strip()
             if not token: continue
@@ -1849,20 +1872,37 @@ class LikedPlaylistsSearchView(APIView):
             up_qs = up_qs.filter(q)
             
         # 3. Recommended Playlists
-        rp_qs = RecommendedPlaylist.objects.filter(liked_by=user).distinct()
+        rp_qs = RecommendedPlaylist.objects.filter(liked_by=user).select_related('playlist_ref').annotate(
+            songs_count_value=Count(
+                'songs',
+                filter=Q(songs__status=Song.STATUS_PUBLISHED),
+                distinct=True,
+            )
+        ).prefetch_related(
+            Prefetch('songs', queryset=_song_card_queryset(), to_attr='_card_songs')
+        ).distinct()
         for token in parts:
             token = token.strip()
             if not token: continue
             q = (Q(title__icontains=token) | Q(title_en__icontains=token) | Q(description__icontains=token) | Q(description_en__icontains=token) | Q(songs__title__icontains=token) | Q(songs__title_en__icontains=token) | Q(songs__artist__name__icontains=token) | Q(songs__artist__name_en__icontains=token))
             rp_qs = rp_qs.filter(q)
 
-        # Collect and serialize
+        # Collect and serialize. Attach the same visible-song metrics used by
+        # the corresponding detail screens so card counts cannot drift.
+        admin_items = list(p_qs)
+        for playlist in admin_items:
+            playlist._songs_count = len(getattr(playlist, '_card_songs', []))
+        hydrate_playlist_metrics(admin_items, user)
+
+        user_items = _prepare_user_playlists(list(up_qs), user)
+        recommended_items = _attach_recommended_metrics(list(rp_qs), user)
+
         results = []
-        for p in p_qs:
+        for p in admin_items:
             results.append(SimplePlaylistSerializer(p, context={'request': request}).data)
-        for up in up_qs:
+        for up in user_items:
             results.append(UserPlaylistSerializer(up, context={'request': request}).data)
-        for rp in rp_qs:
+        for rp in recommended_items:
             results.append(PlaylistSummarySerializer(rp, context={'request': request}).data)
             
         # Since liked_at is not easily searchable across combined results without complex SQL, 
@@ -3531,7 +3571,11 @@ def _prepare_user_playlists(playlists, user=None, songs_attr='_detail_songs'):
 
 def _user_playlist_queryset():
     return UserPlaylist.objects.select_related('user').annotate(
-        songs_count_value=Count('songs', distinct=True),
+        songs_count_value=Count(
+            'songs',
+            filter=Q(songs__status=Song.STATUS_PUBLISHED),
+            distinct=True,
+        ),
         likes_count_value=Count('liked_by', distinct=True),
     ).prefetch_related(Prefetch('songs', queryset=_song_card_queryset(), to_attr='_detail_songs'))
 
