@@ -23,6 +23,18 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         user = self.scope.get("user")
         if not user or not user.is_authenticated or not user.is_active:
+            origin = next((
+                value.decode("latin-1", errors="ignore")
+                for key, value in self.scope.get("headers", ())
+                if key.lower() == b"origin"
+            ), "")
+            logger.warning(
+                "Notification socket rejected: auth_status=%s token_source=%s origin=%s path=%s",
+                self.scope.get("ws_auth_status", "unknown"),
+                self.scope.get("ws_token_source", "unknown"),
+                origin,
+                self.scope.get("path", ""),
+            )
             await self.close(code=4401)
             return
 

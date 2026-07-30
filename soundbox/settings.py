@@ -21,6 +21,21 @@ _REQUIRED_ALLOWED_HOSTS = [
     'web', 'soundbox_web', 'nginx', 'host.docker.internal',
 ]
 ALLOWED_HOSTS = list(dict.fromkeys(_REQUIRED_ALLOWED_HOSTS + _csv_setting('ALLOWED_HOSTS')))
+
+# Browser WebSocket origins are validated separately from the HTTP Host header.
+# Keep production origins explicit and permit the local Next.js development
+# server. Additional deployment origins can be supplied as a comma-separated
+# WEBSOCKET_ALLOWED_ORIGINS environment variable.
+_REQUIRED_WEBSOCKET_ALLOWED_ORIGINS = [
+    'https://sedabox.com',
+    'https://www.sedabox.com',
+    'https://api.sedabox.com',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
+WEBSOCKET_ALLOWED_ORIGINS = list(dict.fromkeys(
+    _REQUIRED_WEBSOCKET_ALLOWED_ORIGINS + _csv_setting('WEBSOCKET_ALLOWED_ORIGINS')
+))
 PUBLIC_API_BASE_URL = os.environ.get('PUBLIC_API_BASE_URL', 'https://api.sedabox.com').rstrip('/')
 
 INSTALLED_APPS = [
