@@ -38,7 +38,6 @@ from .serializers import (
     SongStreamSerializer,
     UserPlaylistSerializer,
     UserPlaylistCreateSerializer,
-    normalize_user_playlist_order,
     RecommendedPlaylistListSerializer,
     RecommendedPlaylistDetailSerializer,
     SearchResultSerializer,
@@ -78,12 +77,11 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast, Concat
 from django.utils import timezone
 from django.conf import settings
-from django.http import Http404, StreamingHttpResponse
+from django.http import StreamingHttpResponse
 from django.core.cache import cache
 from .utils import (
     absolute_api_url, upload_file_to_r2, generate_signed_r2_url,
-    get_audio_info, convert_to_128kbps, public_media_url,
-    user_profile_image_url,
+    get_audio_info, convert_to_128kbps,
 )
 from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
@@ -470,11 +468,12 @@ class UserProfileView(APIView):
         data = serializer.data
         
         # Add 'image' field for main user from image_profile
-        data['image'] = user_profile_image_url(
-            request.user,
-            request,
-            include_unpublished=True,
-        )
+        data['image'] = ""
+        try:
+            if hasattr(request.user, 'image_profile') and request.user.image_profile.status == 'published' and request.user.image_profile.image:
+                data['image'] = absolute_api_url(request, request.user.image_profile.image.url)
+        except Exception:
+            pass
 
         # Patch 'image' field for user items in followers and following lists
         user_ids_to_fetch = []
@@ -489,7 +488,7 @@ class UserProfileView(APIView):
                 p.user_id: p for p in UserImageProfile.objects.filter(
                     user_id__in=user_ids_to_fetch, 
                     status='published'
-                ).only('user_id', 'image', 'updated_at')
+                ).only('user_id', 'image')
             }
             for key in ['followers', 'following']:
                 if key in data and isinstance(data[key], dict) and 'items' in data[key]:
@@ -497,7 +496,7 @@ class UserProfileView(APIView):
                         if item.get('type') == 'user':
                             profile = profiles.get(item.get('id'))
                             if profile and profile.image:
-                                item['image'] = public_media_url(request, profile.image, version=profile.updated_at)
+                                item['image'] = absolute_api_url(request, profile.image.url)
 
         response = Response(data)
         response['Cache-Control'] = 'private, no-store, max-age=0'
@@ -530,53 +529,23 @@ class UserImageProfileView(APIView):
         request=UserImageProfileSerializer,
         responses={201: UserImageProfileSerializer}
     )
-    @transaction.atomic
     def post(self, request, *args, **kwargs):
-        # Update the OneToOne row in place. Deleting the existing row before the
-        # replacement is validated made a transient upload failure erase the
-        # user's working avatar and also created cache races in the client.
-        existing_profile = (
-            UserImageProfile.objects.select_for_update()
-            .filter(user=request.user)
-            .first()
-        )
-        previous_name = (
-            existing_profile.image.name
-            if existing_profile and existing_profile.image
-            else ''
-        )
-        previous_storage = (
-            existing_profile.image.storage
-            if existing_profile and existing_profile.image
-            else None
-        )
-
-        serializer = UserImageProfileSerializer(
-            existing_profile,
-            data=request.data,
-            partial=existing_profile is not None,
-            context={'request': request},
-        )
-        serializer.is_valid(raise_exception=True)
-        profile = serializer.save(
-            user=request.user,
-            status=UserImageProfile.STATUS_PENDING,
-        )
-
-        current_name = profile.image.name if profile.image else ''
-        if previous_storage and previous_name and previous_name != current_name:
-            transaction.on_commit(
-                lambda storage=previous_storage, name=previous_name: storage.delete(name)
-            )
-
-        output = UserImageProfileSerializer(
-            profile,
-            context={'request': request},
-        )
-        response_status = status.HTTP_200_OK if existing_profile else status.HTTP_201_CREATED
-        response = Response(output.data, status=response_status)
-        response['Cache-Control'] = 'private, no-store, max-age=0'
-        return response
+        # Remove existing record if any as per requirements
+        existing_profile = UserImageProfile.objects.filter(user=request.user).first()
+        if existing_profile:
+            if existing_profile.image:
+                try:
+                    if os.path.isfile(existing_profile.image.path):
+                        os.remove(existing_profile.image.path)
+                except (ValueError, FileNotFoundError, NotImplementedError):
+                    pass
+            existing_profile.delete()
+        
+        serializer = UserImageProfileSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
         summary="مشاهده تصویر پروفایل کاربر",
@@ -585,10 +554,8 @@ class UserImageProfileView(APIView):
     )
     def get(self, request, *args, **kwargs):
         profile = get_object_or_404(UserImageProfile, user=request.user)
-        serializer = UserImageProfileSerializer(profile, context={'request': request})
-        response = Response(serializer.data)
-        response['Cache-Control'] = 'private, no-store, max-age=0'
-        return response
+        serializer = UserImageProfileSerializer(profile)
+        return Response(serializer.data)
 
 
 class UserImageProfileDetailView(APIView):
@@ -840,14 +807,13 @@ class LikedAlbumsView(APIView):
     def get(self, request):
         songs = _song_card_queryset()
         queryset = AlbumLike.objects.filter(user=request.user).select_related('album__artist').prefetch_related(
-            'album__genres', 'album__sub_genres', 'album__moods',
-            Prefetch('album__songs', queryset=songs, to_attr='_detail_songs'),
+            'album__genres', 'album__sub_genres', 'album__moods', Prefetch('album__songs', queryset=songs)
         ).order_by('-created_at')
         paginator = PageNumberPagination(); paginator.page_size = 10
         page = list(paginator.paginate_queryset(queryset, request))
         albums = [item.album for item in page]
         hydrate_album_metrics(albums, request.user)
-        all_songs = [song for album in albums for song in getattr(album, '_detail_songs', [])]
+        all_songs = [song for album in albums for song in album.songs.all()]
         hydrate_song_metrics(all_songs, request.user, False)
         return paginator.get_paginated_response(LikedAlbumSerializer(page, many=True, context={'request': request}).data)
 
@@ -861,35 +827,18 @@ class LikedPlaylistsView(APIView):
         take = page * page_size + 1
         songs = _song_card_queryset()
         admin = list(PlaylistLike.objects.filter(user=request.user).select_related('playlist').prefetch_related(
-            'playlist__genres', 'playlist__moods', 'playlist__tags',
-            Prefetch('playlist__songs', queryset=songs, to_attr='_card_songs'),
+            'playlist__genres', 'playlist__moods', 'playlist__tags', Prefetch('playlist__songs', queryset=songs)
         ).order_by('-created_at')[:take])
-        users = list(
-            _user_playlist_queryset()
-            .filter(liked_by=request.user)
-            .distinct()
-            .order_by('-created_at')[:take]
-        )
-        recommended = list(
-            RecommendedPlaylist.objects.filter(liked_by=request.user)
-            .select_related('playlist_ref')
-            .annotate(
-                songs_count_value=Count(
-                    'songs',
-                    filter=Q(songs__status=Song.STATUS_PUBLISHED),
-                    distinct=True,
-                )
-            )
-            .prefetch_related(Prefetch('songs', queryset=songs, to_attr='_card_songs'))
-            .distinct()
-            .order_by('-created_at')[:take]
-        )
+        users = list(UserPlaylist.objects.filter(liked_by=request.user).select_related('user').prefetch_related(
+            Prefetch('songs', queryset=songs)
+        ).order_by('-created_at')[:take])
+        recommended = list(RecommendedPlaylist.objects.filter(liked_by=request.user).select_related('playlist_ref').prefetch_related(
+            Prefetch('songs', queryset=songs)
+        ).order_by('-created_at')[:take])
         merged = [(x.created_at, 'admin', x) for x in admin] + [(x.created_at, 'user', x) for x in users] + [(x.created_at, 'recommended', x) for x in recommended]
         merged.sort(key=lambda item: item[0], reverse=True)
         start = (page - 1) * page_size; selected = merged[start:start + page_size]
         admin_playlists = [item.playlist for _, kind, item in selected if kind == 'admin']
-        for playlist in admin_playlists:
-            playlist._songs_count = len(getattr(playlist, '_card_songs', []))
         hydrate_playlist_metrics(admin_playlists, request.user)
         recommended_items = [item for _, kind, item in selected if kind == 'recommended']
         _attach_recommended_metrics(recommended_items, request.user)
@@ -898,9 +847,7 @@ class LikedPlaylistsView(APIView):
         payload = []
         for liked_at, kind, item in selected:
             if kind == 'admin':
-                # Use the card serializer so every liked-playlist type exposes the
-                # same songs_count/type/top-cover contract to the client.
-                data = SimplePlaylistSerializer(item.playlist, context={'request': request}).data
+                data = PlaylistSerializer(item.playlist, context={'request': request}).data
             elif kind == 'user':
                 data = UserPlaylistSerializer(item, context={'request': request}).data
             else:
@@ -1853,10 +1800,7 @@ class LikedPlaylistsSearchView(APIView):
         # Fetch and filter each type
         # 1. Admin Playlists (via PlaylistLike)
         liked_admin_ids = PlaylistLike.objects.filter(user=user).values_list('playlist_id', flat=True)
-        p_qs = Playlist.objects.filter(id__in=liked_admin_ids).prefetch_related(
-            'genres', 'moods',
-            Prefetch('songs', queryset=_song_card_queryset(), to_attr='_card_songs'),
-        ).distinct()
+        p_qs = Playlist.objects.filter(id__in=liked_admin_ids).distinct()
         for token in parts:
             token = token.strip()
             if not token: continue
@@ -1864,7 +1808,7 @@ class LikedPlaylistsSearchView(APIView):
             p_qs = p_qs.filter(q)
         
         # 2. User Playlists
-        up_qs = _user_playlist_queryset().filter(liked_by=user).distinct()
+        up_qs = UserPlaylist.objects.filter(liked_by=user).distinct()
         for token in parts:
             token = token.strip()
             if not token: continue
@@ -1872,37 +1816,20 @@ class LikedPlaylistsSearchView(APIView):
             up_qs = up_qs.filter(q)
             
         # 3. Recommended Playlists
-        rp_qs = RecommendedPlaylist.objects.filter(liked_by=user).select_related('playlist_ref').annotate(
-            songs_count_value=Count(
-                'songs',
-                filter=Q(songs__status=Song.STATUS_PUBLISHED),
-                distinct=True,
-            )
-        ).prefetch_related(
-            Prefetch('songs', queryset=_song_card_queryset(), to_attr='_card_songs')
-        ).distinct()
+        rp_qs = RecommendedPlaylist.objects.filter(liked_by=user).distinct()
         for token in parts:
             token = token.strip()
             if not token: continue
             q = (Q(title__icontains=token) | Q(title_en__icontains=token) | Q(description__icontains=token) | Q(description_en__icontains=token) | Q(songs__title__icontains=token) | Q(songs__title_en__icontains=token) | Q(songs__artist__name__icontains=token) | Q(songs__artist__name_en__icontains=token))
             rp_qs = rp_qs.filter(q)
 
-        # Collect and serialize. Attach the same visible-song metrics used by
-        # the corresponding detail screens so card counts cannot drift.
-        admin_items = list(p_qs)
-        for playlist in admin_items:
-            playlist._songs_count = len(getattr(playlist, '_card_songs', []))
-        hydrate_playlist_metrics(admin_items, user)
-
-        user_items = _prepare_user_playlists(list(up_qs), user)
-        recommended_items = _attach_recommended_metrics(list(rp_qs), user)
-
+        # Collect and serialize
         results = []
-        for p in admin_items:
+        for p in p_qs:
             results.append(SimplePlaylistSerializer(p, context={'request': request}).data)
-        for up in user_items:
+        for up in up_qs:
             results.append(UserPlaylistSerializer(up, context={'request': request}).data)
-        for rp in recommended_items:
+        for rp in rp_qs:
             results.append(PlaylistSummarySerializer(rp, context={'request': request}).data)
             
         # Since liked_at is not easily searchable across combined results without complex SQL, 
@@ -3571,11 +3498,7 @@ def _prepare_user_playlists(playlists, user=None, songs_attr='_detail_songs'):
 
 def _user_playlist_queryset():
     return UserPlaylist.objects.select_related('user').annotate(
-        songs_count_value=Count(
-            'songs',
-            filter=Q(songs__status=Song.STATUS_PUBLISHED),
-            distinct=True,
-        ),
+        songs_count_value=Count('songs', distinct=True),
         likes_count_value=Count('liked_by', distinct=True),
     ).prefetch_related(Prefetch('songs', queryset=_song_card_queryset(), to_attr='_detail_songs'))
 
@@ -3673,16 +3596,20 @@ class UserPlaylistAddSongView(APIView):
             )
 
         playlist.songs.add(song)
-        # Keep one canonical ordering representation. Legacy object entries are
-        # normalized here so adding a song also repairs older playlists.
-        order = normalize_user_playlist_order(playlist.order)
+        # Maintain playlist.order JSON (append new song id if not present)
+        try:
+            order = playlist.order or []
+            if not isinstance(order, list):
+                order = list(order)
+        except Exception:
+            order = []
+
         if song.id not in order:
             order.append(song.id)
-        playlist.order = order
-        playlist.save(update_fields=['order', 'updated_at'])
+            playlist.order = order
+            playlist.save(update_fields=['order'])
 
-        refreshed = _prepare_user_playlists(_user_playlist_queryset().filter(pk=playlist.pk), request.user)[0]
-        serializer = UserPlaylistSerializer(refreshed, context={'request': request})
+        serializer = UserPlaylistSerializer(playlist, context={'request': request})
         return Response(serializer.data)
 
 
@@ -3706,16 +3633,23 @@ class UserPlaylistRemoveSongView(APIView):
         try:
             song = Song.objects.get(id=song_id)
             playlist.songs.remove(song)
-            # Removing a song also repairs any legacy object-based order data.
-            playlist.order = [
-                ordered_id
-                for ordered_id in normalize_user_playlist_order(playlist.order)
-                if ordered_id != song.id
-            ]
-            playlist.save(update_fields=['order', 'updated_at'])
+            # Update playlist.order to remove this song id if present
+            try:
+                order = playlist.order or []
+                if not isinstance(order, list):
+                    order = list(order)
+            except Exception:
+                order = []
 
-            refreshed = _prepare_user_playlists(_user_playlist_queryset().filter(pk=playlist.pk), request.user)[0]
-            serializer = UserPlaylistSerializer(refreshed, context={'request': request})
+            if song.id in order:
+                try:
+                    order.remove(song.id)
+                except ValueError:
+                    pass
+                playlist.order = order
+                playlist.save(update_fields=['order'])
+
+            serializer = UserPlaylistSerializer(playlist, context={'request': request})
             return Response(serializer.data)
         except Song.DoesNotExist:
             return Response({'error': 'Song not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -3765,20 +3699,7 @@ class UserProfilePublicView(APIView):
         responses={200: UserPublicProfileSerializer}
     )
     def get(self, request, unique_id):
-        # Canonical links use the public unique_id, but legacy list entries in
-        # older clients sometimes routed with the database id. Resolve the
-        # public identifier first, then fall back to pk for numeric legacy
-        # links. UserDetail replaces the browser URL with the canonical route
-        # immediately after this response loads.
-        lookup_mode = (request.query_params.get('lookup') or '').strip().lower()
-        if lookup_mode == 'pk' and str(unique_id).isdigit():
-            user = User.objects.filter(pk=int(unique_id)).first()
-        else:
-            user = User.objects.filter(unique_id=unique_id).first()
-            if user is None and str(unique_id).isdigit():
-                user = User.objects.filter(pk=int(unique_id)).first()
-        if user is None:
-            raise Http404
+        user = get_object_or_404(User, unique_id=unique_id)
         # If caller requests followers/following lists via query params, return paginated lists.
         # Supported params:
         # - followers=1 : return followers page using f_page & f_page_size
@@ -3821,7 +3742,7 @@ class UserProfilePublicView(APIView):
                         user_obj = items[i]
                         try:
                             if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
-                                item_data['image'] = user_profile_image_url(user_obj, request)
+                                item_data['image'] = absolute_api_url(request, user_obj.image_profile.image.url)
                         except Exception: pass
 
                 result['followers'] = {
@@ -3863,7 +3784,7 @@ class UserProfilePublicView(APIView):
                         user_obj = items[i]
                         try:
                             if hasattr(user_obj, 'image_profile') and user_obj.image_profile.status == 'published' and user_obj.image_profile.image:
-                                item_data['image'] = user_profile_image_url(user_obj, request)
+                                item_data['image'] = absolute_api_url(request, user_obj.image_profile.image.url)
                         except Exception: pass
 
                 result['following'] = {
@@ -3885,7 +3806,12 @@ class UserProfilePublicView(APIView):
         data = serializer.data
         
         # Add 'image' field for main user from image_profile
-        data['image'] = user_profile_image_url(user, request)
+        data['image'] = ""
+        try:
+            if hasattr(user, 'image_profile') and user.image_profile.status == 'published' and user.image_profile.image:
+                data['image'] = absolute_api_url(request, user.image_profile.image.url)
+        except Exception:
+            pass
 
         return Response(data)
 
@@ -3944,7 +3870,7 @@ def _sedabox_preview_payload(request, user, page_size=10):
         if user.image_profile.status == 'published' and user.image_profile.image:
             image_profile = {
                 'id': user.image_profile.id,
-                'image': user_profile_image_url(user, request),
+                'image': absolute_api_url(request, user.image_profile.image.url),
                 'status': user.image_profile.status,
             }
     except Exception:
@@ -4421,8 +4347,44 @@ def _ensure_personal_recommendations(user, target=18):
 
     affinity = user_affinity_version(user.pk)
     bucket = _time_bucket(15)
+
+    # Repair old server-generated fallback titles such as "Fresh for You 5".
+    # This is deliberately narrow so user-authored or editorial titles ending
+    # in a number are never modified.
+    title_cleanup_key = stable_cache_key(
+        'normalize-personal-playlist-fallback-titles', user.pk, 'v1'
+    )
+    if cache_get(title_cleanup_key) is None:
+        fallback_titles_fa = ('تازه برای شما', 'محبوب برای شما', 'کشف بعدی شما')
+        fallback_titles_en = ('Fresh for You', 'Popular for You', 'Your Next Discovery')
+
+        def strip_legacy_suffix(value, allowed_titles):
+            text = str(value or '').strip()
+            for allowed_title in allowed_titles:
+                if re.fullmatch(rf'{re.escape(allowed_title)}\s+[0-9]+', text):
+                    return allowed_title
+            return text
+
+        repaired = []
+        legacy_rows = RecommendedPlaylist.objects.filter(user=user).only(
+            'id', 'title', 'title_en'
+        )
+        for item in legacy_rows.iterator(chunk_size=100):
+            clean_title = strip_legacy_suffix(item.title, fallback_titles_fa)
+            clean_title_en = strip_legacy_suffix(item.title_en, fallback_titles_en)
+            if clean_title == item.title and clean_title_en == item.title_en:
+                continue
+            item.title = clean_title
+            item.title_en = clean_title_en
+            repaired.append(item)
+        if repaired:
+            RecommendedPlaylist.objects.bulk_update(
+                repaired, ['title', 'title_en'], batch_size=100
+            )
+        cache_set(title_cleanup_key, True, 24 * 60 * 60)
+
     generation_key = stable_cache_key(
-        'ensure-personal-playlist-pool', user.pk, affinity, bucket, target, 'v8'
+        'ensure-personal-playlist-pool', user.pk, affinity, bucket, target, 'v9'
     )
     cached, claimed = cache_get_or_claim(generation_key, lock_timeout=30, wait_timeout=0.6)
     if cached is not None:
@@ -4470,16 +4432,96 @@ def _ensure_personal_recommendations(user, target=18):
     configs.append(('blend', 0, 1))
 
     base = _home_song_queryset()
-    used = set()
+    used_song_ids = set()
+    seen_song_sets = set()
+    seen_song_orders = set()
     recipes = []
     now = timezone.now()
 
+    def register_song_order(song_ids):
+        ordered_ids = list(dict.fromkeys(song_ids))
+        if len(ordered_ids) < 3:
+            return []
+        order_signature = tuple(ordered_ids)
+        if order_signature in seen_song_orders:
+            return []
+        seen_song_orders.add(order_signature)
+        seen_song_sets.add(frozenset(ordered_ids))
+        used_song_ids.update(ordered_ids)
+        return ordered_ids
+
     def pick(queryset, size, seed):
-        ids = _pick_ids(queryset, size, seed, used, pool_size=100)
-        if len(ids) < 4:
-            # Permit limited overlap only when a narrow factor lacks enough songs.
-            ids = _pick_ids(queryset, size, f'{seed}:overlap', set(), pool_size=100)
-        return ids
+        """Build a recommendation distinct by content, or at least by order.
+
+        Duplicate playlist titles are harmless and intentionally allowed. Exact
+        duplicate queues are not: we first try several different song sets, then
+        accept the same set only when its order is new. If the available catalog
+        cannot produce another distinct order, no redundant playlist is created.
+        """
+        candidates = list(dict.fromkeys(
+            queryset.values_list('id', flat=True)[:120]
+        ))
+        if len(candidates) < 3:
+            return []
+
+        selection_size = min(size, len(candidates))
+        distinct_content = []
+        reordered_content = []
+        local_orders = set()
+
+        def consider(song_ids):
+            ordered_ids = list(dict.fromkeys(song_ids))[:selection_size]
+            if len(ordered_ids) < 3:
+                return
+            order_signature = tuple(ordered_ids)
+            if order_signature in local_orders or order_signature in seen_song_orders:
+                return
+            local_orders.add(order_signature)
+            destination = (
+                distinct_content
+                if frozenset(ordered_ids) not in seen_song_sets
+                else reordered_content
+            )
+            destination.append(ordered_ids)
+
+        # Prefer unused songs while enough catalog depth exists. Later attempts
+        # deliberately relax that preference to find a distinct set/order for
+        # narrow genres, moods, artists, or small catalogs.
+        for attempt in range(24):
+            shuffled = list(candidates)
+            random.Random(f'{seed}:attempt:{attempt}').shuffle(shuffled)
+            if attempt < 12:
+                shuffled = (
+                    [song_id for song_id in shuffled if song_id not in used_song_ids]
+                    + [song_id for song_id in shuffled if song_id in used_song_ids]
+                )
+            consider(shuffled)
+
+        # Deterministic rotations guarantee useful order-only alternatives when
+        # every available playlist must contain the same small song set.
+        base_order = list(candidates[:selection_size])
+        for reverse in (False, True):
+            ordered = list(reversed(base_order)) if reverse else base_order
+            for offset in range(len(ordered)):
+                consider(ordered[offset:] + ordered[:offset])
+
+        pool = distinct_content or reordered_content
+        if not pool:
+            return []
+
+        def diversity_score(song_ids):
+            song_set = set(song_ids)
+            unseen_count = len(song_set - used_song_ids)
+            if not seen_song_sets:
+                nearest_distance = len(song_set)
+            else:
+                nearest_distance = min(
+                    len(song_set.symmetric_difference(existing_set))
+                    for existing_set in seen_song_sets
+                )
+            return unseen_count, nearest_distance
+
+        return register_song_order(max(pool, key=diversity_score))
 
     for kind, value, variant in configs:
         if len(recipes) >= target:
@@ -4545,19 +4587,34 @@ def _ensure_personal_recommendations(user, target=18):
         ('تازه برای شما', 'Fresh for You', '-release_date'),
         ('محبوب برای شما', 'Popular for You', '-plays'),
         ('کشف بعدی شما', 'Your Next Discovery', '-created_at'),
+        ('برای امروز شما', 'Made for You Today', '-plays'),
+        ('جریان روزانه شما', 'Your Daily Flow', '-release_date'),
+        ('انتخاب‌های شما', 'Your Picks', '-created_at'),
     ]
     fallback_index = 0
-    while len(recipes) < target and fallback_index < target * 2:
+    consecutive_misses = 0
+    max_fallback_attempts = max(target * 6, 36)
+    while len(recipes) < target and fallback_index < max_fallback_attempts:
         fa_title, en_title, ordering = fallback_specs[fallback_index % len(fallback_specs)]
-        variant = fallback_index // len(fallback_specs) + 1
         queryset = base.order_by(ordering, '-release_date', '-created_at')
-        song_ids = pick(queryset, 18, f'{user.pk}:{affinity}:{bucket}:fallback:{fallback_index}')
+        song_ids = pick(
+            queryset, 18,
+            f'{user.pk}:{affinity}:{bucket}:fallback:{fallback_index}',
+        )
         fallback_index += 1
         if len(song_ids) < 3:
-            break
+            consecutive_misses += 1
+            # The available catalog has exhausted every distinct song order.
+            # Stop instead of creating an exact duplicate playlist.
+            if consecutive_misses >= len(fallback_specs) * 2:
+                break
+            continue
+        consecutive_misses = 0
         recipes.append({
-            'title': f'{fa_title} {variant}' if variant > 1 else fa_title,
-            'title_en': f'{en_title} {variant}' if variant > 1 else en_title,
+            # Repeated human-readable names are intentional. Diversity belongs
+            # in the queue, never in ugly numeric suffixes such as "For You 5".
+            'title': fa_title,
+            'title_en': en_title,
             'description': 'پیشنهاد تازه براساس سلیقه و شنیده‌های فعلی شما',
             'description_en': 'A fresh recommendation based on your current taste and listening history',
             'playlist_type': RecommendedPlaylist.PLAYLIST_TYPE_SIMILAR_TASTE,
@@ -5670,26 +5727,6 @@ def _normalize_directory_search(value):
     return _SEARCH_FILTER_MARKS_RE.sub('', normalized)
 
 
-_SEDABOX_SEARCH_ALIASES = {
-    'sedabox',
-    'sedaboxofficial',
-    'officialsedabox',
-    'صداباکس',
-    'صداباکسرسمی',
-    'حسابرسمیصداباکس',
-}
-
-
-def _is_sedabox_search_query(value):
-    return _normalize_directory_search(value) in _SEDABOX_SEARCH_ALIASES
-
-
-def _sedabox_user_filter():
-    return Q(unique_id__iexact='sedabox') | (
-        Q(first_name__istartswith='SedaBox') & Q(last_name__icontains='صداباکس')
-    )
-
-
 def _normalized_directory_expression(*field_names):
     """Build one typed normalized SQL expression shared by artists and users."""
     pieces = []
@@ -5734,7 +5771,7 @@ class SearchView(APIView):
             )
 
         key = stable_cache_key(
-            'search-ids-v13',
+            'search-ids-v12',
             query.casefold(),
             search_type or 'mixed',
             moods,
@@ -5882,38 +5919,30 @@ class SearchView(APIView):
         if moods: qs=qs.filter(Q(moods__id__in=moods) if all(x.isdigit() for x in moods) else Q(moods__slug__in=moods))
         return qs.distinct().order_by('-created_at')
     def _search_users(self,q,moods,request):
-        official_filter = _sedabox_user_filter()
-        qs = User.objects.filter(
+        qs=User.objects.filter(
             is_active=True,
             is_banned=False,
-        ).filter(
-            Q(roles__contains=User.ROLE_AUDIENCE) | official_filter
+            roles__contains=User.ROLE_AUDIENCE,
         ).exclude(Q(unique_id__isnull=True)|Q(unique_id=''))
         if request.user.is_authenticated:
             qs=qs.exclude(pk=request.user.pk)
         if q:
             normalized = _normalize_directory_search(q)
-            official_alias = _is_sedabox_search_query(q)
             qs = qs.annotate(
                 directory_search=_normalized_directory_expression(
                     'first_name', 'last_name', 'unique_id'
                 ),
                 search_rank=Case(
-                    When(official_filter, then=Value(-1 if official_alias else 0)),
                     When(unique_id__iexact=q, then=Value(0)),
                     When(first_name__iexact=q, then=Value(1)),
                     When(last_name__iexact=q, then=Value(1)),
                     default=Value(2),
                     output_field=IntegerField(),
                 ),
-            )
-            query_filter = (
+            ).filter(
                 Q(unique_id__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q)|
                 (Q(directory_search__icontains=normalized) if normalized else Q())
             )
-            if official_alias:
-                query_filter |= official_filter
-            qs = qs.filter(query_filter)
             return qs.order_by('search_rank', '-date_joined')
         return qs.order_by('-date_joined')
 
