@@ -564,6 +564,10 @@ class FollowableEntitySerializer(serializers.Serializer):
 class FollowRequestSerializer(serializers.Serializer):
     user_id = serializers.IntegerField(required=False)
     artist_id = serializers.IntegerField(required=False)
+    # Optional idempotent target state. Older clients may omit this field and
+    # keep the legacy toggle behaviour, while newer clients can safely retry a
+    # request without accidentally reversing the follow state.
+    follow = serializers.BooleanField(required=False)
 
     def validate(self, data):
         if not data.get('user_id') and not data.get('artist_id'):

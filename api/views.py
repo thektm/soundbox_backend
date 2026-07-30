@@ -744,7 +744,9 @@ class UserFollowView(APIView):
                 name='FollowResponse',
                 fields={
                     'status': serializers.CharField(),
+                    'action': serializers.CharField(),
                     'message': serializers.CharField(),
+                    'is_following': serializers.BooleanField(),
                 }
             )
         }
@@ -756,6 +758,7 @@ class UserFollowView(APIView):
         
         user_id = serializer.validated_data.get('user_id')
         artist_id = serializer.validated_data.get('artist_id')
+        desired_state = serializer.validated_data.get('follow')
         
         follower = request.user
         # If the user has an artist profile, we could potentially follow as an artist.
@@ -766,24 +769,42 @@ class UserFollowView(APIView):
             target = get_object_or_404(User, id=user_id)
             if target == follower:
                 return Response({'error': 'You cannot follow yourself.'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
             follow_qs = Follow.objects.filter(follower_user=follower, followed_user=target)
-            if follow_qs.exists():
-                follow_qs.delete()
-                return Response({'status': 'ok', 'message': 'unfollowed'}, status=status.HTTP_200_OK)
+            currently_following = follow_qs.exists()
+            should_follow = (not currently_following) if desired_state is None else desired_state
+
+            if should_follow:
+                Follow.objects.get_or_create(follower_user=follower, followed_user=target)
             else:
-                Follow.objects.create(follower_user=follower, followed_user=target)
-                return Response({'status': 'ok', 'message': 'followed'}, status=status.HTTP_200_OK)
+                follow_qs.delete()
+
+            action = 'followed' if should_follow else 'unfollowed'
+            return Response({
+                'status': 'ok',
+                'action': action,
+                'message': action,
+                'is_following': should_follow,
+            }, status=status.HTTP_200_OK)
         
         if artist_id:
             target = get_object_or_404(Artist, id=artist_id)
             follow_qs = Follow.objects.filter(follower_user=follower, followed_artist=target)
-            if follow_qs.exists():
-                follow_qs.delete()
-                return Response({'status': 'ok', 'message': 'unfollowed'}, status=status.HTTP_200_OK)
+            currently_following = follow_qs.exists()
+            should_follow = (not currently_following) if desired_state is None else desired_state
+
+            if should_follow:
+                Follow.objects.get_or_create(follower_user=follower, followed_artist=target)
             else:
-                Follow.objects.create(follower_user=follower, followed_artist=target)
-                return Response({'status': 'ok', 'message': 'followed'}, status=status.HTTP_200_OK)
+                follow_qs.delete()
+
+            action = 'followed' if should_follow else 'unfollowed'
+            return Response({
+                'status': 'ok',
+                'action': action,
+                'message': action,
+                'is_following': should_follow,
+            }, status=status.HTTP_200_OK)
 
 
 @extend_schema(tags=['Profile Page Endpoints اندپوینت های صفحه پروفایل'])
@@ -3882,7 +3903,17 @@ def _sedabox_preview_payload(request, user, page_size=10):
     results.extend(SimplePlaylistSerializer(
         normal, many=True, context={'request': request}
     ).data)
-    total = normal_qs.count() + _home_playlist_queryset(request.user).count() + len(generated_all)
+    persisted_ids = {
+        str(value)
+        for value in _home_playlist_queryset(request.user).values_list('unique_id', flat=True)
+        if value is not None
+    }
+    generated_ids = {
+        str(item.unique_id)
+        for item in generated_all
+        if getattr(item, 'unique_id', None) is not None
+    }
+    total = normal_qs.count() + len(persisted_ids | generated_ids)
     return {
         'id': user.id,
         'unique_id': 'sedabox',
@@ -3998,7 +4029,21 @@ class SedaBoxProfileView(APIView):
             for kind, item, _ in page_records
         ]
 
-        total = normal_total + recommended_total + len(generated)
+        # Generated recommendations can also exist in the persisted recommended
+        # queryset. Count unique public identities so pagination never advertises
+        # phantom pages or stops after the first 20 visible records.
+        generated_ids = {
+            str(item.unique_id)
+            for item in generated
+            if getattr(item, 'unique_id', None) is not None
+        }
+        persisted_recommended_ids = set(
+            str(value)
+            for value in recommended_qs.values_list('unique_id', flat=True)
+            if value is not None
+        )
+        recommended_unique_total = len(generated_ids | persisted_recommended_ids)
+        total = normal_total + recommended_unique_total
         has_next = total > end
         next_url = None
         if has_next:
@@ -5543,6 +5588,7 @@ class PlaylistRecommendationLikeView(APIView):
                 fields={
                     'status': serializers.CharField(),
                     'likes_count': serializers.IntegerField(),
+                    'is_liked': serializers.BooleanField(),
                 }
             )
         }
@@ -5563,20 +5609,49 @@ class PlaylistRecommendationLikeView(APIView):
             )
         
         user = request.user
+        requested_liked = request.data.get('liked')
+        if not isinstance(requested_liked, bool):
+            requested_liked = None
         
         # Check if already liked
         is_liked = playlist.liked_by.filter(id=user.id).exists()
+
+        # New clients send the desired target state. This makes retries and
+        # rapid taps idempotent instead of toggling twice. Legacy clients that
+        # omit `liked` retain the existing toggle contract.
+        if requested_liked is True and is_liked:
+            return Response({
+                'status': 'liked',
+                'is_liked': True,
+                'likes_count': playlist.liked_by.count(),
+            })
+        if requested_liked is False and not is_liked:
+            return Response({
+                'status': 'unliked',
+                'is_liked': False,
+                'likes_count': playlist.liked_by.count(),
+            })
         
-        if is_liked:
+        should_like = (not is_liked) if requested_liked is None else requested_liked
+
+        if not should_like:
             # Unlike: remove PlaylistLike if present, otherwise fall back to M2M
             from .models import PlaylistLike
             pl_like_qs = PlaylistLike.objects.filter(user=user, playlist_id=playlist.id)
             if pl_like_qs.exists():
                 pl_like_qs.delete()
-                return Response({'status': 'unliked', 'likes_count': PlaylistLike.objects.filter(playlist=playlist).count()})
+                return Response({
+                    'status': 'unliked',
+                    'is_liked': False,
+                    'likes_count': PlaylistLike.objects.filter(playlist=playlist).count(),
+                })
             # fallback for RecommendedPlaylist M2M
             playlist.liked_by.remove(user)
-            return Response({'status': 'unliked', 'likes_count': playlist.liked_by.count()})
+            return Response({
+                'status': 'unliked',
+                'is_liked': False,
+                'likes_count': playlist.liked_by.count(),
+            })
         else:
             # Like
             if unique_id.startswith('smart_rec_'):
@@ -5610,6 +5685,7 @@ class PlaylistRecommendationLikeView(APIView):
 
                 return Response({
                     'status': 'liked',
+                    'is_liked': True,
                     'likes_count': frozen_playlist.liked_by.count(),
                     'new_unique_id': new_id,
                     'is_frozen': True
@@ -5617,7 +5693,11 @@ class PlaylistRecommendationLikeView(APIView):
             else:
                 # Direct like for already persistent or other types
                 playlist.liked_by.add(user)
-                return Response({'status': 'liked', 'likes_count': playlist.liked_by.count()})
+                return Response({
+                    'status': 'liked',
+                    'is_liked': True,
+                    'likes_count': playlist.liked_by.count(),
+                })
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
