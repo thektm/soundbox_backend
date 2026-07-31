@@ -197,11 +197,13 @@ class OtpCode(models.Model):
     PURPOSE_VERIFY = 'verify_account'
     PURPOSE_LOGIN = 'login'
     PURPOSE_RESET = 'reset_password'
+    PURPOSE_ARTIST_RESET = 'reset_artist_password'
 
     PURPOSE_CHOICES = [
         (PURPOSE_VERIFY, 'Verify Account'),
         (PURPOSE_LOGIN, 'Login'),
         (PURPOSE_RESET, 'Reset Password'),
+        (PURPOSE_ARTIST_RESET, 'Reset Artist Password'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='otp_codes')

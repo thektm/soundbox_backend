@@ -1,6 +1,8 @@
 from django.utils import timezone
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
+from django.core import signing
+from django.core.signing import BadSignature, SignatureExpired
 import logging
 import requests
 import hmac
@@ -24,6 +26,7 @@ from .serializers import (
     LoginOtpVerifySerializer,
     ForgotPasswordSerializer,
     PasswordResetSerializer,
+    ArtistPasswordResetSerializer,
     TokenRefreshRequestSerializer,
     LogoutSerializer,
     ChangePasswordSerializer,
@@ -93,6 +96,51 @@ def parse_artist_flag(request) -> bool:
         return False
     return str(val).lower() in ('1', 'true', 'yes', 'on')
 
+
+
+_ARTIST_RESET_TOKEN_SALT = 'sedabox.artist-password-reset.v1'
+
+
+def _artist_reset_ttl_seconds() -> int:
+    return max(60, int(getattr(settings, 'ARTIST_PASSWORD_RESET_TOKEN_TTL_SECONDS', 600)))
+
+
+def _artist_password_fingerprint(user: User) -> str:
+    return hashlib.sha256((user.artist_password or '').encode('utf-8')).hexdigest()
+
+
+def _artist_reset_token(user: User) -> str:
+    return signing.dumps(
+        {
+            'sub': user.pk,
+            'phone': user.phone_number,
+            'purpose': OtpCode.PURPOSE_ARTIST_RESET,
+            'password_fingerprint': _artist_password_fingerprint(user),
+        },
+        key=settings.SECRET_KEY,
+        salt=_ARTIST_RESET_TOKEN_SALT,
+        compress=True,
+    )
+
+
+def _load_artist_reset_token(token: str) -> dict:
+    return signing.loads(
+        token,
+        key=settings.SECRET_KEY,
+        salt=_ARTIST_RESET_TOKEN_SALT,
+        max_age=_artist_reset_ttl_seconds(),
+    )
+
+
+def _artist_account_for_password_reset(phone: str):
+    user = User.objects.filter(phone_number=normalize_phone(phone)).first()
+    if user is None or (
+        User.ROLE_ARTIST not in (user.roles or []) and not user.artist_password
+    ):
+        return None, auth_error('ARTIST_ACCOUNT_NOT_FOUND', status.HTTP_404_NOT_FOUND)
+    if user.is_banned:
+        return None, auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
+    return user, None
 
 def _fast_secret_hash(namespace: str, value: str) -> str:
     secret = str(settings.SECRET_KEY).encode('utf-8')
@@ -276,6 +324,7 @@ def send_sms(phone: str, code: str, purpose: str, minutes: int = 5) -> bool:
         OtpCode.PURPOSE_LOGIN: 'login',
         OtpCode.PURPOSE_VERIFY: 'register',
         OtpCode.PURPOSE_RESET: 'forgot-pass',
+        OtpCode.PURPOSE_ARTIST_RESET: 'forgot-pass',
     }
 
     template_name = template_map.get(purpose, 'login')
@@ -736,6 +785,203 @@ class ArtistAuthView(AuthAPIView):
             return validation_error(serializer.errors)
         serializer.save()
         return Response(serializer.data)
+
+
+@extend_schema(tags=['Artist Auth Endpoints'])
+class ArtistVerificationOtpResendView(AuthAPIView):
+    """Resend the account-verification OTP used only by the artist panel."""
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="Resend artist account verification code",
+        request=ForgotPasswordSerializer,
+        responses={200: inline_serializer(
+            name='ArtistVerificationOtpResendResponse',
+            fields={
+                'status': serializers.CharField(),
+                'resendAfterSeconds': serializers.IntegerField(),
+                'expiresInSeconds': serializers.IntegerField(),
+            },
+        )},
+    )
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_error(serializer.errors)
+        phone = normalize_phone(serializer.validated_data['phone'])
+        user, error_response = _artist_account_for_password_reset(phone)
+        if error_response is not None:
+            return error_response
+        retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY, user)
+        if retry_after:
+            return auth_error(
+                'RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS,
+                retry_after_seconds=retry_after,
+            )
+        _, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
+        if not sent:
+            return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({
+            'status': 'otp_sent',
+            'resendAfterSeconds': max(1, int(getattr(settings, 'OTP_SEND_COOLDOWN_SECONDS', 60))),
+            'expiresInSeconds': 300,
+        })
+
+
+@extend_schema(tags=['Artist Auth Endpoints'])
+class ArtistForgotPasswordView(AuthAPIView):
+    """Start an artist-password reset without changing the audience flow."""
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="Request artist password reset code",
+        request=ForgotPasswordSerializer,
+        responses={200: inline_serializer(
+            name='ArtistForgotPasswordResponse',
+            fields={
+                'status': serializers.CharField(),
+                'resendAfterSeconds': serializers.IntegerField(),
+                'expiresInSeconds': serializers.IntegerField(),
+            },
+        )},
+    )
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_error(serializer.errors)
+        phone = normalize_phone(serializer.validated_data['phone'])
+        user, error_response = _artist_account_for_password_reset(phone)
+        if error_response is not None:
+            return error_response
+        retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_ARTIST_RESET, user)
+        if retry_after:
+            return auth_error(
+                'RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS,
+                retry_after_seconds=retry_after,
+            )
+        _, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_ARTIST_RESET)
+        if not sent:
+            return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({
+            'status': 'otp_sent',
+            'resendAfterSeconds': max(1, int(getattr(settings, 'OTP_SEND_COOLDOWN_SECONDS', 60))),
+            'expiresInSeconds': 300,
+        })
+
+
+@extend_schema(tags=['Artist Auth Endpoints'])
+class ArtistPasswordResetVerifyView(AuthAPIView):
+    """Consume an artist reset OTP and exchange it for a short-lived reset token."""
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="Verify artist password reset code",
+        request=VerifySerializer,
+        responses={200: inline_serializer(
+            name='ArtistPasswordResetVerifyResponse',
+            fields={
+                'status': serializers.CharField(),
+                'resetToken': serializers.CharField(),
+                'expiresInSeconds': serializers.IntegerField(),
+            },
+        )},
+    )
+    def post(self, request):
+        serializer = VerifySerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_error(serializer.errors)
+        phone = normalize_phone(serializer.validated_data['phone'])
+        user, error_response = _artist_account_for_password_reset(phone)
+        if error_response is not None:
+            return error_response
+        otp_result = consume_otp(
+            user,
+            OtpCode.PURPOSE_ARTIST_RESET,
+            serializer.validated_data['otp'],
+        )
+        otp_error = _otp_failure_response(otp_result)
+        if otp_error is not None:
+            return otp_error
+        return Response({
+            'status': 'verified',
+            'resetToken': _artist_reset_token(user),
+            'expiresInSeconds': _artist_reset_ttl_seconds(),
+        })
+
+
+@extend_schema(tags=['Artist Auth Endpoints'])
+class ArtistPasswordResetView(AuthAPIView):
+    """Reset only the artist password; audience credentials and sessions stay intact."""
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="Reset artist password",
+        request=ArtistPasswordResetSerializer,
+        responses={200: inline_serializer(
+            name='ArtistPasswordResetResponse',
+            fields={'status': serializers.CharField()},
+        )},
+    )
+    def post(self, request):
+        serializer = ArtistPasswordResetSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_error(serializer.errors)
+        phone = normalize_phone(serializer.validated_data['phone'])
+        try:
+            payload = _load_artist_reset_token(serializer.validated_data['resetToken'])
+        except SignatureExpired:
+            return auth_error('ARTIST_RESET_TOKEN_EXPIRED', status.HTTP_401_UNAUTHORIZED)
+        except (BadSignature, TypeError, ValueError):
+            return auth_error('ARTIST_RESET_TOKEN_INVALID', status.HTTP_401_UNAUTHORIZED)
+
+        if (
+            payload.get('purpose') != OtpCode.PURPOSE_ARTIST_RESET
+            or payload.get('phone') != phone
+        ):
+            return auth_error('ARTIST_RESET_TOKEN_INVALID', status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            token_user_id = int(payload.get('sub'))
+        except (TypeError, ValueError):
+            return auth_error('ARTIST_RESET_TOKEN_INVALID', status.HTTP_401_UNAUTHORIZED)
+
+        supplied_fingerprint = str(payload.get('password_fingerprint') or '')
+        new_password = serializer.validated_data['newPassword']
+        with transaction.atomic():
+            user = User.objects.select_for_update().filter(
+                pk=token_user_id,
+                phone_number=phone,
+            ).first()
+            if user is None or (
+                User.ROLE_ARTIST not in (user.roles or []) and not user.artist_password
+            ):
+                return auth_error('ARTIST_ACCOUNT_NOT_FOUND', status.HTTP_404_NOT_FOUND)
+            if user.is_banned:
+                return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
+
+            expected_fingerprint = _artist_password_fingerprint(user)
+            if not hmac.compare_digest(expected_fingerprint, supplied_fingerprint):
+                return auth_error('ARTIST_RESET_TOKEN_USED', status.HTTP_409_CONFLICT)
+            if user.check_artist_password(new_password):
+                return validation_error({
+                    'newPassword': [serializers.ErrorDetail(
+                        'The new password must be different from the current password.',
+                        code='password_unchanged',
+                    )],
+                })
+
+            user.set_artist_password(new_password)
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            user.save(update_fields=['artist_password', 'failed_login_attempts', 'locked_until'])
+
+        # Deliberately do not revoke shared refresh tokens: those sessions may
+        # belong to the already-working audience app for the same user account.
+        return Response({'status': 'artist_password_reset'})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])

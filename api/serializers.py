@@ -1050,6 +1050,11 @@ class PasswordResetSerializer(PhoneSerializer):
         return _validate_auth_otp(value)
 
 
+class ArtistPasswordResetSerializer(PhoneSerializer):
+    resetToken = serializers.CharField(trim_whitespace=False, allow_blank=False)
+    newPassword = serializers.CharField(write_only=True, trim_whitespace=False, min_length=6)
+
+
 class TokenRefreshRequestSerializer(serializers.Serializer):
     refreshToken = serializers.CharField(trim_whitespace=False, allow_blank=False)
 
