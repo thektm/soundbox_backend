@@ -3,6 +3,7 @@ import logging
 from django.db import transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 from .models import (
     Album,
@@ -281,10 +282,21 @@ def notify_album_like(sender, instance, created, **kwargs):
 def capture_old_song_status(sender, instance, **kwargs):
     if not instance.pk:
         instance._old_status = None
+        instance._release_publish_requested = False
         return
     instance._old_status = (
         Song.objects.filter(pk=instance.pk).values_list("status", flat=True).first()
     )
+    instance._release_publish_requested = False
+    if (
+        instance.status == Song.STATUS_PUBLISHED
+        and instance._old_status != Song.STATUS_PUBLISHED
+        and _requires_atomic_release_publication(instance.pk, instance.artist_id)
+    ):
+        # Keep every track non-public until the complete multi-track package is
+        # ready. The post-save coordinator publishes the full package at once.
+        instance.status = Song.STATUS_APPROVED
+        instance._release_publish_requested = True
 
 
 def _deliver_song_release(song_id, followed_artist_ids=None):
@@ -619,6 +631,133 @@ def _deliver_song_owner_status(song_id, expected_status):
         text = f"آهنگ «{song.title}» تأیید نشد. برای جزئیات با پشتیبانی تماس بگیرید."
         text_en = f"Your song '{song.title_en or song.title}' was rejected. Contact support for details."
     send_system_notification(user=song.artist.user, text=text, text_en=text_en)
+
+
+_ARTIST_RELEASE_STORE_KEY = "artist_release_composer_v1"
+
+
+def _release_track_ids(release):
+    track_ids = []
+    for value in release.get("materialized_track_ids") or release.get("track_ids") or []:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in track_ids:
+            track_ids.append(value)
+    return track_ids
+
+
+def _requires_atomic_release_publication(song_id: int, artist_id: int) -> bool:
+    if not song_id or not artist_id:
+        return False
+    user_settings = (
+        Artist.objects.filter(pk=artist_id)
+        .values_list("user__settings", flat=True)
+        .first()
+    )
+    store = dict(user_settings or {}).get(_ARTIST_RELEASE_STORE_KEY)
+    if not isinstance(store, dict) or not isinstance(store.get("drafts"), dict):
+        return False
+    for release in store["drafts"].values():
+        if not isinstance(release, dict):
+            continue
+        if release.get("release_type") == "single" or release.get("album_id"):
+            continue
+        if release.get("status") not in {"in_review", "scheduled"}:
+            continue
+        if song_id in _release_track_ids(release):
+            return True
+    return False
+
+
+def _materialize_ready_artist_releases(song_id: int):
+    """Publish a multi-track package atomically and never leak partial singles."""
+    song = Song.objects.select_related("artist__user").filter(pk=song_id).first()
+    if not song or song.status not in {Song.STATUS_APPROVED, Song.STATUS_PUBLISHED} or not song.artist.user_id:
+        return None
+
+    with transaction.atomic():
+        user = User.objects.select_for_update().get(pk=song.artist.user_id)
+        settings_value = dict(user.settings or {})
+        store = settings_value.get(_ARTIST_RELEASE_STORE_KEY)
+        if not isinstance(store, dict) or not isinstance(store.get("drafts"), dict):
+            return None
+
+        for release_id, release in list(store["drafts"].items()):
+            if not isinstance(release, dict):
+                continue
+            if release.get("release_type") == "single" or release.get("album_id"):
+                continue
+            if release.get("status") not in {"in_review", "scheduled"}:
+                continue
+
+            track_ids = _release_track_ids(release)
+            if song_id not in track_ids or not track_ids:
+                continue
+
+            tracks = list(
+                Song.objects.select_for_update()
+                .filter(id__in=track_ids, artist=song.artist)
+                .only("id", "status", "album_id")
+            )
+            by_id = {track.id: track for track in tracks}
+            ordered = [by_id[track_id] for track_id in track_ids if track_id in by_id]
+            ready_statuses = {Song.STATUS_APPROVED, Song.STATUS_PUBLISHED}
+            if len(ordered) != len(track_ids) or any(track.status not in ready_statuses for track in ordered):
+                return None
+
+            metadata = release.get("release_metadata") or {}
+            album = Album.objects.create(
+                artist=song.artist,
+                title=str(release.get("title") or "Untitled Release")[:400],
+                title_en=str(release.get("title_en") or "")[:400],
+                cover_image=str(metadata.get("cover_url") or "")[:500],
+                release_date=metadata.get("release_date") or None,
+                description=str(metadata.get("description") or ""),
+                description_en=str(metadata.get("description_en") or ""),
+            )
+            genre_ids = []
+            for value in (metadata.get("primary_genre_id"), metadata.get("secondary_genre_id")):
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0 and value not in genre_ids:
+                    genre_ids.append(value)
+            if genre_ids:
+                album.genres.set(genre_ids)
+
+            # One atomic catalog transition: no track is public before the full
+            # ordered package and Album relation are ready. QuerySet.update also
+            # avoids recursive song signals and duplicate owner notifications.
+            Song.objects.filter(id__in=track_ids, artist=song.artist).update(
+                status=Song.STATUS_PUBLISHED, album=album, is_single=False
+            )
+            release["album_id"] = album.id
+            release["status"] = "live"
+            release["track_ids"] = track_ids
+            release["materialized_track_ids"] = track_ids
+            release["updated_at"] = timezone.now().isoformat()
+            store["drafts"][str(release_id)] = release
+            settings_value[_ARTIST_RELEASE_STORE_KEY] = store
+            user.settings = settings_value
+            user.save(update_fields=["settings"])
+            return {"album_id": album.id}
+
+    return None
+
+
+@receiver(post_save, sender=Song, dispatch_uid="api.release-composer.materialize-live-album")
+def materialize_live_release_album(sender, instance, created, **kwargs):
+    if not getattr(instance, "_release_publish_requested", False):
+        return
+    result = _materialize_ready_artist_releases(instance.pk)
+    if result and result.get("album_id"):
+        # Keep admin/API serializers consistent with the atomic database result.
+        instance.status = Song.STATUS_PUBLISHED
+        instance.album_id = result["album_id"]
+        instance.is_single = False
 
 
 @receiver(post_save, sender=Song, dispatch_uid="api.notification.song.owner-status")
