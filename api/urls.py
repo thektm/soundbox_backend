@@ -261,6 +261,7 @@ urlpatterns = [
     path('artist/albums/<int:pk>/', ArtistAlbumsManagementView.as_view(), name='artist_albums_detail'),
     path('artist/albums/<int:pk>/songs/', ArtistAlbumSongsView.as_view(), name='artist_album_songs'),
     path('artist/deposit-request/', DepositRequestView.as_view(), name='artist_deposit_request'),
+    path('artist/deposit-request/<int:pk>/', DepositRequestView.as_view(), name='artist_deposit_request_detail'),
     path('artist/wallet/', ArtistWalletView.as_view(), name='artist_wallet'),
     path('artist/finance/', ArtistFinanceView.as_view(), name='artist_finance'),
     path('artist/finance/songs/', ArtistFinanceSongsView.as_view(), name='artist_finance_songs'),

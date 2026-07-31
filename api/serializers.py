@@ -1254,6 +1254,9 @@ class AlbumSerializer(LocalizedModelSerializer):
     genre_ids = serializers.SerializerMethodField()
     sub_genre_ids = serializers.SerializerMethodField()
     mood_ids = serializers.SerializerMethodField()
+    genre_items = serializers.SerializerMethodField()
+    sub_genre_items = serializers.SerializerMethodField()
+    mood_items = serializers.SerializerMethodField()
     songs = serializers.SerializerMethodField()
     song_genre_names = serializers.SerializerMethodField()
     song_mood_names = serializers.SerializerMethodField()
@@ -1262,7 +1265,7 @@ class AlbumSerializer(LocalizedModelSerializer):
         model = Album
         fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'release_date',
                   'description', 'description_en', 'created_at', 'likes_count', 'songs_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
-                  'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'songs', 'song_genre_names', 'song_mood_names']
+                  'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'genre_items', 'sub_genre_items', 'mood_items', 'songs', 'song_genre_names', 'song_mood_names']
         read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
     def get_likes_count(self, obj): return int(_metric(obj, '_likes_count', lambda: AlbumLike.objects.filter(album=obj).count()))
@@ -1273,6 +1276,12 @@ class AlbumSerializer(LocalizedModelSerializer):
     def get_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.genres.all()]
     def get_sub_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.sub_genres.all()]
     def get_mood_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.moods.all()]
+    def _taxonomy_items(self, values):
+        request = self.context.get('request')
+        return [{'id': item.id, 'title': localized_value(item, 'name', request), 'name': item.name, 'name_en': item.name_en} for item in values.all()]
+    def get_genre_items(self, obj): return self._taxonomy_items(obj.genres)
+    def get_sub_genre_items(self, obj): return self._taxonomy_items(obj.sub_genres)
+    def get_mood_items(self, obj): return self._taxonomy_items(obj.moods)
     def _songs(self, obj):
         songs = getattr(obj, '_detail_songs', None)
         return list(songs if songs is not None else obj.songs.all())
