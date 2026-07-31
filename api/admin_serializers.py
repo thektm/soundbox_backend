@@ -133,7 +133,7 @@ class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.
         model = Song
         fields = [
             'id', 'title', 'title_en', 'artist', 'artist_name', 'featured_artists', 'featured_artist_ids', 'album', 'album_title',
-            'is_single', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
+            'is_single', 'album_disc_number', 'album_track_number', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
             'duration_seconds', 'plays', 'status', 'release_date', 'language',
             'genres', 'sub_genres', 'moods', 'tags', 'description', 'description_en', 'lyrics', 'lyrics_en',
             'tempo', 'energy', 'danceability', 'valence', 'acousticness',

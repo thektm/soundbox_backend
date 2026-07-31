@@ -645,3 +645,45 @@ class AudioAdAdmin(admin.ModelAdmin):
     search_fields = ('title', 'title_en', 'navigate_link')
     readonly_fields = ('created_at', 'updated_at')
 
+
+# Release workflow is intentionally separate from the legacy Album/Song admin.
+from .models import ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory, ReleaseContributor
+
+
+class ArtistReleaseTrackInline(admin.TabularInline):
+    model = ArtistReleaseTrack
+    extra = 0
+    fields = ('position', 'song', 'source_song', 'extras', 'updated_at')
+    readonly_fields = ('updated_at',)
+    ordering = ('position',)
+
+
+class ArtistReleaseStatusHistoryInline(admin.TabularInline):
+    model = ArtistReleaseStatusHistory
+    extra = 0
+    fields = ('from_status', 'to_status', 'note', 'actor', 'created_at')
+    readonly_fields = fields
+    can_delete = False
+    ordering = ('-created_at',)
+
+
+@admin.register(ArtistRelease)
+class ArtistReleaseAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'artist', 'release_type', 'status', 'revision_number', 'submitted_at', 'scheduled_at', 'published_at', 'updated_at')
+    list_filter = ('release_type', 'status', 'previously_released', 'created_at', 'submitted_at', 'scheduled_at')
+    search_fields = ('title', 'title_en', 'artist__name', 'artist__artistic_name')
+    readonly_fields = ('id', 'lock_version', 'created_at', 'updated_at', 'submitted_at', 'reviewed_at', 'published_at', 'taken_down_at')
+    inlines = (ArtistReleaseTrackInline, ArtistReleaseStatusHistoryInline)
+    fieldsets = (
+        ('Release', {'fields': ('id', 'artist', 'title', 'title_en', 'release_type', 'status', 'previously_released', 'album')}),
+        ('Workflow', {'fields': ('current_step', 'source_release', 'revision_number', 'lock_version', 'review_note', 'admin_note')}),
+        ('Metadata', {'fields': ('shared_metadata', 'release_metadata', 'validation_snapshot')}),
+        ('Timestamps', {'fields': ('created_at', 'updated_at', 'submitted_at', 'reviewed_at', 'scheduled_at', 'published_at', 'taken_down_at')}),
+    )
+
+
+@admin.register(ReleaseContributor)
+class ReleaseContributorAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name', 'name_en', 'artist', 'roles', 'updated_at')
+    search_fields = ('name', 'name_en', 'artist__name', 'artist__artistic_name')
+    list_filter = ('created_at', 'updated_at')

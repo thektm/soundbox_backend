@@ -5,7 +5,7 @@ services:
     build: .
     container_name: soundbox_web
     restart: unless-stopped
-    environment:
+    environment: &soundbox_environment
       DJANGO_DEBUG: 'False'
       DJANGO_SECRET: 'replace-with-a-long-random-secret'
       PUBLIC_API_BASE_URL: 'https://api.sedabox.com'
@@ -42,6 +42,22 @@ services:
       - '8000:8000'
     volumes:
       - static_volume:/app/static
+      - media_volume:/app/media
+    networks:
+      - soundbox_network
+
+  release_scheduler:
+    build: .
+    container_name: soundbox_release_scheduler
+    restart: unless-stopped
+    environment: *soundbox_environment
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ['python', 'manage.py', 'publish_scheduled_releases', '--watch', '--interval', '30']
+    volumes:
       - media_volume:/app/media
     networks:
       - soundbox_network

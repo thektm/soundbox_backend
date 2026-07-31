@@ -1289,7 +1289,8 @@ class AlbumSerializer(LocalizedModelSerializer):
     def get_mood_items(self, obj): return self._taxonomy_items(obj.moods)
     def _songs(self, obj):
         songs = getattr(obj, '_detail_songs', None)
-        return list(songs if songs is not None else obj.songs.all())
+        values = list(songs if songs is not None else obj.songs.all())
+        return sorted(values, key=lambda song: (song.album_disc_number or 1, song.album_track_number or song.id, song.id))
     def get_songs(self, obj): return SongStreamSerializer(self._songs(obj), many=True, context=self.context).data
     def get_song_genre_names(self, obj): return sorted({localized_value(g, 'name', self.context.get('request')) for s in self._songs(obj) for g in s.genres.all()})
     def get_song_mood_names(self, obj): return sorted({localized_value(m, 'name', self.context.get('request')) for s in self._songs(obj) for m in s.moods.all()})
@@ -1415,7 +1416,7 @@ class SongSerializer(LocalizedModelSerializer):
     class Meta:
         model = Song
         fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists', 'featured_artist_ids',
-                  'album', 'album_id', 'album_title', 'is_single', 'stream_url', 'preview_url', 'is_preview',
+                  'album', 'album_id', 'album_title', 'is_single', 'album_disc_number', 'album_track_number', 'stream_url', 'preview_url', 'is_preview',
                   'preview_duration_seconds', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
                   'duration_seconds', 'duration_display', 'plays', 'likes_count', 'added_to_playlists_count',
                   'added_to_playlist', 'is_liked', 'status', 'release_date', 'language', 'genre_ids', 'sub_genre_ids',

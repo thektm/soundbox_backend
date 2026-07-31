@@ -138,6 +138,12 @@ from .admin_views import (
     AdminEmployeeListView,
     AdminEmployeeDetailView,
 )
+from .release_views import (
+    ArtistReleaseListCreateView, ArtistReleaseDetailView, ArtistReleaseTracksView,
+    ArtistReleaseBulkMetadataView, ArtistReleaseArtworkView, ArtistReleaseValidateView,
+    ArtistReleaseSubmitView, ArtistReleaseCloneView, ArtistContributorListCreateView,
+    AdminReleaseListView, AdminReleaseDetailView, AdminReleaseActionView,
+)
 from .auth_views import (
     AuthRegisterView,
     AuthVerifyView,
@@ -264,6 +270,15 @@ urlpatterns = [
     path('artist/live-listeners/', ArtistLiveListenersView.as_view(), name='artist_live_listeners'),
     path('artist/live-listeners/poll/', ArtistLiveListenersPollView.as_view(), name='artist_live_listeners_poll'),
     path('artist/songs/', ArtistSongsManagementView.as_view(), name='artist_songs_management'),
+    path('artist/releases/', ArtistReleaseListCreateView.as_view(), name='artist_release_list_create'),
+    path('artist/releases/<uuid:pk>/', ArtistReleaseDetailView.as_view(), name='artist_release_detail'),
+    path('artist/releases/<uuid:pk>/tracks/', ArtistReleaseTracksView.as_view(), name='artist_release_tracks'),
+    path('artist/releases/<uuid:pk>/bulk-metadata/', ArtistReleaseBulkMetadataView.as_view(), name='artist_release_bulk_metadata'),
+    path('artist/releases/<uuid:pk>/artwork/', ArtistReleaseArtworkView.as_view(), name='artist_release_artwork'),
+    path('artist/releases/<uuid:pk>/validate/', ArtistReleaseValidateView.as_view(), name='artist_release_validate'),
+    path('artist/releases/<uuid:pk>/submit/', ArtistReleaseSubmitView.as_view(), name='artist_release_submit'),
+    path('artist/releases/<uuid:pk>/clone/', ArtistReleaseCloneView.as_view(), name='artist_release_clone'),
+    path('artist/contributors/', ArtistContributorListCreateView.as_view(), name='artist_release_contributors'),
     
     path('artist/songs/<int:pk>/', ArtistSongsManagementView.as_view(), name='artist_songs_detail'),
     path('artist/albums/', ArtistAlbumsManagementView.as_view(), name='artist_albums_management'),
@@ -317,6 +332,9 @@ urlpatterns = [
     path('admin/reports/', AdminReportListView.as_view(), name='admin_report_list'),
     path('admin/reports/<int:pk>/', AdminReportDetailView.as_view(), name='admin_report_detail'),
     path('admin/albums/', AdminAlbumListView.as_view(), name='admin_album_list'),
+    path('admin/releases/', AdminReleaseListView.as_view(), name='admin_release_list'),
+    path('admin/releases/<uuid:pk>/', AdminReleaseDetailView.as_view(), name='admin_release_detail'),
+    path('admin/releases/<uuid:pk>/action/', AdminReleaseActionView.as_view(), name='admin_release_action'),
     path('admin/albums/<int:pk>/', AdminAlbumDetailView.as_view(), name='admin_album_detail'),
     path('admin/albums/<int:album_id>/songs/<int:song_id>/', AdminAlbumSongActionView.as_view(), name='admin_album_song_action'),
     path('admin/pap-settings/', AdminPlayConfigurationView.as_view(), name='admin_pap_settings'),

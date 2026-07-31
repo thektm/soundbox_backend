@@ -7,7 +7,7 @@ import re
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from .models import (
-    User, Artist, Album, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song,
+    User, Artist, Album, ArtistRelease, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song,
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, SocialPlatform, DownloadHistory,
@@ -4087,6 +4087,15 @@ class SedaBoxProfileView(APIView):
 
 
 def _home_song_queryset(require_preview=False):
+    # Cheap, cache-guarded publication sweep keeps scheduled releases automatic
+    # without changing any audience endpoint or requiring a client update.
+    try:
+        if cache.add('artist-release-due-publish-lock', '1', timeout=60):
+            from .release_service import publish_due_releases
+            publish_due_releases(limit=25)
+    except Exception:
+        # Deployment may briefly run before the additive release tables exist.
+        pass
     qs = _song_card_queryset()
     if require_preview:
         qs = qs.filter(preview_audio_url__isnull=False).exclude(preview_audio_url='')
@@ -7262,6 +7271,13 @@ class ArtistSongsManagementView(APIView):
             }
             return Response(data)
 
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(title__icontains=query) | Q(title_en__icontains=query) |
+                Q(album__title__icontains=query)
+            ).distinct()
+
         queryset = queryset.order_by('-release_date', '-created_at')
 
         status_param = request.query_params.get('status')
@@ -7371,12 +7387,14 @@ class ArtistSongsManagementView(APIView):
                 clean[f'{field}_write'] = normalized
 
         # Validate all metadata and relationships before any external upload.
+        save_as_draft = str(request.data.get('save_as_draft') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        target_status = Song.STATUS_DRAFT if save_as_draft else Song.STATUS_PENDING
         preflight = {
             **clean,
             'audio_file': 'https://example.com/preflight-audio.mp3',
             'cover_image': 'https://example.com/preflight-cover.jpg' if cover_image else '',
             'uploader': request.user.id,
-            'status': Song.STATUS_PENDING,
+            'status': target_status,
         }
         preflight_serializer = SongSerializer(data=preflight, context={'request': request})
         if not preflight_serializer.is_valid():
@@ -7432,7 +7450,7 @@ class ArtistSongsManagementView(APIView):
             'cover_image': cover_url,
             'original_format': format_ext,
             'uploader': request.user.id,
-            'status': Song.STATUS_PENDING,
+            'status': target_status,
         })
         if converted_url:
             clean['converted_audio_url'] = converted_url
@@ -7467,6 +7485,10 @@ class ArtistSongsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
+        if song.release_track_links.exclude(release__status=ArtistRelease.STATUS_DRAFT).exists():
+            return Response({
+                'detail': 'This recording belongs to a submitted or published release. Create an editable release revision instead.'
+            }, status=status.HTTP_409_CONFLICT)
 
         data = {}
         scalar_fields = {
@@ -7515,7 +7537,9 @@ class ArtistSongsManagementView(APIView):
                 return Response({'cover_image': ['Cover image must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
 
         # Validate metadata and relation changes before uploading replacement files.
-        preflight_data = {**data, 'status': Song.STATUS_PENDING}
+        save_as_draft = str(request.data.get('save_as_draft') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        target_status = Song.STATUS_DRAFT if save_as_draft else Song.STATUS_PENDING
+        preflight_data = {**data, 'status': target_status}
         if audio_file:
             preflight_data['audio_file'] = 'https://example.com/preflight-audio.mp3'
         if cover_image:
@@ -7587,15 +7611,40 @@ class ArtistSongsManagementView(APIView):
                 return Response({'cover_image': ['Cover image upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
             data['cover_image'] = cover_url
 
-        data['status'] = Song.STATUS_PENDING
-        serializer = SongSerializer(song, data=data, partial=partial, context={'request': request})
-        if serializer.is_valid():
+        data['status'] = target_status
+        # Final write is serialized with every release workspace containing this
+        # recording. This closes the rare race where another tab submits a
+        # release while a large replacement audio file is still uploading.
+        with transaction.atomic():
+            release_ids = list(
+                ArtistRelease.objects.filter(release_tracks__song_id=song.pk)
+                .values_list('pk', flat=True)
+                .distinct()
+            )
+            linked_releases = list(
+                ArtistRelease.objects.select_for_update()
+                .filter(pk__in=release_ids)
+                .order_by('pk')
+            )
+            if any(item.status != ArtistRelease.STATUS_DRAFT for item in linked_releases):
+                return Response({
+                    'detail': 'This recording was submitted or published while it was being edited. Reload the release before trying again.'
+                }, status=status.HTTP_409_CONFLICT)
+            locked_song = Song.objects.select_for_update().get(pk=song.pk, artist=artist)
+            serializer = SongSerializer(locked_song, data=data, partial=partial, context={'request': request})
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             serializer.save()
-            return Response({
-                "message": "OK",
-                "song": serializer.data
-            })
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            if release_ids:
+                ArtistRelease.objects.filter(pk__in=release_ids).update(
+                    validation_snapshot={},
+                    lock_version=F('lock_version') + 1,
+                    updated_at=timezone.now(),
+                )
+        return Response({
+            "message": "OK",
+            "song": serializer.data
+        })
 
     def delete(self, request, pk=None):
         """Delete a song record and try to remove related files from R2 (best-effort).
@@ -7607,6 +7656,14 @@ class ArtistSongsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
+        if song.release_track_links.exclude(release__status=ArtistRelease.STATUS_DRAFT).exists():
+            return Response({
+                'detail': 'This recording belongs to a submitted or published release and cannot be deleted.'
+            }, status=status.HTTP_409_CONFLICT)
+        if song.release_track_links.exists():
+            return Response({
+                'detail': 'Remove this recording from its release draft before deleting it.'
+            }, status=status.HTTP_409_CONFLICT)
 
         # Collect possible file URLs from the song
         file_urls = []

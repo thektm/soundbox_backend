@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, RegexValidator
 import os
+import uuid
 
 
 class UserManager(BaseUserManager):
@@ -538,6 +539,8 @@ class Song(models.Model):
     featured_artists = models.ManyToManyField(Artist, blank=True, related_name="featured_songs", help_text="Artists featured on this song")
     album = models.ForeignKey(Album, on_delete=models.SET_NULL, null=True, blank=True, related_name="songs")
     is_single = models.BooleanField(default=False)
+    album_disc_number = models.PositiveSmallIntegerField(default=1)
+    album_track_number = models.PositiveIntegerField(default=1)
 
     # Files (R2 CDN URLs)
     audio_file = models.URLField(max_length=500, help_text="R2 CDN URL for audio file")
@@ -1247,3 +1250,133 @@ class UserImageProfile(models.Model):
     def __str__(self):
         return f"ImageProfile for {self.user.phone_number} - {self.status}"
 
+
+
+class ReleaseContributor(models.Model):
+    """Reusable private credit profile owned by an artist."""
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name='release_contributors')
+    name = models.CharField(max_length=255)
+    name_en = models.CharField(max_length=255, blank=True, default='')
+    roles = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['artist', 'name'], name='uniq_release_contributor_artist_name'),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.artist})"
+
+
+class ArtistRelease(models.Model):
+    """Private release workspace and moderation lifecycle.
+
+    Public audience endpoints continue to read Album/Song.  This model is the
+    isolated artist/admin workflow which only materializes into those legacy
+    catalog models after approval/publication.
+    """
+    TYPE_SINGLE = 'single'
+    TYPE_EP = 'ep'
+    TYPE_ALBUM = 'album'
+    TYPE_COMPILATION = 'compilation'
+    TYPE_CHOICES = [
+        (TYPE_SINGLE, 'Single'),
+        (TYPE_EP, 'EP'),
+        (TYPE_ALBUM, 'Album'),
+        (TYPE_COMPILATION, 'Compilation'),
+    ]
+
+    STATUS_DRAFT = 'draft'
+    STATUS_IN_REVIEW = 'in_review'
+    STATUS_CHANGES_REQUESTED = 'changes_requested'
+    STATUS_APPROVED = 'approved'
+    STATUS_SCHEDULED = 'scheduled'
+    STATUS_LIVE = 'live'
+    STATUS_REJECTED = 'rejected'
+    STATUS_TAKEN_DOWN = 'taken_down'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Draft'),
+        (STATUS_IN_REVIEW, 'In review'),
+        (STATUS_CHANGES_REQUESTED, 'Changes requested'),
+        (STATUS_APPROVED, 'Approved'),
+        (STATUS_SCHEDULED, 'Scheduled'),
+        (STATUS_LIVE, 'Live'),
+        (STATUS_REJECTED, 'Rejected'),
+        (STATUS_TAKEN_DOWN, 'Taken down'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    artist = models.ForeignKey(Artist, on_delete=models.CASCADE, related_name='release_workspaces')
+    title = models.CharField(max_length=400, default='Untitled Release')
+    title_en = models.CharField(max_length=400, blank=True, default='')
+    release_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default=TYPE_ALBUM)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    previously_released = models.BooleanField(default=False)
+    current_step = models.PositiveSmallIntegerField(default=1)
+    shared_metadata = models.JSONField(default=dict, blank=True)
+    release_metadata = models.JSONField(default=dict, blank=True)
+    validation_snapshot = models.JSONField(default=dict, blank=True)
+    review_note = models.TextField(blank=True, default='')
+    admin_note = models.TextField(blank=True, default='')
+    lock_version = models.PositiveIntegerField(default=1)
+    source_release = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='derived_releases')
+    revision_number = models.PositiveIntegerField(default=1)
+    album = models.ForeignKey(Album, on_delete=models.SET_NULL, null=True, blank=True, related_name='release_workspaces')
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    taken_down_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['artist', 'status']),
+            models.Index(fields=['status', 'scheduled_at']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.title} [{self.status}]"
+
+
+class ArtistReleaseTrack(models.Model):
+    release = models.ForeignKey(ArtistRelease, on_delete=models.CASCADE, related_name='release_tracks')
+    song = models.ForeignKey(Song, on_delete=models.PROTECT, related_name='release_track_links')
+    source_song = models.ForeignKey(Song, on_delete=models.SET_NULL, null=True, blank=True, related_name='release_track_derivatives')
+    position = models.PositiveIntegerField(default=1)
+    extras = models.JSONField(default=dict, blank=True)
+    metadata_snapshot = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['position', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['release', 'song'], name='uniq_release_song'),
+            models.UniqueConstraint(fields=['release', 'position'], name='uniq_release_track_position'),
+        ]
+        indexes = [models.Index(fields=['release', 'position'])]
+
+    def __str__(self):
+        return f"{self.release}: {self.position}. {self.song.title}"
+
+
+class ArtistReleaseStatusHistory(models.Model):
+    release = models.ForeignKey(ArtistRelease, on_delete=models.CASCADE, related_name='status_history')
+    from_status = models.CharField(max_length=30, blank=True, default='')
+    to_status = models.CharField(max_length=30)
+    note = models.TextField(blank=True, default='')
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='release_status_changes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f"{self.release_id}: {self.from_status} -> {self.to_status}"
