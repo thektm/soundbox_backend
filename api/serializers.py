@@ -1287,40 +1287,9 @@ class AlbumSerializer(LocalizedModelSerializer):
     def get_genre_items(self, obj): return self._taxonomy_items(obj.genres)
     def get_sub_genre_items(self, obj): return self._taxonomy_items(obj.sub_genres)
     def get_mood_items(self, obj): return self._taxonomy_items(obj.moods)
-    def _release_track_order(self, obj):
-        cache = self.context.setdefault('_artist_release_track_orders', {})
-        if obj.artist_id not in cache:
-            orders = {}
-            user = getattr(obj.artist, 'user', None)
-            settings_value = getattr(user, 'settings', {}) if user else {}
-            store = settings_value.get('artist_release_composer_v1') if isinstance(settings_value, dict) else None
-            drafts = store.get('drafts') if isinstance(store, dict) else None
-            if isinstance(drafts, dict):
-                for release in drafts.values():
-                    if not isinstance(release, dict) or release.get('album_id') is None:
-                        continue
-                    try:
-                        album_id = int(release.get('album_id'))
-                    except (TypeError, ValueError):
-                        continue
-                    ordered_ids = []
-                    for value in release.get('materialized_track_ids') or release.get('track_ids') or []:
-                        try:
-                            value = int(value)
-                        except (TypeError, ValueError):
-                            continue
-                        if value > 0 and value not in ordered_ids:
-                            ordered_ids.append(value)
-                    orders[album_id] = {song_id: index for index, song_id in enumerate(ordered_ids)}
-            cache[obj.artist_id] = orders
-        return cache[obj.artist_id].get(obj.id, {})
-
     def _songs(self, obj):
-        songs = list(getattr(obj, '_detail_songs', None) or obj.songs.all())
-        order = self._release_track_order(obj)
-        if order:
-            songs.sort(key=lambda song: (order.get(song.id, len(order)), song.id))
-        return songs
+        songs = getattr(obj, '_detail_songs', None)
+        return list(songs if songs is not None else obj.songs.all())
     def get_songs(self, obj): return SongStreamSerializer(self._songs(obj), many=True, context=self.context).data
     def get_song_genre_names(self, obj): return sorted({localized_value(g, 'name', self.context.get('request')) for s in self._songs(obj) for g in s.genres.all()})
     def get_song_mood_names(self, obj): return sorted({localized_value(m, 'name', self.context.get('request')) for s in self._songs(obj) for m in s.moods.all()})
