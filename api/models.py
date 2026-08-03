@@ -728,7 +728,9 @@ class PlayCount(models.Model):
     country = models.CharField(max_length=100)
     city = models.CharField(max_length=100)
     ip = models.GenericIPAddressField()
-    pay = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
+    # Keep the same precision as PlayConfiguration. Using fewer decimal places
+    # here silently turned very small configured royalties into zero.
+    pay = models.DecimalField(max_digits=15, decimal_places=8, default='0.00000000')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

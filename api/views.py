@@ -126,6 +126,24 @@ from .release_service import mark_release_for_review, merged_release_metadata, m
 
 logger = logging.getLogger(__name__)
 
+FINANCE_QUANTUM = Decimal('0.00000001')
+
+
+def _finance_decimal(value):
+    return Decimal(str(value or 0)).quantize(FINANCE_QUANTUM)
+
+
+def _finance_string(value):
+    return format(_finance_decimal(value), 'f')
+
+
+def _finance_output_field():
+    return DecimalField(max_digits=20, decimal_places=8)
+
+
+def _finance_zero():
+    return Value(Decimal('0.00000000'), output_field=_finance_output_field())
+
 
 _ARTIST_UPLOAD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{16,96}$')
 
@@ -3703,12 +3721,13 @@ class PlayCountView(APIView):
 
             # Get latest configuration
             config = PlayConfiguration.objects.last()
-            pay_value = 0.000000
+            pay_value = Decimal('0.00000000')
             if config:
                 if request.user.plan == User.PLAN_PREMIUM:
                     pay_value = config.premium_play_worth
                 else:
                     pay_value = config.free_play_worth
+            pay_value = _finance_decimal(pay_value)
 
             play_count = PlayCount.objects.create(
                 user=request.user,
@@ -6600,9 +6619,9 @@ class ArtistHomeView(APIView):
                     'income_summary': inline_serializer(
                         name='IncomeSummary',
                         fields={
-                            'today': serializers.DecimalField(max_digits=10, decimal_places=6),
-                            'last_7_days': serializers.DecimalField(max_digits=10, decimal_places=6),
-                            'last_30_days': serializers.DecimalField(max_digits=10, decimal_places=6),
+                            'today': serializers.DecimalField(max_digits=12, decimal_places=8),
+                            'last_7_days': serializers.DecimalField(max_digits=12, decimal_places=8),
+                            'last_30_days': serializers.DecimalField(max_digits=12, decimal_places=8),
                             'growth': serializers.DictField(),
                         }
                     ),
@@ -6648,7 +6667,7 @@ class ArtistHomeView(APIView):
                 qs = qs.filter(created_at__lt=end_date)
 
             stats = qs.aggregate(
-                total_income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=10, decimal_places=6))),
+                total_income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=12, decimal_places=8))),
                 total_plays=Count('id')
             )
             return stats
@@ -6878,10 +6897,10 @@ class ArtistAnalyticsView(APIView):
             previous_followers = Follow.objects.filter(followed_artist=artist, created_at__gte=previous_start, created_at__lt=previous_end)
 
         current_income = current_plays.aggregate(total=Coalesce(
-            Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))
+            Sum('pay'), Value(0, output_field=DecimalField(max_digits=20, decimal_places=8))
         ))['total']
         previous_income = previous_plays.aggregate(total=Coalesce(
-            Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))
+            Sum('pay'), Value(0, output_field=DecimalField(max_digits=20, decimal_places=8))
         ))['total']
         current_play_count = current_plays.count()
         previous_play_count = previous_plays.count()
@@ -6926,7 +6945,7 @@ class ArtistAnalyticsView(APIView):
 
         plan_rows = current_plays.values('user__plan').annotate(
             count=Count('id'),
-            income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+            income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=20, decimal_places=8))),
         ).order_by('user__plan')
         plan_distribution = [{
             'plan': row['user__plan'] or User.PLAN_FREE,
@@ -6997,9 +7016,9 @@ class DepositRequestView(APIView):
             if active.exists():
                 return Response({"error": "You already have an active payout request."}, status=status.HTTP_400_BAD_REQUEST)
 
-            plays = PlayCount.objects.filter(songs__artist=artist)
+            plays = PlayCount.objects.filter(songs__artist=artist).distinct()
             total_credit = plays.aggregate(total=Coalesce(
-                Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))
+                Sum('pay'), _finance_zero()
             ))['total']
             reserved = DepositRequest.objects.filter(
                 artist=artist,
@@ -7050,8 +7069,9 @@ class ArtistWalletView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        total_credit = PlayCount.objects.filter(songs__artist=artist).aggregate(total=Coalesce(
-            Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))
+        plays = PlayCount.objects.filter(songs__artist=artist).distinct()
+        total_credit = plays.aggregate(total=Coalesce(
+            Sum('pay'), _finance_zero()
         ))['total']
         requests = DepositRequest.objects.filter(artist=artist)
         reserved = requests.filter(status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE]).aggregate(total=Coalesce(
@@ -7064,13 +7084,17 @@ class ArtistWalletView(APIView):
             Sum('amount'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=2))
         ))['total']
         available = max(Decimal('0'), total_credit - reserved)
+        withdrawable = available.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
 
         return Response({
-            'total_credit': total_credit,
-            'requested_credit': reserved,
-            'available_credit': available,
-            'withdrawn_credit': withdrawn,
-            'pending_credit': pending_amount,
+            'total_credit': _finance_string(total_credit),
+            'requested_credit': _finance_string(reserved),
+            'available_credit': _finance_string(available),
+            'withdrawable_credit': format(withdrawable, 'f'),
+            'withdrawn_credit': _finance_string(withdrawn),
+            'pending_credit': _finance_string(pending_amount),
+            'paid_plays': plays.filter(pay__gt=0).count(),
+            'zero_value_plays': plays.filter(pay=0).count(),
             'has_active_request': requests.filter(status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED]).exists(),
             'deposit_requests': {
                 'total_submissions': requests.count(),
@@ -7117,32 +7141,41 @@ class ArtistFinanceView(APIView):
         else:
             return Response({"error": "Invalid period."}, status=status.HTTP_400_BAD_REQUEST)
 
-        current = PlayCount.objects.filter(songs__artist=artist)
+        current = PlayCount.objects.filter(songs__artist=artist).distinct()
         if start:
             current = current.filter(created_at__gte=start)
         previous = PlayCount.objects.none()
         if previous_start and previous_end:
-            previous = PlayCount.objects.filter(songs__artist=artist, created_at__gte=previous_start, created_at__lt=previous_end)
+            previous = PlayCount.objects.filter(
+                songs__artist=artist,
+                created_at__gte=previous_start,
+                created_at__lt=previous_end,
+            ).distinct()
 
         def amount(qs):
-            return qs.aggregate(total=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))))['total']
+            return qs.aggregate(total=Coalesce(Sum('pay'), _finance_zero()))['total']
         income = amount(current)
         previous_income = amount(previous)
         plays = current.count()
         free = current.filter(user__plan=User.PLAN_FREE)
         premium = current.filter(user__plan=User.PLAN_PREMIUM)
+        pricing = PlayConfiguration.objects.order_by('-updated_at', '-pk').first()
         change = None if previous_income in (None, 0) else round(((float(income) - float(previous_income)) / float(previous_income)) * 100, 1)
 
         summary = {
             'income_change_pct': change,
-            'income_amount': income,
+            'income_amount': _finance_string(income),
             'currency': 'TOMAN',
             'plays_count': plays,
-            'average_revenue_per_play': (income / plays) if plays else 0,
-            'free_income': amount(free),
-            'premium_income': amount(premium),
+            'paid_plays': current.filter(pay__gt=0).count(),
+            'zero_value_plays': current.filter(pay=0).count(),
+            'average_revenue_per_play': _finance_string((income / plays) if plays else 0),
+            'free_income': _finance_string(amount(free)),
+            'premium_income': _finance_string(amount(premium)),
             'free_plays': free.count(),
             'premium_plays': premium.count(),
+            'current_free_play_rate': _finance_string(pricing.free_play_worth if pricing else 0),
+            'current_premium_play_rate': _finance_string(pricing.premium_play_worth if pricing else 0),
             'period': period,
         }
 
@@ -7154,16 +7187,16 @@ class ArtistFinanceView(APIView):
         else:
             trunc = TruncDate('created_at') if group == 'daily' else TruncWeek('created_at') if group == 'weekly' else TruncMonth('created_at')
             rows = current.annotate(period_bucket=trunc).values('period_bucket').annotate(
-                income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
-                free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
-                premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6))),
+                income=Coalesce(Sum('pay'), _finance_zero()),
+                free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), _finance_zero()),
+                premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), _finance_zero()),
                 plays=Count('id'),
             ).order_by('period_bucket')
             chart = [{
                 'time': row['period_bucket'].isoformat(),
-                'income': row['income'],
-                'free_income': row['free_income'],
-                'premium_income': row['premium_income'],
+                'income': _finance_string(row['income']),
+                'free_income': _finance_string(row['free_income']),
+                'premium_income': _finance_string(row['premium_income']),
                 'plays': row['plays'],
             } for row in rows]
         return Response({'summary': summary, 'chart': chart})
@@ -7202,8 +7235,10 @@ class ArtistFinanceSongsView(APIView):
         qs = Song.objects.filter(artist=artist).select_related(
             'artist', 'album', 'uploader'
         ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags').annotate(
-            play_counts_count=Count('play_counts'),
-            income=Coalesce(Sum('play_counts__pay'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=6)))
+            play_counts_count=Count('play_counts', distinct=True),
+            paid_plays=Count('play_counts', filter=Q(play_counts__pay__gt=0), distinct=True),
+            zero_value_plays=Count('play_counts', filter=Q(play_counts__pay=0), distinct=True),
+            income=Coalesce(Sum('play_counts__pay'), _finance_zero())
         ).annotate(
             total_plays=ExpressionWrapper(F('plays') + F('play_counts_count'), output_field=BigIntegerField())
         )
@@ -7223,10 +7258,16 @@ class ArtistFinanceSongsView(APIView):
             serializer = SongSerializer(page, many=True, context={'request': request})
             results = []
             for song_obj, song_data in zip(page, serializer.data):
+                tracked_plays = int(getattr(song_obj, 'play_counts_count', 0) or 0)
+                income = _finance_decimal(getattr(song_obj, 'income', 0))
                 results.append({
                     **song_data,
-                    'income': getattr(song_obj, 'income', 0),
-                    'total_plays': int(getattr(song_obj, 'total_plays', 0))
+                    'income': _finance_string(income),
+                    'total_plays': int(getattr(song_obj, 'total_plays', 0)),
+                    'tracked_plays': tracked_plays,
+                    'paid_plays': int(getattr(song_obj, 'paid_plays', 0) or 0),
+                    'zero_value_plays': int(getattr(song_obj, 'zero_value_plays', 0) or 0),
+                    'average_revenue_per_play': _finance_string((income / tracked_plays) if tracked_plays else 0),
                 })
             return paginator.get_paginated_response(results)
 
@@ -7236,10 +7277,16 @@ class ArtistFinanceSongsView(APIView):
         serializer = SongSerializer(songs, many=True, context={'request': request})
         results = []
         for song_obj, song_data in zip(songs, serializer.data):
+            tracked_plays = int(getattr(song_obj, 'play_counts_count', 0) or 0)
+            income = _finance_decimal(getattr(song_obj, 'income', 0))
             results.append({
                 **song_data,
-                'income': getattr(song_obj, 'income', 0),
-                'total_plays': int(getattr(song_obj, 'total_plays', 0))
+                'income': _finance_string(income),
+                'total_plays': int(getattr(song_obj, 'total_plays', 0)),
+                'tracked_plays': tracked_plays,
+                'paid_plays': int(getattr(song_obj, 'paid_plays', 0) or 0),
+                'zero_value_plays': int(getattr(song_obj, 'zero_value_plays', 0) or 0),
+                'average_revenue_per_play': _finance_string((income / tracked_plays) if tracked_plays else 0),
             })
         return Response(results)
 

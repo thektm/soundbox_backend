@@ -92,6 +92,7 @@ PY
 
 python manage.py ensure_guest_preview_schema
 python manage.py ensure_artist_release_schema
+python manage.py ensure_finance_precision_schema
 [ "${ENSURE_SEARCH_INDEXES_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_search_indexes || true
 
 if [ "${GENERATE_PREVIEWS_ON_STARTUP:-0}" = "1" ]; then
