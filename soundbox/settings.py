@@ -62,6 +62,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'api.middleware.ArtistPanelSignedR2Middleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -253,6 +254,8 @@ R2_SECRET_ACCESS_KEY = '8d458c9a3ec31490a533230ec43a3988d5aabdbb6a6d1f45fa169d04
 R2_BUCKET_NAME = 'sedabox'
 # CDN base used to build final download URLs. Ensure this matches your CDN configuration.
 R2_CDN_BASE = 'https://cdn.sedabox.com'
+ARTIST_API_PREFIX = os.environ.get('ARTIST_API_PREFIX', '/api/artist/')
+ARTIST_R2_SIGNED_URL_TTL = int(os.environ.get('ARTIST_R2_SIGNED_URL_TTL', '3600'))
 
 # SMS / Kavenegar settings
 SMS_PROVIDER = 'kavenegar'

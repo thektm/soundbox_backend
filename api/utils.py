@@ -5,7 +5,8 @@ import re
 import shutil
 import subprocess
 import tempfile
-from urllib.parse import quote, unquote
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import boto3
 from boto3.s3.transfer import TransferConfig
@@ -104,51 +105,89 @@ def make_safe_filename(s: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned).strip(' .-_')
     return cleaned[:180]
 
-def generate_signed_r2_url(object_key, expiration=3600):
-    """
-    Generate a short-lived signed URL for R2 object.
-    """
-    if not object_key:
-        return None
-        
-    # If it's already a full URL, extract the key if it's our CDN or R2 domain
-    cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-    if object_key.startswith(cdn_base):
-        object_key = unquote(object_key.replace(cdn_base + '/', ''))
-    elif 'r2.cloudflarestorage.com' in object_key or 'r2.dev' in object_key:
-        # Extract key from standard R2 structure (everything after the domain)
-        parts = object_key.split('/')
-        if len(parts) > 3:
-            object_key = unquote('/'.join(parts[3:]))
-    elif object_key.startswith('http'):
-        # External URL, return as is
-        return object_key
+def r2_object_key(value, *, allow_key=True):
+    """Return the object key for a Sedabox R2 reference, otherwise ``''``."""
+    if not value:
+        return ''
 
-    client_kwargs = {
-        'service_name': 's3',
-        'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
-        'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
-        'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
-        'config': Config(signature_version='s3v4'),
+    text = str(value).strip()
+    if not text:
+        return ''
+    if not text.startswith(('http://', 'https://')):
+        return unquote(text.lstrip('/')) if allow_key else ''
+
+    parsed = urlparse(text)
+    host = (parsed.hostname or '').lower()
+    configured_hosts = {
+        (urlparse(getattr(settings, 'R2_CDN_BASE', '')).hostname or '').lower(),
+        (urlparse(getattr(settings, 'R2_ENDPOINT_URL', '')).hostname or '').lower(),
     }
-    session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
-    if session_token:
-        client_kwargs['aws_session_token'] = session_token
-    
-    client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
-    s3 = boto3.client(**client_kwargs)
-    
-    bucket_name = getattr(settings, 'R2_BUCKET_NAME')
-    
+    is_r2_host = (
+        host in configured_hosts
+        or host.endswith('.r2.dev')
+        or host.endswith('.r2.cloudflarestorage.com')
+    )
+    if not host or not is_r2_host:
+        return ''
+
+    key = unquote(parsed.path.lstrip('/'))
+    bucket = str(getattr(settings, 'R2_BUCKET_NAME', '') or '').strip('/')
+    if bucket and key.startswith(f'{bucket}/'):
+        key = key[len(bucket) + 1:]
+    return key
+
+
+def _fresh_signed_r2_url(value, minimum_ttl=60):
+    """Return whether an R2 presigned URL remains usable beyond ``minimum_ttl``."""
     try:
-        signed_url = s3.generate_presigned_url(
+        query = parse_qs(urlparse(str(value)).query)
+        created = datetime.strptime(query['X-Amz-Date'][0], '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc)
+        expires = int(query['X-Amz-Expires'][0])
+        remaining = created.timestamp() + expires - datetime.now(timezone.utc).timestamp()
+        return 'X-Amz-Signature' in query and remaining > minimum_ttl
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def generate_signed_r2_url(object_key, expiration=3600):
+    """Generate a fresh short-lived GET URL for a Sedabox R2 object."""
+    key = r2_object_key(object_key)
+    if not key:
+        return str(object_key) if str(object_key or '').startswith(('http://', 'https://')) else None
+
+    try:
+        return _r2_client().generate_presigned_url(
             'get_object',
-            Params={'Bucket': bucket_name, 'Key': object_key},
-            ExpiresIn=expiration
+            Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': key},
+            ExpiresIn=max(60, min(int(expiration), 86400)),
         )
-        return signed_url
     except Exception:
+        logger.exception('Could not sign R2 object %s', key)
         return None
+
+
+def sign_r2_urls_in_payload(value, expiration=3600, *, strict=False):
+    """Recursively replace every R2 URL in a response payload with a signed URL."""
+    if isinstance(value, dict):
+        return {
+            key: sign_r2_urls_in_payload(item, expiration, strict=strict)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sign_r2_urls_in_payload(item, expiration, strict=strict) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sign_r2_urls_in_payload(item, expiration, strict=strict) for item in value)
+    if not isinstance(value, str) or not r2_object_key(value, allow_key=False):
+        return value
+    if _fresh_signed_r2_url(value):
+        return value
+
+    signed = generate_signed_r2_url(value, expiration=expiration)
+    if signed:
+        return signed
+    if strict:
+        raise MediaPipelineError('A private media link could not be authorized.', 'r2_signing_failed', 503)
+    return value
 
 class MediaPipelineError(Exception):
     def __init__(self, message, code='media_pipeline_failed', status_code=502):
@@ -190,16 +229,7 @@ def _r2_client():
 
 
 def _r2_key(value):
-    if not value:
-        return ''
-    value = str(value)
-    cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-    if value.startswith(cdn_base + '/'):
-        return unquote(value[len(cdn_base) + 1:])
-    if 'r2.cloudflarestorage.com' in value or 'r2.dev' in value:
-        parts = value.split('/', 3)
-        return unquote(parts[3]) if len(parts) == 4 else ''
-    return value if not value.startswith(('http://', 'https://')) else ''
+    return r2_object_key(value)
 
 
 def delete_file_from_r2(value):
