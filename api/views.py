@@ -121,6 +121,7 @@ from .recommendation_runtime import (
     fresh_order_ids, fresh_order_objects, fresh_select_ids,
     mark_generated_playlist_usage, remember_exposure,
 )
+from .release_service import mark_release_for_review, merged_release_metadata, merged_shared
 
 logger = logging.getLogger(__name__)
 
@@ -173,20 +174,62 @@ def _artist_panel_release_links_prefetch():
 
 
 def _apply_release_cover_fallback(song, payload):
-    """Use the linked release artwork when a recording has no own cover."""
-    if payload.get('cover_image'):
-        return payload
+    """Add artist-workflow context and use linked release artwork as fallback."""
     links = getattr(song, '_artist_panel_release_links', None)
     if links is None:
-        links = song.release_track_links.select_related('release').order_by('-release__updated_at', '-id')
-    for link in links:
-        cover = str((link.release.release_metadata or {}).get('cover_url') or '').strip()
-        if cover:
-            payload['cover_image'] = cover
-            payload['release_id'] = str(link.release_id)
-            payload['release_type'] = link.release.release_type
-            break
+        links = list(song.release_track_links.select_related('release').order_by('-release__updated_at', '-id'))
+    else:
+        links = list(links)
+    payload['linked_release_ids'] = [str(link.release_id) for link in links]
+    payload['linked_release_statuses'] = list(dict.fromkeys(link.release.status for link in links))
+    payload['requires_reapproval'] = (
+        song.status in {Song.STATUS_APPROVED, Song.STATUS_PUBLISHED}
+        or any(link.release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW} for link in links)
+    )
+    if not payload.get('cover_image'):
+        for link in links:
+            cover = str((link.release.release_metadata or {}).get('cover_url') or '').strip()
+            if cover:
+                payload['cover_image'] = cover
+                payload['release_id'] = str(link.release_id)
+                payload['release_type'] = link.release.release_type
+                break
     return payload
+
+
+def _sync_release_from_artist_song(release, song, *, cover_changed=False):
+    """Keep release-owned metadata authoritative after a direct song edit."""
+    shared = dict(release.shared_metadata or {})
+    shared.update({
+        'language': song.language or 'fa',
+        'label': song.label or '',
+        'label_en': song.label_en or '',
+        'genre_ids': list(song.genres.values_list('id', flat=True)),
+        'sub_genre_ids': list(song.sub_genres.values_list('id', flat=True)),
+        'mood_ids': list(song.moods.values_list('id', flat=True)),
+        'tag_ids': list(song.tags.values_list('id', flat=True)),
+        'producers': list(song.producers or []),
+        'producers_en': list(song.producers_en or []),
+        'composers': list(song.composers or []),
+        'composers_en': list(song.composers_en or []),
+        'lyricists': list(song.lyricists or []),
+        'lyricists_en': list(song.lyricists_en or []),
+    })
+    release.shared_metadata = merged_shared(shared)
+    metadata = merged_release_metadata(release.release_metadata, release.artist_id)
+    if song.release_date:
+        metadata['release_date'] = song.release_date.isoformat()
+    if cover_changed and song.cover_image:
+        metadata['cover_url'] = song.cover_image
+    release.release_metadata = metadata
+    if release.release_type == ArtistRelease.TYPE_SINGLE:
+        release.title = song.title
+        release.title_en = song.title_en or ''
+    release.validation_snapshot = {}
+    release.save(update_fields=[
+        'title', 'title_en', 'shared_metadata', 'release_metadata',
+        'validation_snapshot', 'updated_at',
+    ])
 
 
 def _serialize_artist_songs(songs, request):
@@ -7620,9 +7663,19 @@ class ArtistSongsManagementView(APIView):
             return Response({
                 'detail': 'Deleted recordings are read-only so their stream and payment history stays intact.'
             }, status=status.HTTP_409_CONFLICT)
-        if song.release_track_links.exclude(release__status=ArtistRelease.STATUS_DRAFT).exists():
+        linked_release_rows = list(
+            song.release_track_links.select_related('release').order_by('release_id')
+        )
+        requires_reapproval = (
+            song.status in {Song.STATUS_APPROVED, Song.STATUS_PUBLISHED}
+            or any(link.release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW} for link in linked_release_rows)
+        )
+        confirmed_reapproval = str(request.data.get('confirm_re_review') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        if requires_reapproval and not confirmed_reapproval:
             return Response({
-                'detail': 'This recording belongs to a submitted or published release. Create an editable release revision instead.'
+                'detail': 'Saving these changes will return the song and its release to pending review.',
+                'code': 'release_reapproval_required',
+                'release_ids': [str(link.release_id) for link in linked_release_rows],
             }, status=status.HTTP_409_CONFLICT)
 
         data = {}
@@ -7723,10 +7776,15 @@ class ArtistSongsManagementView(APIView):
                     .filter(pk__in=release_ids)
                     .order_by('pk')
                 )
-                if any(item.status != ArtistRelease.STATUS_DRAFT for item in linked_releases):
+                now_requires_reapproval = (
+                    song.status in {Song.STATUS_APPROVED, Song.STATUS_PUBLISHED}
+                    or any(item.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW} for item in linked_releases)
+                )
+                if now_requires_reapproval and not confirmed_reapproval:
                     cleanup_r2_urls(new_urls)
                     return Response({
-                        'detail': 'This recording was submitted or published while it was being edited. Reload the release before trying again.'
+                        'detail': 'The song or release status changed while editing. Confirm review again and retry.',
+                        'code': 'release_reapproval_required',
                     }, status=status.HTTP_409_CONFLICT)
 
                 locked_song = Song.objects.select_for_update().get(pk=song.pk, artist=artist)
@@ -7734,13 +7792,25 @@ class ArtistSongsManagementView(APIView):
                 if not serializer.is_valid():
                     cleanup_r2_urls(new_urls)
                     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-                serializer.save()
-                if release_ids:
-                    ArtistRelease.objects.filter(pk__in=release_ids).update(
-                        validation_snapshot={},
-                        lock_version=F('lock_version') + 1,
-                        updated_at=timezone.now(),
-                    )
+                saved_song = serializer.save()
+                for linked_release in linked_releases:
+                    _sync_release_from_artist_song(linked_release, saved_song, cover_changed=bool(cover_image))
+                    if linked_release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW}:
+                        mark_release_for_review(
+                            linked_release, actor=request.user, all_tracks=True,
+                            note='Artist edited release-owned song metadata; approval is required again.',
+                        )
+                    elif linked_release.status == ArtistRelease.STATUS_IN_REVIEW:
+                        Song.objects.filter(release_track_links__release=linked_release).exclude(
+                            status=Song.STATUS_DELETED
+                        ).update(status=Song.STATUS_PENDING)
+                        ArtistRelease.objects.filter(pk=linked_release.pk).update(
+                            validation_snapshot={}, lock_version=F('lock_version') + 1, updated_at=timezone.now(),
+                        )
+                    else:
+                        ArtistRelease.objects.filter(pk=linked_release.pk).update(
+                            validation_snapshot={}, lock_version=F('lock_version') + 1, updated_at=timezone.now(),
+                        )
         except MediaPipelineError as exc:
             cleanup_r2_urls(new_urls)
             payload = {stage: [str(exc)], 'code': exc.code} if stage != 'detail' else {'detail': str(exc), 'code': exc.code}

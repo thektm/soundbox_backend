@@ -25,9 +25,11 @@ from .models import (
 )
 from .release_service import (
     apply_track_metadata,
+    approve_release,
     change_status,
     create_revision,
     ensure_editable_song,
+    mark_release_for_review,
     materialize_release,
     merged_release_metadata,
     merged_shared,
@@ -104,12 +106,20 @@ def _touch_release(release: ArtistRelease, *, clear_validation: bool = True) -> 
 
 
 def _draft_or_409(release):
-    if release.status != ArtistRelease.STATUS_DRAFT:
+    if release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW}:
         return Response(
-            {'detail': 'This release is locked. Create an editable revision to make changes.'},
+            {
+                'detail': 'Confirm editing to return this release and its affected tracks to review.',
+                'code': 'release_reapproval_required',
+            },
             status=status.HTTP_409_CONFLICT,
         )
     return None
+
+
+def _confirmed_reapproval(data) -> bool:
+    value = data.get('confirm_re_review') if hasattr(data, 'get') else None
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _cleanup_unreferenced_release_media(urls):
@@ -378,12 +388,28 @@ class ArtistReleaseDetailView(APIView):
             return Response({'detail': 'Artist profile not found.'}, status=status.HTTP_404_NOT_FOUND)
         with transaction.atomic():
             release = ArtistRelease.objects.select_for_update().get(pk=release.pk, artist_id=release.artist_id)
-            locked = _draft_or_409(release)
-            if locked:
-                return locked
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
+
+            if str(request.data.get('reopen_for_edit') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+                if release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW}:
+                    if not _confirmed_reapproval(request.data):
+                        return Response({
+                            'detail': 'Editing will return this release and its affected songs to pending review.',
+                            'code': 'release_reapproval_required',
+                        }, status=status.HTTP_409_CONFLICT)
+                    mark_release_for_review(
+                        release, actor=request.user, all_tracks=True,
+                        note='Artist reopened the release for editing; approval is required again.',
+                    )
+                release = release_queryset().get(pk=release.pk)
+                return Response(serialize_release(release, request, include_history=True))
+
+            locked = _draft_or_409(release)
+            if locked:
+                return locked
+
             allowed = {'title', 'title_en', 'release_type', 'previously_released', 'current_step'}
             for field in allowed:
                 if field not in request.data:
@@ -403,11 +429,9 @@ class ArtistReleaseDetailView(APIView):
                     except (TypeError, ValueError):
                         value = 1
                 elif field == 'previously_released':
-                    if isinstance(value, str):
-                        value = value.strip().lower() in {'1', 'true', 'yes', 'on'}
-                    else:
-                        value = bool(value)
+                    value = value.strip().lower() in {'1', 'true', 'yes', 'on'} if isinstance(value, str) else bool(value)
                 setattr(release, field, value)
+
             if 'shared_metadata' in request.data:
                 incoming_shared = request.data.get('shared_metadata')
                 if not isinstance(incoming_shared, dict):
@@ -415,6 +439,7 @@ class ArtistReleaseDetailView(APIView):
                 shared = dict(release.shared_metadata or {})
                 shared.update(incoming_shared)
                 release.shared_metadata = merged_shared(shared)
+
             if 'release_metadata' in request.data:
                 incoming_metadata = request.data.get('release_metadata')
                 if not isinstance(incoming_metadata, dict):
@@ -423,8 +448,8 @@ class ArtistReleaseDetailView(APIView):
                 metadata = dict(release.release_metadata or {})
                 metadata.update(incoming_metadata)
                 release.release_metadata = merged_release_metadata(metadata, release.artist_id)
-                # Artist artwork must pass the dedicated image validation/upload endpoint.
                 release.release_metadata['cover_url'] = existing_cover
+
             if 'track_extras' in request.data:
                 if not isinstance(request.data.get('track_extras'), dict):
                     return Response({'track_extras': ['Provide an object keyed by song ID.']}, status=status.HTTP_400_BAD_REQUEST)
@@ -436,10 +461,14 @@ class ArtistReleaseDetailView(APIView):
                         combined_extras.update(value)
                         link.extras = normalize_track_extras(combined_extras, link.position)
                         link.save(update_fields=['extras', 'updated_at'])
+
             release.validation_snapshot = {}
             release.lock_version += 1
             release.save()
             sync_release_tracks(release)
+            if release.status == ArtistRelease.STATUS_IN_REVIEW:
+                Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_PENDING)
+
         return Response(serialize_release(release_queryset().get(pk=release.pk), request))
 
     put = patch
@@ -596,6 +625,8 @@ class ArtistReleaseTracksView(APIView):
                         position=position,
                         extras={},
                     )
+                    if release.status == ArtistRelease.STATUS_IN_REVIEW and editable_song.status != Song.STATUS_DELETED:
+                        Song.objects.filter(pk=editable_song.pk).update(status=Song.STATUS_PENDING)
                 if candidates:
                     sync_release_tracks(release)
                     _touch_release(release)
@@ -739,9 +770,11 @@ class ArtistReleaseArtworkView(APIView):
         release = get_object_or_404(release_queryset(), pk=pk, artist=artist) if artist else None
         if not release:
             return Response({'detail': 'Artist profile not found.'}, status=status.HTTP_404_NOT_FOUND)
-        locked = _draft_or_409(release)
-        if locked:
-            return locked
+        if release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW} and not _confirmed_reapproval(request.data):
+            return Response({
+                'detail': 'Changing artwork will return the release and its songs to pending review.',
+                'code': 'release_reapproval_required',
+            }, status=status.HTTP_409_CONFLICT)
         conflict = _lock_version_error(release, request.data)
         if conflict:
             return conflict
@@ -770,14 +803,22 @@ class ArtistReleaseArtworkView(APIView):
         try:
             with transaction.atomic():
                 release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=release.pk, artist=artist)
-                locked = _draft_or_409(release)
-                if locked:
-                    cleanup_r2_urls([url])
-                    return locked
                 conflict = _lock_version_error(release, request.data)
                 if conflict:
                     cleanup_r2_urls([url])
                     return conflict
+                if release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW}:
+                    if not _confirmed_reapproval(request.data):
+                        cleanup_r2_urls([url])
+                        return Response({
+                            'detail': 'Changing artwork requires review confirmation.',
+                            'code': 'release_reapproval_required',
+                        }, status=status.HTTP_409_CONFLICT)
+                    mark_release_for_review(
+                        release, actor=request.user, all_tracks=True,
+                        note='Artist changed release artwork; approval is required again.',
+                    )
+                    release = ArtistRelease.objects.select_for_update().get(pk=release.pk)
                 metadata = merged_release_metadata(release.release_metadata, release.artist_id)
                 old_url = str(metadata.get('cover_url') or '')
                 metadata['cover_url'] = url
@@ -785,6 +826,10 @@ class ArtistReleaseArtworkView(APIView):
                 release.lock_version += 1
                 release.validation_snapshot = {}
                 release.save(update_fields=['release_metadata', 'lock_version', 'validation_snapshot', 'updated_at'])
+                if release.status == ArtistRelease.STATUS_IN_REVIEW:
+                    Song.objects.filter(release_track_links__release=release).exclude(
+                        status=Song.STATUS_DELETED
+                    ).update(status=Song.STATUS_PENDING)
         except Exception:
             cleanup_r2_urls([url])
             logger.exception('Release artwork save failed release=%s user=%s', pk, request.user.pk)
@@ -831,9 +876,11 @@ class ArtistReleaseSubmitView(APIView):
         with transaction.atomic():
             locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk, artist=artist)
             release = release_queryset().get(pk=locked_release.pk)
-            locked = _draft_or_409(release)
-            if locked:
-                return locked
+            if release.status != ArtistRelease.STATUS_DRAFT:
+                return Response(
+                    {'detail': 'This release is already under review.', 'code': 'release_already_in_review'},
+                    status=status.HTTP_409_CONFLICT,
+                )
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
@@ -1054,8 +1101,7 @@ class AdminReleaseActionView(APIView):
                 ).update(status=Song.STATUS_REJECTED)
                 change_status(release, ArtistRelease.STATUS_REJECTED, actor=request.user, note=note or 'Release rejected by admin.')
             elif action == 'approve':
-                release = prepare_release(release, schedule=False)
-                change_status(release, ArtistRelease.STATUS_APPROVED, actor=request.user, note=note or 'Release approved.')
+                release = approve_release(release, actor=request.user, note=note)
             elif action == 'schedule':
                 scheduled_at = scheduled_datetime(release)
                 if not scheduled_at or scheduled_at <= timezone.now():

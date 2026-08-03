@@ -739,6 +739,130 @@ def take_down_release(release: ArtistRelease) -> None:
             Song.objects.filter(pk__in=release_song_ids, album=album).update(album=None, is_single=False)
 
 
+def mark_release_for_review(
+    release: ArtistRelease,
+    *,
+    actor=None,
+    note: str = '',
+    song_ids: list[int] | tuple[int, ...] | None = None,
+    all_tracks: bool = True,
+) -> ArtistRelease:
+    """Return an edited release to review without breaking shared published songs.
+
+    Release-level edits move every release-owned recording to pending. A targeted
+    song edit only moves that recording. Published source recordings reused by
+    another live release are preserved; release additions use editable copies.
+    """
+    links = ArtistReleaseTrack.objects.select_for_update().filter(release=release)
+    if song_ids is not None:
+        links = links.filter(song_id__in=list(song_ids))
+    elif not all_tracks:
+        links = links.none()
+
+    for song_id in links.values_list('song_id', flat=True):
+        song = Song.objects.select_for_update().get(pk=song_id)
+        if song.status == Song.STATUS_DELETED:
+            continue
+        shared_live = (
+            song.status == Song.STATUS_PUBLISHED
+            and ArtistReleaseTrack.objects.filter(song_id=song_id, release__status=ArtistRelease.STATUS_LIVE)
+            .exclude(release=release)
+            .exists()
+        )
+        if not shared_live:
+            Song.objects.filter(pk=song_id).update(status=Song.STATUS_PENDING)
+
+    release.submitted_at = timezone.now()
+    release.scheduled_at = None
+    release.validation_snapshot = {}
+    release.save(update_fields=['submitted_at', 'scheduled_at', 'validation_snapshot', 'updated_at'])
+    review_note = note or 'Artist changes require another review.'
+    if release.status != ArtistRelease.STATUS_IN_REVIEW:
+        change_status(release, ArtistRelease.STATUS_IN_REVIEW, actor=actor, note=review_note)
+    else:
+        release.review_note = review_note
+        release.lock_version += 1
+        release.save(update_fields=['review_note', 'lock_version', 'updated_at'])
+    return release
+
+
+def approve_release(release: ArtistRelease, *, actor=None, note: str = '') -> ArtistRelease:
+    """Approve a new release, or republish an edited release that was live before."""
+    if release.published_at:
+        release = materialize_release(release, publish=True)
+        change_status(
+            release, ArtistRelease.STATUS_LIVE, actor=actor,
+            note=note or 'Edited release approved and republished.',
+        )
+    else:
+        release = prepare_release(release, schedule=False)
+        change_status(
+            release, ArtistRelease.STATUS_APPROVED, actor=actor,
+            note=note or 'Release approved.',
+        )
+    return release
+
+
+def set_release_status_from_admin(
+    release: ArtistRelease,
+    target_status: str,
+    *,
+    actor=None,
+    note: str = 'Status changed in Django admin.',
+) -> ArtistRelease:
+    """Apply a manually selected admin status and synchronize every linked song."""
+    if target_status not in dict(ArtistRelease.STATUS_CHOICES):
+        raise ValueError('Invalid release status.')
+
+    if target_status in {ArtistRelease.STATUS_APPROVED, ArtistRelease.STATUS_SCHEDULED, ArtistRelease.STATUS_LIVE}:
+        sync_release_tracks(release)
+        release = release_queryset().get(pk=release.pk)
+        validation = validation_payload(release)
+        release.validation_snapshot = validation
+        release.save(update_fields=['validation_snapshot', 'updated_at'])
+        if not validation['valid']:
+            messages = '; '.join(item.get('message', 'Invalid release') for item in validation.get('errors', [])[:5])
+            raise ValueError(messages or 'Release validation failed.')
+
+    if target_status == ArtistRelease.STATUS_DRAFT:
+        if release.status == ArtistRelease.STATUS_LIVE:
+            take_down_release(release)
+            release = ArtistRelease.objects.select_for_update().get(pk=release.pk)
+        Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_DRAFT)
+        release.submitted_at = None
+        release.scheduled_at = None
+        release.validation_snapshot = {}
+        release.save(update_fields=['submitted_at', 'scheduled_at', 'validation_snapshot', 'updated_at'])
+        change_status(release, target_status, actor=actor, note=note)
+    elif target_status == ArtistRelease.STATUS_IN_REVIEW:
+        mark_release_for_review(release, actor=actor, note=note, all_tracks=True)
+    elif target_status == ArtistRelease.STATUS_CHANGES_REQUESTED:
+        Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_PENDING)
+        change_status(release, target_status, actor=actor, note=note)
+    elif target_status == ArtistRelease.STATUS_REJECTED:
+        Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_REJECTED)
+        change_status(release, target_status, actor=actor, note=note)
+    elif target_status == ArtistRelease.STATUS_APPROVED:
+        release = approve_release(release, actor=actor, note=note)
+    elif target_status == ArtistRelease.STATUS_SCHEDULED:
+        scheduled_at = scheduled_datetime(release)
+        if not scheduled_at or scheduled_at <= timezone.now():
+            raise ValueError('Scheduled releases require a future release date.')
+        release = prepare_release(release, schedule=True)
+        change_status(release, target_status, actor=actor, note=note)
+    elif target_status == ArtistRelease.STATUS_LIVE:
+        release = materialize_release(release, publish=True)
+        change_status(release, target_status, actor=actor, note=note)
+    elif target_status == ArtistRelease.STATUS_TAKEN_DOWN:
+        if release.status == ArtistRelease.STATUS_LIVE:
+            take_down_release(release)
+            release = ArtistRelease.objects.select_for_update().get(pk=release.pk)
+        else:
+            Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_APPROVED)
+        change_status(release, target_status, actor=actor, note=note)
+    return release_queryset().get(pk=release.pk)
+
+
 def publish_due_releases(limit=50) -> int:
     now = timezone.now()
     queryset = ArtistRelease.objects.filter(
