@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from PIL import Image
 from django.db import transaction
 from django.db.models import Q
@@ -37,10 +38,13 @@ from .release_service import (
     scheduled_datetime,
     serialize_release,
     snapshot_song,
+    sync_release_tracks,
     take_down_release,
     validation_payload,
 )
-from .utils import upload_file_to_r2
+from .utils import MediaPipelineError, cleanup_r2_urls, upload_file_to_r2
+
+logger = logging.getLogger(__name__)
 
 
 def _artist_for_user(user):
@@ -360,6 +364,7 @@ class ArtistReleaseDetailView(APIView):
             release.validation_snapshot = {}
             release.lock_version += 1
             release.save()
+            sync_release_tracks(release)
         return Response(serialize_release(release_queryset().get(pk=release.pk), request))
 
     put = patch
@@ -410,14 +415,9 @@ class ArtistReleaseTracksView(APIView):
                 link_map = {item.song_id: item for item in links}
                 for offset, song_id in enumerate(ordered_ids, start=1):
                     ArtistReleaseTrack.objects.filter(pk=link_map[song_id].pk).update(position=1000 + offset)
-                disc_counts = {}
                 for offset, song_id in enumerate(ordered_ids, start=1):
-                    link = link_map[song_id]
-                    extras = normalize_track_extras(link.extras, offset)
-                    disc = extras['disc_number']
-                    disc_counts[disc] = disc_counts.get(disc, 0) + 1
-                    extras['track_number'] = disc_counts[disc]
-                    ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=offset, extras=extras)
+                    ArtistReleaseTrack.objects.filter(pk=link_map[song_id].pk).update(position=offset)
+                sync_release_tracks(release)
                 _touch_release(release)
             elif action == 'add':
                 song_ids = _id_list(request.data.get('song_ids'))
@@ -445,9 +445,10 @@ class ArtistReleaseTracksView(APIView):
                         song=editable_song,
                         source_song=source,
                         position=position,
-                        extras={'disc_number': 1, 'track_number': position},
+                        extras={},
                     )
                 if candidates:
+                    sync_release_tracks(release)
                     _touch_release(release)
             else:
                 return Response({'action': ['Choose add or reorder.']}, status=status.HTTP_400_BAD_REQUEST)
@@ -482,13 +483,9 @@ class ArtistReleaseTracksView(APIView):
             for index, link in enumerate(links, start=1):
                 if link.position != index:
                     ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=1000 + index)
-            disc_counts = {}
             for index, link in enumerate(links, start=1):
-                extras = normalize_track_extras(link.extras, index)
-                disc = extras['disc_number']
-                disc_counts[disc] = disc_counts.get(disc, 0) + 1
-                extras['track_number'] = disc_counts[disc]
-                ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index, extras=extras)
+                ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
+            sync_release_tracks(release)
             _touch_release(release)
 
         return Response(serialize_release(release_queryset().get(pk=release.pk), request))
@@ -502,6 +499,18 @@ class ArtistReleaseBulkMetadataView(APIView):
         artist = _artist_for_user(request.user)
         if not artist:
             return Response({'detail': 'Artist profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+        metadata = request.data.get('metadata')
+        song_ids = _id_list(request.data.get('song_ids'))
+        if not isinstance(metadata, dict) or not song_ids:
+            return Response(
+                {'detail': 'Provide handwritten metadata and at least one release track.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if 'rows' in request.data or 'copy_from_song_id' in request.data:
+            return Response(
+                {'detail': 'File import and metadata copying are no longer supported. Enter metadata manually.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk, artist=artist)
@@ -511,45 +520,16 @@ class ArtistReleaseBulkMetadataView(APIView):
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
-            links = list(ArtistReleaseTrack.objects.select_for_update().select_related('song').filter(release=release))
-            link_map = {item.song_id: item for item in links}
-            rows = request.data.get('rows')
-            updated_count = 0
-            if isinstance(rows, list):
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    try:
-                        song_id = int(row.get('song_id') or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if song_id not in link_map or not isinstance(row.get('metadata'), dict):
-                        continue
-                    apply_track_metadata(link_map[song_id].song, row['metadata'])
-                    updated_count += 1
-            else:
-                song_ids = _id_list(request.data.get('song_ids'))
-                copy_from = request.data.get('copy_from_song_id')
-                if copy_from:
-                    try:
-                        source_id = int(copy_from)
-                    except (TypeError, ValueError):
-                        return Response({'copy_from_song_id': ['Choose a valid source track.']}, status=status.HTTP_400_BAD_REQUEST)
-                    if source_id not in link_map:
-                        return Response({'copy_from_song_id': ['Source track is not in this release.']}, status=status.HTTP_400_BAD_REQUEST)
-                    source = link_map[source_id].song
-                    metadata = snapshot_song(source)
-                    for key in ('audio_file', 'converted_audio_url', 'preview_audio_url', 'cover_image', 'original_format', 'duration_seconds'):
-                        metadata.pop(key, None)
-                else:
-                    metadata = request.data.get('metadata')
-                    if not isinstance(metadata, dict):
-                        return Response({'metadata': ['Provide metadata or copy_from_song_id.']}, status=status.HTTP_400_BAD_REQUEST)
-                for song_id in song_ids:
-                    if song_id in link_map:
-                        apply_track_metadata(link_map[song_id].song, metadata)
-                        updated_count += 1
-            if not updated_count:
+            links = {
+                item.song_id: item
+                for item in ArtistReleaseTrack.objects.select_for_update().select_related('song').filter(
+                    release=release, song_id__in=song_ids
+                )
+            }
+            for song_id in song_ids:
+                if song_id in links:
+                    apply_track_metadata(links[song_id].song, metadata)
+            if not links:
                 return Response({'detail': 'No matching release tracks were updated.'}, status=status.HTTP_400_BAD_REQUEST)
             _touch_release(release)
 
@@ -588,26 +568,40 @@ class ArtistReleaseArtworkView(APIView):
             return Response({'cover_image': ['Artwork is damaged or unreadable.']}, status=status.HTTP_400_BAD_REQUEST)
         if width != height:
             return Response({'cover_image': ['Artwork must be square.']}, status=status.HTTP_400_BAD_REQUEST)
-        if width < 1000:
-            return Response({'cover_image': ['Artwork must be at least 1000 × 1000 pixels.']}, status=status.HTTP_400_BAD_REQUEST)
         try:
             url, _ = upload_file_to_r2(image_file, folder='covers/releases')
+        except MediaPipelineError as exc:
+            return Response({'cover_image': [str(exc)], 'code': exc.code}, status=exc.status_code)
+
+        old_url = ''
+        try:
+            with transaction.atomic():
+                release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=release.pk, artist=artist)
+                locked = _draft_or_409(release)
+                if locked:
+                    cleanup_r2_urls([url])
+                    return locked
+                conflict = _lock_version_error(release, request.data)
+                if conflict:
+                    cleanup_r2_urls([url])
+                    return conflict
+                metadata = merged_release_metadata(release.release_metadata, release.artist_id)
+                old_url = str(metadata.get('cover_url') or '')
+                metadata['cover_url'] = url
+                release.release_metadata = metadata
+                release.lock_version += 1
+                release.validation_snapshot = {}
+                release.save(update_fields=['release_metadata', 'lock_version', 'validation_snapshot', 'updated_at'])
         except Exception:
-            return Response({'cover_image': ['Artwork upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
-        with transaction.atomic():
-            release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=release.pk, artist=artist)
-            locked = _draft_or_409(release)
-            if locked:
-                return locked
-            conflict = _lock_version_error(release, request.data)
-            if conflict:
-                return conflict
-            metadata = merged_release_metadata(release.release_metadata, release.artist_id)
-            metadata['cover_url'] = url
-            release.release_metadata = metadata
-            release.lock_version += 1
-            release.validation_snapshot = {}
-            release.save(update_fields=['release_metadata', 'lock_version', 'validation_snapshot', 'updated_at'])
+            cleanup_r2_urls([url])
+            logger.exception('Release artwork save failed release=%s user=%s', pk, request.user.pk)
+            return Response(
+                {'detail': 'Artwork uploaded but could not be attached to the release.', 'code': 'artwork_save_failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if old_url and old_url != url and not ArtistRelease.objects.filter(release_metadata__cover_url=old_url).exists():
+            cleanup_r2_urls([old_url])
         return Response(serialize_release(release_queryset().get(pk=release.pk), request))
 
 
@@ -620,10 +614,13 @@ class ArtistReleaseValidateView(APIView):
         if not artist:
             return Response({'detail': 'Artist profile not found.'}, status=status.HTTP_404_NOT_FOUND)
         with transaction.atomic():
-            release = get_object_or_404(release_queryset().select_for_update(), pk=pk, artist=artist)
+            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk, artist=artist)
+            release = release_queryset().get(pk=locked_release.pk)
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
+            sync_release_tracks(release)
+            release = release_queryset().get(pk=release.pk)
             validation = validation_payload(release)
             release.validation_snapshot = validation
             release.save(update_fields=['validation_snapshot', 'updated_at'])
@@ -639,13 +636,16 @@ class ArtistReleaseSubmitView(APIView):
         if not artist:
             return Response({'detail': 'Artist profile not found.'}, status=status.HTTP_404_NOT_FOUND)
         with transaction.atomic():
-            release = get_object_or_404(release_queryset().select_for_update(), pk=pk, artist=artist)
+            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk, artist=artist)
+            release = release_queryset().get(pk=locked_release.pk)
             locked = _draft_or_409(release)
             if locked:
                 return locked
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
+            sync_release_tracks(release)
+            release = release_queryset().get(pk=release.pk)
             validation = validation_payload(release)
             release.validation_snapshot = validation
             release.save(update_fields=['validation_snapshot', 'updated_at'])
@@ -837,13 +837,16 @@ class AdminReleaseActionView(APIView):
         }
 
         with transaction.atomic():
-            release = get_object_or_404(release_queryset().select_for_update(), pk=pk)
+            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk)
+            release = release_queryset().get(pk=locked_release.pk)
             if release.status not in transitions[action]:
                 return Response({
                     'detail': f"Action '{action}' is not allowed while the release is '{release.status}'."
                 }, status=status.HTTP_409_CONFLICT)
 
             if action in {'approve', 'schedule', 'publish'}:
+                sync_release_tracks(release)
+                release = release_queryset().get(pk=release.pk)
                 validation = validation_payload(release)
                 release.validation_snapshot = validation
                 release.save(update_fields=['validation_snapshot', 'updated_at'])

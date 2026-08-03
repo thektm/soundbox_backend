@@ -3,6 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
+import logging
 import re
 import uuid
 from decimal import Decimal, ROUND_DOWN
@@ -83,8 +84,8 @@ from django.core.cache import cache
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
 from .utils import (
-    absolute_api_url, upload_file_to_r2, generate_signed_r2_url,
-    get_audio_info, convert_to_128kbps,
+    MediaPipelineError, absolute_api_url, cleanup_r2_urls, convert_to_128kbps,
+    generate_signed_r2_url, get_audio_info, upload_audio_variants, upload_file_to_r2,
 )
 from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
@@ -121,6 +122,8 @@ from .recommendation_runtime import (
     mark_generated_playlist_usage, remember_exposure,
 )
 
+logger = logging.getLogger(__name__)
+
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -146,6 +149,15 @@ def _song_card_queryset():
     return Song.objects.filter(status=Song.STATUS_PUBLISHED).select_related(
         'artist', 'album', 'uploader'
     ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+
+
+def _cleanup_unreferenced_song_media(urls):
+    for url in dict.fromkeys(value for value in urls if value):
+        if Song.objects.filter(
+            Q(audio_file=url) | Q(converted_audio_url=url) | Q(cover_image=url)
+        ).exists():
+            continue
+        cleanup_r2_urls([url])
 
 
 def _touch_user_history(user, content_type, **target):
@@ -7401,66 +7413,48 @@ class ArtistSongsManagementView(APIView):
             return Response(preflight_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         artist_name = artist.artistic_name or artist.name
-        featured_artists = Artist.objects.filter(id__in=featured_ids).only('name', 'artistic_name')
-        featured_names = [item.artistic_name or item.name for item in featured_artists]
-        duration, bitrate, format_ext = get_audio_info(audio_file)
-        format_ext = format_ext or extension.lstrip('.')
-        filename_base = f"{artist_name} - {title}"
-        if featured_names:
-            filename_base += f" (feat. {', '.join(featured_names)})"
-        safe_filename_base = make_safe_filename(filename_base)
+        filename_title = str(clean.get('title_en') or title).strip()
+        filename_base = f"{artist_name} - {filename_title}"
 
+        uploaded_urls = []
+        stage = 'audio_file'
         try:
-            if hasattr(audio_file, 'seek'):
-                audio_file.seek(0)
-            audio_url, _ = upload_file_to_r2(
-                audio_file,
-                folder='songs',
-                custom_filename=f'{safe_filename_base}.{format_ext}',
-            )
-        except Exception:
-            return Response({'audio_file': ['Audio upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
+            variants = upload_audio_variants(audio_file, filename_base)
+            uploaded_urls.extend(filter(None, [variants['audio_file'], variants['converted_audio_url']]))
 
-        converted_url = None
-        if format_ext != 'mp3' or bitrate is None or bitrate > 128:
-            try:
-                if hasattr(audio_file, 'seek'):
-                    audio_file.seek(0)
-                converted_file = convert_to_128kbps(audio_file)
-                converted_url, _ = upload_file_to_r2(
-                    converted_file,
-                    folder='songs/128',
-                    custom_filename=f'{safe_filename_base}_128.mp3',
-                )
-            except Exception:
-                # The original file remains usable and can be converted later.
-                pass
-
-        cover_url = ''
-        if cover_image:
-            try:
-                if hasattr(cover_image, 'seek'):
-                    cover_image.seek(0)
+            cover_url = ''
+            if cover_image:
+                stage = 'cover_image'
                 cover_url, _ = upload_file_to_r2(cover_image, folder='covers')
-            except Exception:
-                return Response({'cover_image': ['Cover image upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
+                uploaded_urls.append(cover_url)
 
-        clean.update({
-            'audio_file': audio_url,
-            'cover_image': cover_url,
-            'original_format': format_ext,
-            'uploader': request.user.id,
-            'status': target_status,
-        })
-        if converted_url:
-            clean['converted_audio_url'] = converted_url
-        if duration is not None:
-            clean['duration_seconds'] = duration
-
-        serializer = SongSerializer(data=clean, context={'request': request})
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        serializer.save(artist=artist)
+            clean.update({
+                'audio_file': variants['audio_file'],
+                'converted_audio_url': variants['converted_audio_url'],
+                'cover_image': cover_url,
+                'original_format': variants['original_format'],
+                'duration_seconds': variants['duration_seconds'],
+                'uploader': request.user.id,
+                'status': target_status,
+            })
+            stage = 'detail'
+            serializer = SongSerializer(data=clean, context={'request': request})
+            if not serializer.is_valid():
+                cleanup_r2_urls(uploaded_urls)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            with transaction.atomic():
+                serializer.save(artist=artist)
+        except MediaPipelineError as exc:
+            cleanup_r2_urls(uploaded_urls)
+            payload = {stage: [str(exc)], 'code': exc.code} if stage != 'detail' else {'detail': str(exc), 'code': exc.code}
+            return Response(payload, status=exc.status_code)
+        except Exception:
+            cleanup_r2_urls(uploaded_urls)
+            logger.exception('Artist song upload failed for user=%s', request.user.pk)
+            return Response(
+                {'detail': 'The song could not be saved after upload.', 'code': 'song_save_failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         return Response({"message": "OK", "song": serializer.data}, status=status.HTTP_201_CREATED)
 
     @extend_schema(
@@ -7548,103 +7542,78 @@ class ArtistSongsManagementView(APIView):
         if not preflight_serializer.is_valid():
             return Response(preflight_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        if audio_file:
-            title = data.get('title', song.title)
-            artist_name = artist.artistic_name or artist.name
+        new_urls = []
+        old_urls = []
+        stage = 'audio_file'
+        try:
+            if audio_file:
+                title = str(data.get('title', song.title) or '').strip()
+                title_en = str(data['title_en'] if 'title_en' in data else song.title_en or '').strip()
+                filename_base = f"{artist.artistic_name or artist.name} - {title_en or title}"
 
-            # For filename, we prefer IDs if provided, else current relation
-            featured_ids = data.get('featured_artist_ids')
-            featured_names = []
-            if featured_ids is not None:
-                featured_names = list(Artist.objects.filter(id__in=featured_ids).values_list('artistic_name', flat=True))
-                # Fallback to name if artistic_name is empty
-                if not any(featured_names):
-                    featured_names = list(Artist.objects.filter(id__in=featured_ids).values_list('name', flat=True))
-            else:
-                featured_names = list(song.featured_artists.values_list('artistic_name', flat=True))
-                if not any(featured_names):
-                    featured_names = list(song.featured_artists.values_list('name', flat=True))
+                variants = upload_audio_variants(audio_file, filename_base)
+                new_urls.extend(filter(None, [variants['audio_file'], variants['converted_audio_url']]))
+                old_urls.extend(filter(None, [song.audio_file, song.converted_audio_url]))
+                data.update({
+                    'audio_file': variants['audio_file'],
+                    'converted_audio_url': variants['converted_audio_url'],
+                    'duration_seconds': variants['duration_seconds'],
+                    'original_format': variants['original_format'],
+                })
 
-            featured_names = [n for n in featured_names if n]
-
-            duration, bitrate, format_ext = get_audio_info(audio_file)
-            if not format_ext:
-                _, ext = os.path.splitext(audio_file.name)
-                format_ext = ext.lstrip('.').lower()
-
-            # Build filename base and sanitize
-            if featured_names:
-                filename_base = f"{artist_name} - {title} (feat. {', '.join(featured_names)})"
-            else:
-                filename_base = f"{artist_name} - {title}"
-            safe_filename_base = make_safe_filename(filename_base)
-            audio_filename = f"{safe_filename_base}.{format_ext}"
-
-            try:
-                if hasattr(audio_file, 'seek'):
-                    audio_file.seek(0)
-                audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=audio_filename)
-            except Exception:
-                return Response({'audio_file': ['Audio upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
-            data['audio_file'] = audio_url
-            data['duration_seconds'] = duration
-            data['original_format'] = format_ext
-
-            if format_ext != 'mp3' or bitrate is None or bitrate > 128:
-                try:
-                    if hasattr(audio_file, 'seek'):
-                        audio_file.seek(0)
-                    converted_file = convert_to_128kbps(audio_file)
-                    conv_filename = f"{safe_filename_base}_128.mp3"
-                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs/128', custom_filename=conv_filename)
-                    data['converted_audio_url'] = converted_url
-                except Exception:
-                    # The original upload is valid; conversion can be retried asynchronously.
-                    pass
-
-        if cover_image:
-            try:
-                if hasattr(cover_image, 'seek'):
-                    cover_image.seek(0)
+            if cover_image:
+                stage = 'cover_image'
                 cover_url, _ = upload_file_to_r2(cover_image, folder='covers')
-            except Exception:
-                return Response({'cover_image': ['Cover image upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
-            data['cover_image'] = cover_url
+                new_urls.append(cover_url)
+                if song.cover_image:
+                    old_urls.append(song.cover_image)
+                data['cover_image'] = cover_url
 
-        data['status'] = target_status
-        # Final write is serialized with every release workspace containing this
-        # recording. This closes the rare race where another tab submits a
-        # release while a large replacement audio file is still uploading.
-        with transaction.atomic():
-            release_ids = list(
-                ArtistRelease.objects.filter(release_tracks__song_id=song.pk)
-                .values_list('pk', flat=True)
-                .distinct()
-            )
-            linked_releases = list(
-                ArtistRelease.objects.select_for_update()
-                .filter(pk__in=release_ids)
-                .order_by('pk')
-            )
-            if any(item.status != ArtistRelease.STATUS_DRAFT for item in linked_releases):
-                return Response({
-                    'detail': 'This recording was submitted or published while it was being edited. Reload the release before trying again.'
-                }, status=status.HTTP_409_CONFLICT)
-            locked_song = Song.objects.select_for_update().get(pk=song.pk, artist=artist)
-            serializer = SongSerializer(locked_song, data=data, partial=partial, context={'request': request})
-            if not serializer.is_valid():
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            serializer.save()
-            if release_ids:
-                ArtistRelease.objects.filter(pk__in=release_ids).update(
-                    validation_snapshot={},
-                    lock_version=F('lock_version') + 1,
-                    updated_at=timezone.now(),
+            stage = 'detail'
+            data['status'] = target_status
+            with transaction.atomic():
+                release_ids = list(
+                    ArtistRelease.objects.filter(release_tracks__song_id=song.pk)
+                    .values_list('pk', flat=True)
+                    .distinct()
                 )
-        return Response({
-            "message": "OK",
-            "song": serializer.data
-        })
+                linked_releases = list(
+                    ArtistRelease.objects.select_for_update()
+                    .filter(pk__in=release_ids)
+                    .order_by('pk')
+                )
+                if any(item.status != ArtistRelease.STATUS_DRAFT for item in linked_releases):
+                    cleanup_r2_urls(new_urls)
+                    return Response({
+                        'detail': 'This recording was submitted or published while it was being edited. Reload the release before trying again.'
+                    }, status=status.HTTP_409_CONFLICT)
+
+                locked_song = Song.objects.select_for_update().get(pk=song.pk, artist=artist)
+                serializer = SongSerializer(locked_song, data=data, partial=partial, context={'request': request})
+                if not serializer.is_valid():
+                    cleanup_r2_urls(new_urls)
+                    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                serializer.save()
+                if release_ids:
+                    ArtistRelease.objects.filter(pk__in=release_ids).update(
+                        validation_snapshot={},
+                        lock_version=F('lock_version') + 1,
+                        updated_at=timezone.now(),
+                    )
+        except MediaPipelineError as exc:
+            cleanup_r2_urls(new_urls)
+            payload = {stage: [str(exc)], 'code': exc.code} if stage != 'detail' else {'detail': str(exc), 'code': exc.code}
+            return Response(payload, status=exc.status_code)
+        except Exception:
+            cleanup_r2_urls(new_urls)
+            logger.exception('Artist song update failed song=%s user=%s', song.pk, request.user.pk)
+            return Response(
+                {'detail': 'The recording update failed and no replacement file was kept.', 'code': 'song_update_failed'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        _cleanup_unreferenced_song_media(old_urls)
+        return Response({"message": "OK", "song": serializer.data})
 
     def delete(self, request, pk=None):
         """Delete a song record and try to remove related files from R2 (best-effort).
