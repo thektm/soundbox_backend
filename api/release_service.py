@@ -212,8 +212,10 @@ def _track_completion(song: Song, extras: dict) -> tuple[int, list[str]]:
     return max(0, round((total - len(missing)) / total * 100)), missing
 
 
-def serialize_track(link: ArtistReleaseTrack, request=None) -> dict:
+def serialize_track(link: ArtistReleaseTrack, request=None, fallback_cover="") -> dict:
     data = dict(SongSerializer(link.song, context={'request': request}).data)
+    if not data.get('cover_image') and fallback_cover:
+        data['cover_image'] = fallback_cover
     completion, missing = _track_completion(link.song, link.extras or {})
     data.update({
         'has_audio': bool(link.song.audio_file),
@@ -408,7 +410,7 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
         'status': release.status,
         'current_step': release.current_step,
         'track_ids': [link.song_id for link in links],
-        'tracks': [serialize_track(link, request) for link in links],
+        'tracks': [serialize_track(link, request, metadata.get('cover_url')) for link in links],
         'shared_metadata': merged_shared(release.shared_metadata),
         'release_metadata': metadata,
         'track_extras': {str(link.song_id): normalize_track_extras(link.extras, link.position) for link in links},

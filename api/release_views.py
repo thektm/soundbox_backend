@@ -112,6 +112,23 @@ def _draft_or_409(release):
     return None
 
 
+def _cleanup_unreferenced_release_media(urls):
+    """Remove release media only after every database reference is gone."""
+    for url in dict.fromkeys(value for value in urls if value):
+        if Song.objects.filter(
+            Q(audio_file=url) |
+            Q(converted_audio_url=url) |
+            Q(preview_audio_url=url) |
+            Q(cover_image=url)
+        ).exists():
+            continue
+        if Album.objects.filter(cover_image=url).exists():
+            continue
+        if ArtistRelease.objects.filter(release_metadata__cover_url=url).exists():
+            continue
+        cleanup_r2_urls([url])
+
+
 def _legacy_track(song):
     return {
         'id': song.id,
@@ -397,17 +414,53 @@ class ArtistReleaseDetailView(APIView):
         artist = _artist_for_user(request.user)
         if not artist:
             return Response({'detail': 'Artist profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        media_urls = []
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk, artist=artist)
-            locked = _draft_or_409(release)
-            if locked:
-                return locked
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
-            song_ids = list(release.release_tracks.values_list('song_id', flat=True))
+
+            links = list(
+                ArtistReleaseTrack.objects.select_for_update()
+                .select_related('song')
+                .filter(release=release)
+            )
+            song_ids = [link.song_id for link in links]
+            shared_song_ids = set(
+                ArtistReleaseTrack.objects.filter(song_id__in=song_ids)
+                .exclude(release=release)
+                .values_list('song_id', flat=True)
+            )
+            delete_song_ids = [song_id for song_id in song_ids if song_id not in shared_song_ids]
+
+            raw_cover = str((release.release_metadata or {}).get('cover_url') or '')
+            if raw_cover:
+                media_urls.append(raw_cover)
+            for link in links:
+                if link.song_id not in delete_song_ids:
+                    continue
+                media_urls.extend(filter(None, [
+                    link.song.audio_file,
+                    link.song.converted_audio_url,
+                    link.song.preview_audio_url,
+                    link.song.cover_image,
+                ]))
+
+            album = release.album
+            ArtistReleaseTrack.objects.filter(release=release).delete()
+            if delete_song_ids:
+                Song.objects.filter(pk__in=delete_song_ids).delete()
             release.delete()
-            Song.objects.filter(id__in=song_ids).exclude(release_track_links__isnull=False).update(status=Song.STATUS_DRAFT)
+
+            if album and not album.songs.exists():
+                if album.cover_image:
+                    media_urls.append(album.cover_image)
+                album.delete()
+
+            transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_release_media(values))
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

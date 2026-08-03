@@ -8,7 +8,7 @@ import re
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from .models import (
-    User, Artist, Album, ArtistRelease, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song,
+    User, Artist, Album, ArtistRelease, ArtistReleaseTrack, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song,
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, SocialPlatform, DownloadHistory,
@@ -154,10 +154,45 @@ def _song_card_queryset():
 def _cleanup_unreferenced_song_media(urls):
     for url in dict.fromkeys(value for value in urls if value):
         if Song.objects.filter(
-            Q(audio_file=url) | Q(converted_audio_url=url) | Q(cover_image=url)
+            Q(audio_file=url) | Q(converted_audio_url=url) | Q(preview_audio_url=url) | Q(cover_image=url)
         ).exists():
             continue
+        if Album.objects.filter(cover_image=url).exists():
+            continue
+        if ArtistRelease.objects.filter(release_metadata__cover_url=url).exists():
+            continue
         cleanup_r2_urls([url])
+
+
+def _artist_panel_release_links_prefetch():
+    return Prefetch(
+        'release_track_links',
+        queryset=ArtistReleaseTrack.objects.select_related('release').order_by('-release__updated_at', '-id'),
+        to_attr='_artist_panel_release_links',
+    )
+
+
+def _apply_release_cover_fallback(song, payload):
+    """Use the linked release artwork when a recording has no own cover."""
+    if payload.get('cover_image'):
+        return payload
+    links = getattr(song, '_artist_panel_release_links', None)
+    if links is None:
+        links = song.release_track_links.select_related('release').order_by('-release__updated_at', '-id')
+    for link in links:
+        cover = str((link.release.release_metadata or {}).get('cover_url') or '').strip()
+        if cover:
+            payload['cover_image'] = cover
+            payload['release_id'] = str(link.release_id)
+            payload['release_type'] = link.release.release_type
+            break
+    return payload
+
+
+def _serialize_artist_songs(songs, request):
+    songs = list(songs)
+    data = list(SongSerializer(songs, many=True, context={'request': request}).data)
+    return [_apply_release_cover_fallback(song, item) for song, item in zip(songs, data)]
 
 
 def _touch_user_history(user, content_type, **target):
@@ -7224,7 +7259,10 @@ class ArtistSongsManagementView(APIView):
 
         queryset = Song.objects.filter(artist=artist).select_related(
             'artist', 'album', 'uploader'
-        ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+        ).prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags',
+            _artist_panel_release_links_prefetch(),
+        )
 
         if pk:
             song = get_object_or_404(queryset, pk=pk)
@@ -7272,8 +7310,10 @@ class ArtistSongsManagementView(APIView):
                     'percentage': round(percentage, 2)
                 })
 
-            serializer = SongSerializer(song, context={'request': request})
-            data = serializer.data
+            data = _apply_release_cover_fallback(
+                song,
+                dict(SongSerializer(song, context={'request': request}).data),
+            )
             data['analytics'] = {
                 'days': days,
                 'total_period_plays': total_period_plays,
@@ -7319,13 +7359,11 @@ class ArtistSongsManagementView(APIView):
         page = paginator.paginate_queryset(queryset, request)
         if page is not None:
             hydrate_song_metrics(page, request.user)
-            serializer = SongSerializer(page, many=True, context={'request': request})
-            return paginator.get_paginated_response(serializer.data)
+            return paginator.get_paginated_response(_serialize_artist_songs(page, request))
 
         songs = list(queryset)
         hydrate_song_metrics(songs, request.user)
-        serializer = SongSerializer(songs, many=True, context={'request': request})
-        return Response(serializer.data)
+        return Response(_serialize_artist_songs(songs, request))
 
     @extend_schema(
         summary="آپلود آهنگ جدید",
@@ -7616,86 +7654,44 @@ class ArtistSongsManagementView(APIView):
         return Response({"message": "OK", "song": serializer.data})
 
     def delete(self, request, pk=None):
-        """Delete a song record and try to remove related files from R2 (best-effort).
-
-        Returns OK if the DB record is removed regardless of R2 deletion success.
-        """
+        """Delete a recording without ever deleting its parent release."""
         artist = self.get_artist(request.user)
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
-        song = get_object_or_404(Song, pk=pk, artist=artist)
-        if song.release_track_links.exclude(release__status=ArtistRelease.STATUS_DRAFT).exists():
-            return Response({
-                'detail': 'This recording belongs to a submitted or published release and cannot be deleted.'
-            }, status=status.HTTP_409_CONFLICT)
-        if song.release_track_links.exists():
-            return Response({
-                'detail': 'Remove this recording from its release draft before deleting it.'
-            }, status=status.HTTP_409_CONFLICT)
+        media_urls = []
+        with transaction.atomic():
+            song = get_object_or_404(Song.objects.select_for_update(), pk=pk, artist=artist)
+            links = list(
+                ArtistReleaseTrack.objects.select_for_update()
+                .select_related('release')
+                .filter(song=song)
+            )
+            locked_links = [link for link in links if link.release.status != ArtistRelease.STATUS_DRAFT]
+            if locked_links:
+                return Response({
+                    'detail': 'This recording belongs to a submitted or published release. Delete that release to remove both; the release itself was not changed.'
+                }, status=status.HTTP_409_CONFLICT)
 
-        # Collect possible file URLs from the song
-        file_urls = []
-        for field in ('audio_file', 'converted_audio_url', 'cover_image'):
-            val = getattr(song, field, None)
-            if val:
-                file_urls.append(val)
-
-        # Helper to extract object key from CDN/R2 URLs (similar to utils.generate_signed_r2_url)
-        from urllib.parse import unquote
-        cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
-
-        client_kwargs = {
-            'service_name': 's3',
-            'endpoint_url': getattr(settings, 'R2_ENDPOINT_URL', None),
-            'aws_access_key_id': getattr(settings, 'R2_ACCESS_KEY_ID', None),
-            'aws_secret_access_key': getattr(settings, 'R2_SECRET_ACCESS_KEY', None),
-            'config': Config(signature_version='s3v4'),
-        }
-        session_token = getattr(settings, 'R2_SESSION_TOKEN', None)
-        if session_token:
-            client_kwargs['aws_session_token'] = session_token
-        client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
-
-        s3 = None
-        tried_delete = []
-        for url in file_urls:
-            key = None
-            try:
-                if url.startswith(cdn_base):
-                    key = unquote(url.replace(cdn_base + '/', ''))
-                elif 'r2.cloudflarestorage.com' in url or 'r2.dev' in url:
-                    parts = url.split('/')
-                    if len(parts) > 3:
-                        key = unquote('/'.join(parts[3:]))
-                elif url.startswith('http'):
-                    # External URL not in our R2; skip deletion
-                    key = None
-
-                if not key:
-                    continue
-
-                # Lazy-create client
-                if s3 is None:
-                    s3 = boto3.client(**client_kwargs)
-
-                bucket = getattr(settings, 'R2_BUCKET_NAME')
-                try:
-                    s3.delete_object(Bucket=bucket, Key=key)
-                    tried_delete.append(key)
-                except Exception as e:
-                    # Best-effort: log and continue
-                    print(f"DEBUG: Failed to delete R2 object {key}: {e}")
-            except Exception as e:
-                print(f"DEBUG: Error while attempting to parse/delete URL {url}: {e}")
-
-        # Delete DB record regardless of R2 deletion outcome
-        try:
+            media_urls.extend(filter(None, [
+                song.audio_file,
+                song.converted_audio_url,
+                song.preview_audio_url,
+                song.cover_image,
+            ]))
+            release_ids = [link.release_id for link in links]
+            if links:
+                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in links]).delete()
+                ArtistRelease.objects.filter(pk__in=release_ids).update(
+                    validation_snapshot={},
+                    lock_version=F('lock_version') + 1,
+                    updated_at=timezone.now(),
+                )
             song.delete()
-        except Exception as e:
-            return Response({"error": "Failed to delete song record", "detail": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
 
-        return Response({"message": "OK", "deleted_files": tried_delete})
+        return Response({"message": "OK"})
+
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
