@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -251,9 +252,12 @@ def cleanup_r2_urls(values):
 
 def upload_file_to_r2(file_obj, folder='', custom_filename=None, bitrate_label=None, check_existing=True):
     """Upload a file to R2 and return ``(cdn_url, original_extension)``."""
-    original_filename = os.path.basename(getattr(file_obj, 'name', None) or 'upload')
+    raw_name = getattr(file_obj, 'name', None)
+    if not isinstance(raw_name, (str, bytes, os.PathLike)):
+        raw_name = 'upload'
+    original_filename = os.path.basename(raw_name or 'upload')
     filename = os.path.basename(custom_filename or original_filename)
-    custom_base, custom_ext = os.path.splitext(filename)
+    _, custom_ext = os.path.splitext(filename)
     _, original_ext = os.path.splitext(original_filename)
     if not custom_ext and original_ext:
         filename += original_ext
@@ -394,8 +398,17 @@ def get_audio_info(file_path_or_obj):
                 pass
 
 
-def upload_audio_variants(file_obj, filename_base):
-    """Upload the source and, when source quality exceeds 128 kbps, a 128 kbps MP3."""
+def upload_audio_variants(file_obj, filename_base, stage_callback=None):
+    """Validate audio, create the 128 kbps variant, and upload both files to R2."""
+    def notify(stage):
+        if not stage_callback:
+            return
+        try:
+            stage_callback(stage)
+        except Exception:
+            logger.exception('Audio upload stage callback failed at %s', stage)
+
+    notify('analyzing')
     duration, bitrate, audio_format = get_audio_info(file_obj)
     if not duration or audio_format not in {'mp3', 'wav'}:
         raise MediaPipelineError('The audio file is damaged or cannot be decoded.', 'invalid_audio', 400)
@@ -404,26 +417,54 @@ def upload_audio_variants(file_obj, filename_base):
     uploaded = []
     converted = None
     try:
-        original_url, _ = upload_file_to_r2(
-            file_obj,
-            folder='songs',
-            custom_filename=f'{safe_base}.{audio_format}',
-        )
-        uploaded.append(original_url)
-
-        converted_url = None
-        if audio_format != 'mp3' or bitrate is None or bitrate > 128:
+        needs_conversion = audio_format != 'mp3' or bitrate is None or bitrate > 128
+        if needs_conversion:
+            notify('converting_128')
             converted = convert_to_128kbps(file_obj)
-            converted_url, _ = upload_file_to_r2(
-                converted,
-                folder='songs/128',
-                custom_filename=f'{safe_base}_128.mp3',
-            )
-            uploaded.append(converted_url)
 
+        notify('uploading_r2')
+        jobs = {
+            'audio_file': (
+                file_obj,
+                'songs',
+                f'{safe_base}.{audio_format}',
+            ),
+        }
+        if converted:
+            jobs['converted_audio_url'] = (
+                converted,
+                'songs/128',
+                f'{safe_base}_128.mp3',
+            )
+
+        results = {'converted_audio_url': None}
+        errors = []
+        with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
+            futures = {
+                executor.submit(
+                    upload_file_to_r2,
+                    file_value,
+                    folder=folder,
+                    custom_filename=filename,
+                ): field
+                for field, (file_value, folder, filename) in jobs.items()
+            }
+            for future in as_completed(futures):
+                field = futures[future]
+                try:
+                    url, _ = future.result()
+                    results[field] = url
+                    uploaded.append(url)
+                except Exception as exc:
+                    errors.append(exc)
+
+        if errors:
+            raise errors[0]
+
+        notify('saving')
         return {
-            'audio_file': original_url,
-            'converted_audio_url': converted_url,
+            'audio_file': results['audio_file'],
+            'converted_audio_url': results['converted_audio_url'],
             'duration_seconds': duration,
             'original_format': audio_format,
             'source_bitrate_kbps': bitrate,
@@ -439,3 +480,4 @@ def upload_audio_variants(file_obj, filename_base):
                 file_obj.seek(0)
             except Exception:
                 pass
+

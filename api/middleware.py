@@ -1,6 +1,19 @@
 from django.conf import settings
+from django.http import HttpResponseBadRequest
 
 from .utils import MediaPipelineError, sign_r2_urls_in_payload
+
+
+class RejectProxyConnectMiddleware:
+    """Reject public open-proxy probes before Django evaluates their fake Host."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.method.upper() == 'CONNECT':
+            return HttpResponseBadRequest('Unsupported request method.')
+        return self.get_response(request)
 
 
 class ArtistPanelSignedR2Middleware:

@@ -56,6 +56,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
+    'api.middleware.RejectProxyConnectMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
@@ -256,6 +257,7 @@ R2_BUCKET_NAME = 'sedabox'
 R2_CDN_BASE = 'https://cdn.sedabox.com'
 ARTIST_API_PREFIX = os.environ.get('ARTIST_API_PREFIX', '/api/artist/')
 ARTIST_R2_SIGNED_URL_TTL = int(os.environ.get('ARTIST_R2_SIGNED_URL_TTL', '3600'))
+ARTIST_UPLOAD_RECOVERY_TTL = int(os.environ.get('ARTIST_UPLOAD_RECOVERY_TTL', '3600'))
 
 # SMS / Kavenegar settings
 SMS_PROVIDER = 'kavenegar'

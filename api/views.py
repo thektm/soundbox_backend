@@ -126,6 +126,39 @@ from .release_service import mark_release_for_review, merged_release_metadata, m
 logger = logging.getLogger(__name__)
 
 
+_ARTIST_UPLOAD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{16,96}$')
+
+
+def _artist_upload_id(value):
+    token = str(value or '').strip()
+    return token if _ARTIST_UPLOAD_ID_RE.fullmatch(token) else ''
+
+
+def _artist_upload_cache_key(user_id, upload_id):
+    return f'artist-song-upload:{user_id}:{upload_id}'
+
+
+def _set_artist_upload_state(user_id, upload_id, state, **extra):
+    if not upload_id:
+        return
+    payload = {
+        'state': state,
+        'updated_at': timezone.now().isoformat(),
+        **extra,
+    }
+    cache.set(
+        _artist_upload_cache_key(user_id, upload_id),
+        payload,
+        timeout=int(getattr(settings, 'ARTIST_UPLOAD_RECOVERY_TTL', 3600)),
+    )
+
+
+def _get_artist_upload_state(user_id, upload_id):
+    if not upload_id:
+        return None
+    return cache.get(_artist_upload_cache_key(user_id, upload_id))
+
+
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20
@@ -7363,6 +7396,46 @@ class ArtistChangePasswordView(APIView):
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
+class ArtistSongUploadStatusView(APIView):
+    """Recover an upload result when an intermediary drops the original response."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, upload_id):
+        token = _artist_upload_id(upload_id)
+        if not token:
+            return Response({'detail': 'Invalid upload identifier.', 'code': 'invalid_upload_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        state = _get_artist_upload_state(request.user.id, token)
+        if not state:
+            return Response({'state': 'missing'}, status=status.HTTP_404_NOT_FOUND)
+
+        if state.get('state') != 'done':
+            return Response(state)
+
+        try:
+            artist = request.user.artist_profile
+        except Artist.DoesNotExist:
+            return Response({'detail': 'Artist profile not found.', 'code': 'artist_not_found'}, status=status.HTTP_404_NOT_FOUND)
+
+        song = Song.objects.filter(pk=state.get('song_id'), artist=artist).select_related(
+            'artist', 'album', 'uploader'
+        ).prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags',
+            _artist_panel_release_links_prefetch(),
+        ).first()
+        if not song:
+            return Response({'state': 'failed', 'detail': 'The uploaded recording could not be found.', 'code': 'upload_result_missing'})
+
+        return Response({
+            **state,
+            'song': _apply_release_cover_fallback(
+                song,
+                dict(SongSerializer(song, context={'request': request}).data),
+            ),
+        })
+
+
+@extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistSongsManagementView(APIView):
     """
     View for artists to manage their own songs.
@@ -7530,6 +7603,29 @@ class ArtistSongsManagementView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
+        raw_upload_id = request.data.get('upload_id')
+        upload_id = _artist_upload_id(raw_upload_id)
+        if raw_upload_id and not upload_id:
+            return Response({'upload_id': ['Invalid upload identifier.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        previous = _get_artist_upload_state(request.user.id, upload_id)
+        if previous and previous.get('state') == 'done':
+            existing = Song.objects.filter(pk=previous.get('song_id'), artist=artist).first()
+            if existing:
+                return Response({
+                    'message': 'OK',
+                    'recovered': True,
+                    'song': _apply_release_cover_fallback(
+                        existing,
+                        dict(SongSerializer(existing, context={'request': request}).data),
+                    ),
+                })
+        if previous and previous.get('state') == 'processing':
+            return Response(
+                {'detail': 'This upload is already being processed.', 'code': 'upload_processing'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         audio_file = request.FILES.get('audio_file')
         cover_image = request.FILES.get('cover_image')
         title = str(request.data.get('title') or '').strip()
@@ -7598,8 +7694,31 @@ class ArtistSongsManagementView(APIView):
 
         uploaded_urls = []
         stage = 'audio_file'
+        _set_artist_upload_state(
+            request.user.id,
+            upload_id,
+            'processing',
+            stage='analyzing',
+            message='The server is validating and processing the audio.',
+        )
+
+        def report_stage(current_stage):
+            messages = {
+                'analyzing': 'The server is validating the audio.',
+                'converting_128': 'The server is creating the 128 kbps version.',
+                'uploading_r2': 'The server is storing both audio qualities in R2.',
+                'saving': 'The server is saving the recording.',
+            }
+            _set_artist_upload_state(
+                request.user.id,
+                upload_id,
+                'processing',
+                stage=current_stage,
+                message=messages.get(current_stage, 'The server is processing the recording.'),
+            )
+
         try:
-            variants = upload_audio_variants(audio_file, filename_base)
+            variants = upload_audio_variants(audio_file, filename_base, stage_callback=report_stage)
             uploaded_urls.extend(filter(None, [variants['audio_file'], variants['converted_audio_url']]))
 
             cover_url = ''
@@ -7621,16 +7740,45 @@ class ArtistSongsManagementView(APIView):
             serializer = SongSerializer(data=clean, context={'request': request})
             if not serializer.is_valid():
                 cleanup_r2_urls(uploaded_urls)
+                _set_artist_upload_state(
+                    request.user.id,
+                    upload_id,
+                    'failed',
+                    detail='The recording metadata could not be saved.',
+                    code='song_validation_failed',
+                )
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             with transaction.atomic():
-                serializer.save(artist=artist)
+                song = serializer.save(artist=artist)
+            _set_artist_upload_state(
+                request.user.id,
+                upload_id,
+                'done',
+                stage='done',
+                message='The recording was uploaded and processed successfully.',
+                song_id=song.id,
+            )
         except MediaPipelineError as exc:
             cleanup_r2_urls(uploaded_urls)
+            _set_artist_upload_state(
+                request.user.id,
+                upload_id,
+                'failed',
+                detail=str(exc),
+                code=exc.code,
+            )
             payload = {stage: [str(exc)], 'code': exc.code} if stage != 'detail' else {'detail': str(exc), 'code': exc.code}
             return Response(payload, status=exc.status_code)
         except Exception:
             cleanup_r2_urls(uploaded_urls)
-            logger.exception('Artist song upload failed for user=%s', request.user.pk)
+            logger.exception('Artist song upload failed for user=%s upload_id=%s stage=%s', request.user.pk, upload_id, stage)
+            _set_artist_upload_state(
+                request.user.id,
+                upload_id,
+                'failed',
+                detail='The song could not be saved after upload.',
+                code='song_save_failed',
+            )
             return Response(
                 {'detail': 'The song could not be saved after upload.', 'code': 'song_save_failed'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
