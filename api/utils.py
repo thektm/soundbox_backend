@@ -106,6 +106,18 @@ def make_safe_filename(s: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned).strip(' .-_')
     return cleaned[:180]
 
+
+def artist_filename_name(artist) -> str:
+    """Use the artist's English stage/name first for stored and downloaded filenames."""
+    if not artist:
+        return ''
+    for field in ('artistic_name_en', 'name_en', 'artistic_name', 'name'):
+        value = str(getattr(artist, field, '') or '').strip()
+        if value:
+            return value
+    return ''
+
+
 def r2_object_key(value, *, allow_key=True):
     """Return the object key for a Sedabox R2 reference, otherwise ``''``."""
     if not value:
@@ -167,20 +179,33 @@ def generate_signed_r2_url(object_key, expiration=3600):
         return None
 
 
-def sign_r2_urls_in_payload(value, expiration=3600, *, strict=False):
-    """Recursively replace every R2 URL in a response payload with a signed URL."""
+def sign_r2_urls_in_payload(value, expiration=3600, *, strict=False, refresh=False):
+    """Recursively replace R2 URLs with usable signed URLs.
+
+    ``refresh=True`` deliberately re-signs cached URLs even when their old
+    signature has not expired yet. This is used by client-home responses so
+    every backend request receives a full fresh validity window.
+    """
     if isinstance(value, dict):
         return {
-            key: sign_r2_urls_in_payload(item, expiration, strict=strict)
+            key: sign_r2_urls_in_payload(
+                item, expiration, strict=strict, refresh=refresh
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [sign_r2_urls_in_payload(item, expiration, strict=strict) for item in value]
+        return [
+            sign_r2_urls_in_payload(item, expiration, strict=strict, refresh=refresh)
+            for item in value
+        ]
     if isinstance(value, tuple):
-        return tuple(sign_r2_urls_in_payload(item, expiration, strict=strict) for item in value)
+        return tuple(
+            sign_r2_urls_in_payload(item, expiration, strict=strict, refresh=refresh)
+            for item in value
+        )
     if not isinstance(value, str) or not r2_object_key(value, allow_key=False):
         return value
-    if _fresh_signed_r2_url(value):
+    if not refresh and _fresh_signed_r2_url(value):
         return value
 
     signed = generate_signed_r2_url(value, expiration=expiration)

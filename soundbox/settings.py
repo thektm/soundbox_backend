@@ -64,6 +64,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'api.middleware.ArtistPanelSignedR2Middleware',
+    'api.middleware.ClientHomeSignedR2Middleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -257,6 +258,8 @@ R2_BUCKET_NAME = 'sedabox'
 R2_CDN_BASE = 'https://cdn.sedabox.com'
 ARTIST_API_PREFIX = os.environ.get('ARTIST_API_PREFIX', '/api/artist/')
 ARTIST_R2_SIGNED_URL_TTL = int(os.environ.get('ARTIST_R2_SIGNED_URL_TTL', '3600'))
+HOME_API_PREFIX = os.environ.get('HOME_API_PREFIX', '/api/home/')
+HOME_R2_SIGNED_URL_TTL = int(os.environ.get('HOME_R2_SIGNED_URL_TTL', '3600'))
 ARTIST_UPLOAD_RECOVERY_TTL = int(os.environ.get('ARTIST_UPLOAD_RECOVERY_TTL', '3600'))
 
 # SMS / Kavenegar settings

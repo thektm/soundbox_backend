@@ -84,8 +84,9 @@ from django.core.cache import cache
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
 from .utils import (
-    MediaPipelineError, absolute_api_url, cleanup_r2_urls, convert_to_128kbps,
-    generate_signed_r2_url, get_audio_info, upload_audio_variants, upload_file_to_r2,
+    MediaPipelineError, absolute_api_url, artist_filename_name, cleanup_r2_urls,
+    convert_to_128kbps, generate_signed_r2_url, get_audio_info,
+    upload_audio_variants, upload_file_to_r2,
 )
 from .auth_views import normalize_phone, create_and_send_otp, OtpCode
 import boto3
@@ -1322,7 +1323,7 @@ class SongPlaybackQualityView(APIView):
 
 def _download_filename(song, quality):
     safe_title = re.sub(r'[<>:"/\\|?*]+', '', song.display_title or song.title).strip() or f'song-{song.id}'
-    safe_artist = re.sub(r'[<>:"/\\|?*]+', '', song.artist.artistic_name or song.artist.name).strip()
+    safe_artist = re.sub(r'[<>:"/\\|?*]+', '', artist_filename_name(song.artist)).strip()
     return f"{safe_title}{' - ' + safe_artist if safe_artist else ''} [{quality}kbps].mp3"
 
 
@@ -1667,9 +1668,9 @@ class SongUploadView(APIView):
             title = data['title']
             featured_ids = data.get('featured_artist_ids', [])
             featured_artists = Artist.objects.filter(id__in=featured_ids)
-            featured_names = [a.artistic_name or a.name for a in featured_artists]
+            featured_names = [artist_filename_name(a) for a in featured_artists]
 
-            artist_name = artist.artistic_name or artist.name
+            artist_name = artist_filename_name(artist)
             if featured_names:
                 filename_base = f"{artist_name} - {title} (feat. {', '.join(featured_names)})"
             else:
@@ -7688,7 +7689,7 @@ class ArtistSongsManagementView(APIView):
         if not preflight_serializer.is_valid():
             return Response(preflight_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        artist_name = artist.artistic_name or artist.name
+        artist_name = artist_filename_name(artist)
         filename_title = str(clean.get('title_en') or title).strip()
         filename_base = f"{artist_name} - {filename_title}"
 
@@ -7891,7 +7892,7 @@ class ArtistSongsManagementView(APIView):
             if audio_file:
                 title = str(data.get('title', song.title) or '').strip()
                 title_en = str(data['title_en'] if 'title_en' in data else song.title_en or '').strip()
-                filename_base = f"{artist.artistic_name or artist.name} - {title_en or title}"
+                filename_base = f"{artist_filename_name(artist)} - {title_en or title}"
 
                 variants = upload_audio_variants(audio_file, filename_base)
                 new_urls.extend(filter(None, [variants['audio_file'], variants['converted_audio_url']]))
@@ -8142,8 +8143,8 @@ class ArtistAlbumsManagementView(APIView):
                 return Response({'cover_image': ['Album cover must be smaller than 10MB.']}, status=status.HTTP_400_BAD_REQUEST)
             if getattr(album_cover, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
                 return Response({'cover_image': ['Album cover must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
-            safe_title = "".join([c for c in album_data.get('title', 'album') if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in (artist.artistic_name or artist.name) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_title = make_safe_filename(album_data.get('title_en') or album_data.get('title') or 'album')
+            safe_artist = make_safe_filename(artist_filename_name(artist))
             cover_filename = f"{safe_artist} - {safe_title}_album_cover"
             try:
                 cover_url, _ = upload_file_to_r2(album_cover, folder='covers', custom_filename=cover_filename)
@@ -8181,7 +8182,7 @@ class ArtistAlbumsManagementView(APIView):
                 continue
 
             # Process this song
-            artist_name = artist.artistic_name or artist.name
+            artist_name = artist_filename_name(artist)
             duration, bitrate, format_ext = get_audio_info(audio_file)
             if not format_ext:
                 _, ext = os.path.splitext(audio_file.name)
@@ -8190,7 +8191,8 @@ class ArtistAlbumsManagementView(APIView):
             # Build filename base
             # Note: featured artists for individual songs in album creation might not be supported in the current form structure,
             # but we'll use the artist name and title.
-            filename_base = f"{artist_name} - {title}"
+            filename_title = str(request.data.get(f"{prefix}title_en") or title).strip()
+            filename_base = f"{artist_name} - {filename_title}"
             safe_filename_base = make_safe_filename(filename_base)
             audio_filename = f"{safe_filename_base}.{format_ext}"
 
@@ -8335,8 +8337,10 @@ class ArtistAlbumsManagementView(APIView):
                 return Response({'cover_image': ['Album cover must be smaller than 10MB.']}, status=status.HTTP_400_BAD_REQUEST)
             if getattr(album_cover, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
                 return Response({'cover_image': ['Album cover must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
-            safe_title = "".join([c for c in album_data.get('title', album.title) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
-            safe_artist = "".join([c for c in (artist.artistic_name or artist.name) if c.isalnum() or c in (' ', '-', '_')]).rstrip()
+            safe_title = make_safe_filename(
+                album_data.get('title_en') or album.title_en or album_data.get('title') or album.title
+            )
+            safe_artist = make_safe_filename(artist_filename_name(artist))
             cover_filename = f"{safe_artist} - {safe_title}_album_cover"
             try:
                 cover_url, _ = upload_file_to_r2(album_cover, folder='covers', custom_filename=cover_filename)
