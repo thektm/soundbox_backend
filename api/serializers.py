@@ -103,6 +103,7 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         request = self.context.get('request')
         language = get_request_language(request)
+        artist_panel = bool(self.context.get('artist_panel')) or bool(request and '/artist/' in request.path)
         model = getattr(getattr(self, 'Meta', None), 'model', None)
 
         if model is not None:
@@ -113,6 +114,11 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
                     continue
                 fa_value = getattr(instance, base_field, None)
                 en_value = getattr(instance, english_field, None)
+                if artist_panel:
+                    data[f'{base_field}_fa'] = fa_value
+                    data[f'{base_field}_en'] = en_value
+                    data[base_field] = fa_value
+                    continue
                 if en_value in (None, '', [], {}):
                     en_value = translate_generated_text(fa_value) if isinstance(fa_value, str) else fa_value
                 data[f'{base_field}_fa'] = fa_value
@@ -136,6 +142,11 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
                 continue
             fa_value = getattr(parent, leaf, None)
             en_value = getattr(parent, f'{leaf}_en', None)
+            if artist_panel:
+                data[f'{output_name}_fa'] = fa_value
+                data[f'{output_name}_en'] = en_value
+                data[output_name] = fa_value
+                continue
             if en_value in (None, '', [], {}):
                 en_value = translate_generated_text(fa_value) if isinstance(fa_value, str) else fa_value
             data[f'{output_name}_fa'] = fa_value

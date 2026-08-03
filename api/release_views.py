@@ -214,7 +214,7 @@ def _legacy_release(album, request=None):
         'title_en': album.title_en,
         'release_type': ArtistRelease.TYPE_ALBUM,
         'status': release_status,
-        'current_step': 6,
+        'current_step': 5,
         'track_ids': [song.id for song in songs],
         'tracks': [_legacy_track(song) for song in songs],
         'shared_metadata': merged_shared({}),
@@ -264,7 +264,7 @@ def _legacy_single(song, request=None):
         'title_en': song.title_en,
         'release_type': ArtistRelease.TYPE_SINGLE,
         'status': release_status,
-        'current_step': 6,
+        'current_step': 5,
         'track_ids': [song.id],
         'tracks': [_legacy_track(song)],
         'shared_metadata': merged_shared({}),
@@ -425,7 +425,7 @@ class ArtistReleaseDetailView(APIView):
                         value = 'Untitled Release'
                 if field == 'current_step':
                     try:
-                        value = max(1, min(6, int(value)))
+                        value = max(1, min(5, int(value)))
                     except (TypeError, ValueError):
                         value = 1
                 elif field == 'previously_released':
@@ -826,6 +826,16 @@ class ArtistReleaseArtworkView(APIView):
                 release.lock_version += 1
                 release.validation_snapshot = {}
                 release.save(update_fields=['release_metadata', 'lock_version', 'validation_snapshot', 'updated_at'])
+                if release.release_type != ArtistRelease.TYPE_SINGLE:
+                    for link in release.release_tracks.select_related('song'):
+                        extras = dict(link.extras or {})
+                        source = str(extras.get('_cover_source') or '')
+                        inherited = source == 'release' or (not source and bool(old_url) and link.song.cover_image == old_url)
+                        if inherited:
+                            Song.objects.filter(pk=link.song_id).update(cover_image=url, updated_at=timezone.now())
+                            extras['_cover_source'] = 'release'
+                            link.extras = extras
+                            link.save(update_fields=['extras', 'updated_at'])
                 if release.status == ArtistRelease.STATUS_IN_REVIEW:
                     Song.objects.filter(release_track_links__release=release).exclude(
                         status=Song.STATUS_DELETED
@@ -838,7 +848,12 @@ class ArtistReleaseArtworkView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        if old_url and old_url != url and not ArtistRelease.objects.filter(release_metadata__cover_url=old_url).exists():
+        if (
+            old_url and old_url != url
+            and not ArtistRelease.objects.filter(release_metadata__cover_url=old_url).exists()
+            and not Song.objects.filter(cover_image=old_url).exists()
+            and not Album.objects.filter(cover_image=old_url).exists()
+        ):
             cleanup_r2_urls([old_url])
         return Response(serialize_release(release_queryset().get(pk=release.pk), request))
 
@@ -900,7 +915,7 @@ class ArtistReleaseSubmitView(APIView):
                     is_single=release.release_type == ArtistRelease.TYPE_SINGLE,
                 )
             release.submitted_at = timezone.now()
-            release.current_step = 6
+            release.current_step = 5
             release.save(update_fields=['submitted_at', 'current_step', 'updated_at'])
             change_status(release, ArtistRelease.STATUS_IN_REVIEW, actor=request.user, note='Submitted by artist for review.')
         return Response(serialize_release(release_queryset().get(pk=release.pk), request))

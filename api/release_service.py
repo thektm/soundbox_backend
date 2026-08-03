@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import re
 from typing import Any
 
@@ -50,7 +50,6 @@ DEFAULT_RELEASE_METADATA = {
     'p_copyright': '',
     'c_copyright': '',
     'territories': ['WORLDWIDE'],
-    'release_artist_ids': [],
     'cover_url': '',
     'description': '',
     'description_en': '',
@@ -104,9 +103,6 @@ def merged_release_metadata(value: dict | None, artist_id: int | None = None) ->
         for key in DEFAULT_RELEASE_METADATA:
             if key in value:
                 result[key] = value[key]
-    result['release_artist_ids'] = _clean_int_list(result.get('release_artist_ids'))
-    if artist_id and artist_id not in result['release_artist_ids']:
-        result['release_artist_ids'].insert(0, artist_id)
     result['territories'] = _clean_string_list(result.get('territories')) or ['WORLDWIDE']
     for key in (
         'release_date', 'original_release_date', 'label', 'label_en', 'p_copyright',
@@ -155,12 +151,13 @@ def normalize_track_extras(value: dict | None, default_position: int = 1) -> dic
         'version': str(source.get('version') or '').strip(),
         'explicit': _as_bool(source.get('explicit', False)),
         'publishing_owner': str(source.get('publishing_owner') or '').strip(),
-        'rights_notes': str(source.get('rights_notes') or '').strip(),
     }
     try:
         result['preview_start'] = max(0, int(source.get('preview_start') or 0))
     except (TypeError, ValueError):
         result['preview_start'] = 0
+    if source.get('_cover_source') in {'release', 'track'}:
+        result['_cover_source'] = source['_cover_source']
     return result
 
 
@@ -213,8 +210,11 @@ def _track_completion(song: Song, extras: dict) -> tuple[int, list[str]]:
 
 
 def serialize_track(link: ArtistReleaseTrack, request=None, fallback_cover="") -> dict:
-    data = dict(SongSerializer(link.song, context={'request': request}).data)
-    if not data.get('cover_image') and fallback_cover:
+    data = dict(SongSerializer(link.song, context={'request': request, 'artist_panel': True}).data)
+    cover_source = str((link.extras or {}).get('_cover_source') or '')
+    own_cover = bool(data.get('cover_image')) and cover_source != 'release' and not (not cover_source and fallback_cover and data.get('cover_image') == fallback_cover)
+    data['own_cover_image'] = own_cover
+    if not own_cover and fallback_cover:
         data['cover_image'] = fallback_cover
     completion, missing = _track_completion(link.song, link.extras or {})
     data.update({
@@ -271,7 +271,8 @@ def validation_payload(release: ArtistRelease) -> dict:
     today = timezone.localdate()
     if release_date and not release.previously_released and release_date < today:
         error('release', 'A new release cannot use a past release date.')
-    if original_date and original_date > today:
+    # Allow a one-day calendar skew between the artist device and a UTC server.
+    if original_date and original_date > today + timedelta(days=1):
         error('release', 'The original release date cannot be in the future.')
     if original_date and release_date and original_date > release_date:
         error('release', 'The original release date cannot be after the planned release date.')
@@ -297,19 +298,6 @@ def validation_payload(release: ArtistRelease) -> dict:
     if not metadata.get('c_copyright'):
         warning('rights', 'Add the artwork/composition (C-line) copyright.')
 
-    release_artist_ids = _clean_int_list(metadata.get('release_artist_ids'))
-    if len(release_artist_ids) > 50:
-        error('release', 'A release cannot contain more than 50 release-level artists.')
-    if release.artist_id not in release_artist_ids:
-        error('release', 'The primary artist must remain a release artist.')
-    existing_artist_ids = set(Artist.objects.filter(id__in=release_artist_ids).values_list('id', flat=True))
-    missing_artist_ids = [value for value in release_artist_ids if value not in existing_artist_ids]
-    if missing_artist_ids:
-        error('release', f'Release artist IDs do not exist: {missing_artist_ids}.')
-    unverified_artist_ids = list(Artist.objects.filter(id__in=release_artist_ids, verified=False).exclude(id=release.artist_id).values_list('id', flat=True))
-    if unverified_artist_ids:
-        error('release', f'Additional release artists must be verified: {unverified_artist_ids}.')
-
     complete_tracks = 0
     audio_passed = True
     rights_warnings = 0
@@ -332,9 +320,6 @@ def validation_payload(release: ArtistRelease) -> dict:
             error('tracks', 'Track language is required.', song.id)
         if not song.genres.exists():
             error('tracks', 'Choose at least one shared genre for this release.', song.id)
-        unverified_featured = list(song.featured_artists.filter(verified=False).exclude(id=release.artist_id).values_list('id', flat=True))
-        if unverified_featured:
-            error('tracks', f'Featured artists must be verified: {unverified_featured}.', song.id)
         if not song.duration_seconds or song.duration_seconds <= 0:
             warning('audio', 'Audio duration could not be verified.', song.id)
         preview_start = max(0, int(extras.get('preview_start') or 0))
@@ -393,9 +378,6 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
             metadata['cover_url'] = generate_signed_r2_url(raw_cover_url) or raw_cover_url
         except Exception:
             metadata['cover_url'] = raw_cover_url
-    release_artists = list(Artist.objects.filter(id__in=metadata['release_artist_ids']))
-    artist_map = {item.id: item for item in release_artists}
-    ordered_artists = [artist_map[value] for value in metadata['release_artist_ids'] if value in artist_map]
     links = list(release.release_tracks.all())
     validation = release.validation_snapshot or validation_payload(release)
     is_staff = bool(request and getattr(getattr(request, 'user', None), 'is_staff', False))
@@ -408,9 +390,8 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
         'previously_released': release.previously_released,
         'primary_artist_id': release.artist_id,
         'primary_artist': artist_payload(release.artist),
-        'release_artists': [artist_payload(item) for item in ordered_artists],
         'status': release.status,
-        'current_step': release.current_step,
+        'current_step': max(1, min(5, release.current_step or 1)),
         'track_ids': [link.song_id for link in links],
         'tracks': [serialize_track(link, request, metadata.get('cover_url')) for link in links],
         'shared_metadata': merged_shared(release.shared_metadata),
@@ -704,8 +685,14 @@ def materialize_release(release: ArtistRelease, publish=True) -> ArtistRelease:
                 song.album_track_number = link.position
                 song.status = song_status
                 song.release_date = release_date
-                if cover_url:
+                extras = dict(link.extras or {})
+                cover_source = str(extras.get('_cover_source') or '')
+                if cover_url and (not song.cover_image or cover_source == 'release'):
                     song.cover_image = cover_url
+                    extras['_cover_source'] = 'release'
+                    if extras != (link.extras or {}):
+                        link.extras = extras
+                        link.save(update_fields=['extras', 'updated_at'])
                 song.save(update_fields=['album', 'is_single', 'album_disc_number', 'album_track_number', 'status', 'release_date', 'cover_image', 'updated_at'])
 
         release.album = album

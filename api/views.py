@@ -220,50 +220,64 @@ def _apply_release_cover_fallback(song, payload):
         song.status in {Song.STATUS_APPROVED, Song.STATUS_PUBLISHED}
         or any(link.release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW} for link in links)
     )
-    if not payload.get('cover_image'):
-        for link in links:
-            cover = str((link.release.release_metadata or {}).get('cover_url') or '').strip()
-            if cover:
-                payload['cover_image'] = cover
-                payload['release_id'] = str(link.release_id)
-                payload['release_type'] = link.release.release_type
-                break
+    inherited_cover = False
+    for link in links:
+        source = str((link.extras or {}).get('_cover_source') or '')
+        if payload.get('cover_image') and source != 'release':
+            break
+        cover = str((link.release.release_metadata or {}).get('cover_url') or '').strip()
+        if cover:
+            payload['cover_image'] = cover
+            payload['release_id'] = str(link.release_id)
+            payload['release_type'] = link.release.release_type
+            inherited_cover = True
+            break
+    payload['own_cover_image'] = bool(payload.get('cover_image')) and not inherited_cover
     return payload
 
 
 def _sync_release_from_artist_song(release, song, *, cover_changed=False):
-    """Keep release-owned metadata authoritative after a direct song edit."""
-    shared = dict(release.shared_metadata or {})
-    shared.update({
-        'language': song.language or 'fa',
-        'label': song.label or '',
-        'label_en': song.label_en or '',
-        'genre_ids': list(song.genres.values_list('id', flat=True)),
-        'sub_genre_ids': list(song.sub_genres.values_list('id', flat=True)),
-        'mood_ids': list(song.moods.values_list('id', flat=True)),
-        'tag_ids': list(song.tags.values_list('id', flat=True)),
-        'producers': list(song.producers or []),
-        'producers_en': list(song.producers_en or []),
-        'composers': list(song.composers or []),
-        'composers_en': list(song.composers_en or []),
-        'lyricists': list(song.lyricists or []),
-        'lyricists_en': list(song.lyricists_en or []),
-    })
-    release.shared_metadata = merged_shared(shared)
-    metadata = merged_release_metadata(release.release_metadata, release.artist_id)
-    if song.release_date:
-        metadata['release_date'] = song.release_date.isoformat()
-    if cover_changed and song.cover_image:
-        metadata['cover_url'] = song.cover_image
-    release.release_metadata = metadata
+    """Keep single-release metadata synchronized without leaking one album track onto its siblings."""
+    release.validation_snapshot = {}
+    update_fields = ['validation_snapshot', 'updated_at']
+
+    if release.release_type != ArtistRelease.TYPE_SINGLE and cover_changed:
+        link = ArtistReleaseTrack.objects.filter(release=release, song=song).first()
+        if link:
+            extras = dict(link.extras or {})
+            extras['_cover_source'] = 'track'
+            link.extras = extras
+            link.save(update_fields=['extras', 'updated_at'])
+
     if release.release_type == ArtistRelease.TYPE_SINGLE:
+        shared = dict(release.shared_metadata or {})
+        shared.update({
+            'language': song.language or 'fa',
+            'label': song.label or '',
+            'label_en': song.label_en or '',
+            'genre_ids': list(song.genres.values_list('id', flat=True)),
+            'sub_genre_ids': list(song.sub_genres.values_list('id', flat=True)),
+            'mood_ids': list(song.moods.values_list('id', flat=True)),
+            'tag_ids': list(song.tags.values_list('id', flat=True)),
+            'producers': list(song.producers or []),
+            'producers_en': list(song.producers_en or []),
+            'composers': list(song.composers or []),
+            'composers_en': list(song.composers_en or []),
+            'lyricists': list(song.lyricists or []),
+            'lyricists_en': list(song.lyricists_en or []),
+        })
+        release.shared_metadata = merged_shared(shared)
+        metadata = merged_release_metadata(release.release_metadata, release.artist_id)
+        if song.release_date:
+            metadata['release_date'] = song.release_date.isoformat()
+        if cover_changed and song.cover_image:
+            metadata['cover_url'] = song.cover_image
+        release.release_metadata = metadata
         release.title = song.title
         release.title_en = song.title_en or ''
-    release.validation_snapshot = {}
-    release.save(update_fields=[
-        'title', 'title_en', 'shared_metadata', 'release_metadata',
-        'validation_snapshot', 'updated_at',
-    ])
+        update_fields.extend(['title', 'title_en', 'shared_metadata', 'release_metadata'])
+
+    release.save(update_fields=update_fields)
 
 
 def _serialize_artist_songs(songs, request):
@@ -1860,7 +1874,7 @@ class ArtistListView(APIView):
                 )
             ).filter(_combined__contains=q_norm)
 
-        serializer = ArtistSerializer(qs, many=True, context={'request': request})
+        serializer = ArtistSerializer(qs, many=True, context={'request': request, 'artist_panel': str(request.query_params.get('artist_panel') or '').lower() in {'1', 'true', 'yes', 'on'}})
         return Response(serializer.data)
 
     @extend_schema(
