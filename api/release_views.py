@@ -129,6 +129,37 @@ def _cleanup_unreferenced_release_media(urls):
         cleanup_r2_urls([url])
 
 
+def _set_release_taken_down(release, actor, note):
+    if release.status == ArtistRelease.STATUS_TAKEN_DOWN:
+        return
+    previous = release.status
+    release.status = ArtistRelease.STATUS_TAKEN_DOWN
+    release.taken_down_at = timezone.now()
+    release.validation_snapshot = {}
+    release.lock_version += 1
+    release.save(update_fields=['status', 'taken_down_at', 'validation_snapshot', 'lock_version', 'updated_at'])
+    ArtistReleaseStatusHistory.objects.create(
+        release=release,
+        from_status=previous,
+        to_status=ArtistRelease.STATUS_TAKEN_DOWN,
+        note=note,
+        actor=actor,
+    )
+
+
+def _renumber_release_links(release):
+    links = list(
+        ArtistReleaseTrack.objects.select_for_update()
+        .filter(release=release)
+        .order_by('position', 'id')
+    )
+    for index, link in enumerate(links, start=1):
+        if link.position != index:
+            ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=1000 + index)
+    for index, link in enumerate(links, start=1):
+        ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
+
+
 def _legacy_track(song):
     return {
         'id': song.id,
@@ -152,7 +183,9 @@ def _legacy_track(song):
 def _legacy_release(album, request=None):
     songs = list(album.songs.all())
     statuses = {song.status for song in songs}
-    if Song.STATUS_PUBLISHED in statuses:
+    if songs and statuses == {Song.STATUS_DELETED}:
+        release_status = ArtistRelease.STATUS_TAKEN_DOWN
+    elif Song.STATUS_PUBLISHED in statuses:
         release_status = ArtistRelease.STATUS_LIVE
     elif Song.STATUS_PENDING in statuses:
         release_status = ArtistRelease.STATUS_IN_REVIEW
@@ -208,6 +241,7 @@ def _legacy_single(song, request=None):
         Song.STATUS_APPROVED: ArtistRelease.STATUS_APPROVED,
         Song.STATUS_REJECTED: ArtistRelease.STATUS_REJECTED,
         Song.STATUS_PUBLISHED: ArtistRelease.STATUS_LIVE,
+        Song.STATUS_DELETED: ArtistRelease.STATUS_TAKEN_DOWN,
     }
     release_status = status_map.get(song.status, ArtistRelease.STATUS_DRAFT)
     return {
@@ -433,46 +467,71 @@ class ArtistReleaseDetailView(APIView):
                 .exclude(release=release)
                 .values_list('song_id', flat=True)
             )
-            unique_links = [link for link in links if link.song_id not in shared_song_ids]
+            preserved_link_ids = []
             hard_delete_ids = []
-            soft_delete_songs = []
-            preserve_release_tracks = release.status in {ArtistRelease.STATUS_LIVE, ArtistRelease.STATUS_TAKEN_DOWN}
-            for link in unique_links:
+            shared_detach_ids = []
+            for link in links:
                 song = link.song
+                if link.song_id in shared_song_ids:
+                    shared_detach_ids.append(link.song_id)
+                    continue
                 has_accounting = bool(song.plays) or song.play_counts.exists()
-                if preserve_release_tracks or song.status in {Song.STATUS_PUBLISHED, Song.STATUS_DELETED} or has_accounting:
-                    soft_delete_songs.append(song)
+                must_preserve = (
+                    release.status != ArtistRelease.STATUS_DRAFT
+                    or song.status in {Song.STATUS_PUBLISHED, Song.STATUS_DELETED}
+                    or has_accounting
+                )
+                if must_preserve:
+                    if song.status != Song.STATUS_DELETED:
+                        song.status = Song.STATUS_DELETED
+                        song.save(update_fields=['status', 'updated_at'])
+                    preserved_link_ids.append(link.pk)
                 else:
                     hard_delete_ids.append(song.pk)
                     media_urls.extend(filter(None, [
-                        song.audio_file,
-                        song.converted_audio_url,
-                        song.preview_audio_url,
-                        song.cover_image,
+                        song.audio_file, song.converted_audio_url,
+                        song.preview_audio_url, song.cover_image,
                     ]))
 
-            raw_cover = str((release.release_metadata or {}).get('cover_url') or '')
-            if raw_cover:
-                media_urls.append(raw_cover)
+            removable_link_ids = [link.pk for link in links if link.pk not in preserved_link_ids]
+            if removable_link_ids:
+                ArtistReleaseTrack.objects.filter(pk__in=removable_link_ids).delete()
 
             album = release.album
-            ArtistReleaseTrack.objects.filter(release=release).delete()
-            for song in soft_delete_songs:
-                if song.status != Song.STATUS_DELETED:
-                    song.status = Song.STATUS_DELETED
-                    song.save(update_fields=['status', 'updated_at'])
+            if album and shared_detach_ids:
+                Song.objects.filter(pk__in=shared_detach_ids, album=album).update(album=None, is_single=True)
             if hard_delete_ids:
                 Song.objects.filter(pk__in=hard_delete_ids).delete()
-            release.delete()
 
-            if album and not album.songs.exists():
-                if album.cover_image:
-                    media_urls.append(album.cover_image)
-                album.delete()
+            if preserved_link_ids:
+                _renumber_release_links(release)
+                _set_release_taken_down(
+                    release, request.user,
+                    'Release deleted by the artist; historical recordings and accounting were preserved.',
+                )
+                response_release = release_queryset().get(pk=release.pk)
+                payload = {
+                    'deletion': 'soft',
+                    'message': 'Release disabled; historical tracks, statistics, and earnings were preserved.',
+                    'release': serialize_release(response_release, request),
+                }
+            else:
+                raw_cover = str((release.release_metadata or {}).get('cover_url') or '')
+                if raw_cover:
+                    media_urls.append(raw_cover)
+                release.delete()
+                if album and not album.songs.exists():
+                    if album.cover_image:
+                        media_urls.append(album.cover_image)
+                    album.delete()
+                payload = {
+                    'deletion': 'hard',
+                    'message': 'Release and disposable recordings were permanently deleted.',
+                }
 
-            transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_release_media(values))
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            if media_urls:
+                transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_release_media(values))
+            return Response(payload)
 
 
 @extend_schema(tags=['Artist Releases'])
@@ -553,32 +612,76 @@ class ArtistReleaseTracksView(APIView):
         if not song_ids:
             return Response({'song_ids': ['Select at least one release track.']}, status=status.HTTP_400_BAD_REQUEST)
 
+        media_urls = []
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk, artist=artist)
-            locked = _draft_or_409(release)
-            if locked:
-                return locked
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
-            removed_ids = list(
-                ArtistReleaseTrack.objects.select_for_update()
-                .filter(release=release, song_id__in=song_ids)
-                .values_list('song_id', flat=True)
-            )
-            ArtistReleaseTrack.objects.filter(release=release, song_id__in=removed_ids).delete()
-            if removed_ids:
-                Song.objects.filter(id__in=removed_ids).exclude(release_track_links__isnull=False).update(status=Song.STATUS_DRAFT)
-            links = list(ArtistReleaseTrack.objects.select_for_update().filter(release=release).order_by('position', 'id'))
-            for index, link in enumerate(links, start=1):
-                if link.position != index:
-                    ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=1000 + index)
-            for index, link in enumerate(links, start=1):
-                ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
-            sync_release_tracks(release)
-            _touch_release(release)
 
-        return Response(serialize_release(release_queryset().get(pk=release.pk), request))
+            links = list(
+                ArtistReleaseTrack.objects.select_for_update()
+                .select_related('song')
+                .filter(release=release, song_id__in=song_ids)
+            )
+            removed_ids = [link.song_id for link in links]
+            album = release.album
+            if links:
+                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in links]).delete()
+                if album:
+                    Song.objects.filter(id__in=removed_ids, album=album).update(album=None, is_single=True)
+                if release.status == ArtistRelease.STATUS_DRAFT:
+                    Song.objects.filter(id__in=removed_ids).exclude(
+                        status=Song.STATUS_DELETED
+                    ).exclude(release_track_links__isnull=False).update(status=Song.STATUS_DRAFT)
+                _renumber_release_links(release)
+
+            album_deleted = False
+            album_deletion = None
+            if album and not album.songs.exclude(status=Song.STATUS_DELETED).exists():
+                album_deleted = True
+                if album.songs.exists():
+                    album_deletion = 'soft'
+                else:
+                    album_deletion = 'hard'
+                    if album.cover_image:
+                        media_urls.append(album.cover_image)
+                    album.delete()
+
+            no_active_tracks = not release.release_tracks.exclude(song__status=Song.STATUS_DELETED).exists()
+            delete_empty_album = str(request.data.get('delete_empty_album') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+            release_deleted = False
+            if no_active_tracks and delete_empty_album and release.status == ArtistRelease.STATUS_DRAFT and release.release_type == ArtistRelease.TYPE_ALBUM:
+                raw_cover = str((release.release_metadata or {}).get('cover_url') or '')
+                if raw_cover:
+                    media_urls.append(raw_cover)
+                release.delete()
+                release_deleted = True
+            elif no_active_tracks and release.status != ArtistRelease.STATUS_DRAFT:
+                _set_release_taken_down(
+                    release, request.user,
+                    'The final active track was removed from this release by the artist.',
+                )
+            else:
+                _touch_release(release)
+
+            if media_urls:
+                transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_release_media(values))
+            if release_deleted:
+                return Response({
+                    'removed_ids': removed_ids,
+                    'album_deleted': True,
+                    'album_deletion': 'hard',
+                    'release_deleted': True,
+                })
+            result = serialize_release(release_queryset().get(pk=release.pk), request)
+            result.update({
+                'removed_ids': removed_ids,
+                'album_deleted': album_deleted,
+                'album_deletion': album_deletion,
+                'release_deleted': False,
+            })
+            return Response(result)
 
 
 @extend_schema(tags=['Artist Releases'])

@@ -8,7 +8,7 @@ import re
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from .models import (
-    User, Artist, Album, ArtistRelease, ArtistReleaseTrack, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song,
+    User, Artist, Album, ArtistRelease, ArtistReleaseStatusHistory, ArtistReleaseTrack, Playlist,NotificationSetting, Genre, Mood, Tag, SubGenre, Song,
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, SocialPlatform, DownloadHistory,
@@ -193,6 +193,96 @@ def _serialize_artist_songs(songs, request):
     songs = list(songs)
     data = list(SongSerializer(songs, many=True, context={'request': request}).data)
     return [_apply_release_cover_fallback(song, item) for song, item in zip(songs, data)]
+
+
+def _renumber_release_tracks(release_ids):
+    for release_id in set(release_ids):
+        links = list(
+            ArtistReleaseTrack.objects.select_for_update()
+            .filter(release_id=release_id)
+            .order_by('position', 'id')
+        )
+        for index, link in enumerate(links, start=1):
+            if link.position != index:
+                ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=1000 + index)
+        for index, link in enumerate(links, start=1):
+            ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
+
+
+def _album_is_deleted(album):
+    return album.songs.exists() and not album.songs.exclude(status=Song.STATUS_DELETED).exists()
+
+
+def _mark_releases_without_active_tracks(release_ids, actor=None):
+    """Disable historical releases and remove empty album drafts; return orphan candidates."""
+    media_urls = []
+    for release in ArtistRelease.objects.select_for_update().filter(pk__in=set(release_ids)).order_by('pk'):
+        if release.release_tracks.exclude(song__status=Song.STATUS_DELETED).exists():
+            continue
+        if release.status == ArtistRelease.STATUS_DRAFT:
+            if release.release_type == ArtistRelease.TYPE_ALBUM:
+                cover = str((release.release_metadata or {}).get('cover_url') or '').strip()
+                if cover:
+                    media_urls.append(cover)
+                release.delete()
+            continue
+        if release.status != ArtistRelease.STATUS_TAKEN_DOWN:
+            previous = release.status
+            release.status = ArtistRelease.STATUS_TAKEN_DOWN
+            release.taken_down_at = timezone.now()
+            release.validation_snapshot = {}
+            release.lock_version += 1
+            release.save(update_fields=['status', 'taken_down_at', 'validation_snapshot', 'lock_version', 'updated_at'])
+            ArtistReleaseStatusHistory.objects.create(
+                release=release,
+                from_status=previous,
+                to_status=ArtistRelease.STATUS_TAKEN_DOWN,
+                note='All active recordings were removed or deleted by the artist.',
+                actor=actor,
+            )
+    return media_urls
+
+
+def _delete_artist_song_locked(song, actor=None):
+    """Apply artist deletion without breaking release/accounting foreign keys."""
+    links = list(
+        ArtistReleaseTrack.objects.select_for_update()
+        .select_related('release')
+        .filter(song=song)
+    )
+    draft_links = [link for link in links if link.release.status == ArtistRelease.STATUS_DRAFT]
+    draft_release_ids = {link.release_id for link in draft_links}
+    if draft_links:
+        ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in draft_links]).delete()
+        _renumber_release_tracks(draft_release_ids)
+
+    release_ids = {link.release_id for link in links}
+    if release_ids:
+        ArtistRelease.objects.filter(pk__in=release_ids).update(
+            validation_snapshot={},
+            lock_version=F('lock_version') + 1,
+            updated_at=timezone.now(),
+        )
+
+    non_draft_linked = any(link.release.status != ArtistRelease.STATUS_DRAFT for link in links)
+    has_accounting = bool(song.plays) or song.play_counts.exists()
+    must_preserve = song.status in {Song.STATUS_PUBLISHED, Song.STATUS_DELETED} or non_draft_linked or has_accounting
+    if must_preserve:
+        if song.status != Song.STATUS_DELETED:
+            song.status = Song.STATUS_DELETED
+            song.save(update_fields=['status', 'updated_at'])
+        media_urls = _mark_releases_without_active_tracks(release_ids, actor=actor)
+        return 'soft', media_urls
+
+    media_urls = list(filter(None, [
+        song.audio_file,
+        song.converted_audio_url,
+        song.preview_audio_url,
+        song.cover_image,
+    ]))
+    media_urls.extend(_mark_releases_without_active_tracks(release_ids, actor=actor))
+    song.delete()
+    return 'hard', media_urls
 
 
 def _touch_user_history(user, content_type, **target):
@@ -1717,7 +1807,7 @@ class PlaylistDetailView(APIView):
     def get(self, request, pk):
         playlist = Playlist.objects.prefetch_related(
             'genres', 'moods', 'tags', Prefetch('songs', queryset=_song_card_queryset())
-        ).filter(pk=pk).first()
+        ).filter(pk=pk, songs__status=Song.STATUS_PUBLISHED).distinct().first()
         if not playlist: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
             _touch_user_history(request.user, UserHistory.TYPE_PLAYLIST, playlist=playlist)
@@ -1965,7 +2055,7 @@ class ArtistDetailView(APIView):
         song_base = _song_card_queryset().filter(artist=artist)
         top = song_base.annotate(total_plays=Coalesce(F('plays'), 0) + Count('play_counts')).order_by('-total_plays', '-created_at')
         latest = song_base.order_by('-release_date', '-created_at')
-        albums = Album.objects.filter(artist=artist).exclude(Q(title__iexact='single') | Q(title='سینگل')).select_related('artist').prefetch_related(
+        albums = Album.objects.filter(artist=artist, songs__status=Song.STATUS_PUBLISHED).exclude(Q(title__iexact='single') | Q(title='سینگل')).distinct().select_related('artist').prefetch_related(
             'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=_song_card_queryset())
         ).order_by('-release_date', '-created_at')
         list_type = request.query_params.get('type')
@@ -2131,7 +2221,10 @@ class AlbumListView(APIView):
         responses={200: AlbumSerializer(many=True)}
     )
     def get(self, request):
-        albums = Album.objects.all()
+        albums = Album.objects.filter(songs__status=Song.STATUS_PUBLISHED).distinct().select_related('artist').prefetch_related(
+            'genres', 'sub_genres', 'moods',
+            Prefetch('songs', queryset=_song_card_queryset(), to_attr='_detail_songs'),
+        )
         serializer = AlbumSerializer(albums, many=True, context={'request': request})
         return Response(serializer.data)
 
@@ -2145,7 +2238,7 @@ class AlbumDetailView(APIView):
     def get(self, request, pk):
         album = Album.objects.select_related('artist').prefetch_related(
             'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=_song_card_queryset(), to_attr='_detail_songs')
-        ).filter(pk=pk).first()
+        ).filter(pk=pk, songs__status=Song.STATUS_PUBLISHED).distinct().first()
         if not album: return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if request.user.is_authenticated:
             _touch_user_history(request.user, UserHistory.TYPE_ALBUM, album=album)
@@ -4151,7 +4244,7 @@ def _home_song_queryset(require_preview=False):
 
 def _home_album_queryset():
     song_qs = _home_song_queryset().order_by('-release_date', '-created_at')
-    return Album.objects.select_related('artist').prefetch_related(
+    return Album.objects.filter(songs__status=Song.STATUS_PUBLISHED).distinct().select_related('artist').prefetch_related(
         'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=song_qs, to_attr='_card_songs')
     )
 
@@ -6070,7 +6163,7 @@ class SearchView(APIView):
             )
         return qs.order_by('-verified','-created_at')
     def _search_albums(self,q,moods,request):
-        qs=Album.objects.exclude(Q(title__iexact='single')|Q(title='سینگل'))
+        qs=Album.objects.filter(songs__status=Song.STATUS_PUBLISHED).exclude(Q(title__iexact='single')|Q(title='سینگل')).distinct()
         if q: qs=qs.filter(Q(title__icontains=q)|Q(title_en__icontains=q)|Q(description__icontains=q)|Q(description_en__icontains=q)|Q(artist__name__icontains=q)|Q(artist__name_en__icontains=q))
         return qs.order_by('-release_date','-created_at')
     def _search_playlists(self,q,moods,request):
@@ -7262,6 +7355,12 @@ class ArtistSongsManagementView(APIView):
         ).prefetch_related(
             'featured_artists', 'genres', 'sub_genres', 'moods', 'tags',
             _artist_panel_release_links_prefetch(),
+        ).annotate(
+            album_active_songs_count_value=Count(
+                'album__songs',
+                filter=~Q(album__songs__status=Song.STATUS_DELETED),
+                distinct=True,
+            )
         )
 
         if pk:
@@ -7658,92 +7757,48 @@ class ArtistSongsManagementView(APIView):
         return Response({"message": "OK", "song": serializer.data})
 
     def delete(self, request, pk=None):
-        """Hard-delete drafts; soft-delete released recordings and preserve accounting history."""
+        """Delete a recording while retaining rows needed by releases and accounting."""
         artist = self.get_artist(request.user)
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         media_urls = []
+        album_deleted = False
+        album_deletion = None
         with transaction.atomic():
-            song = get_object_or_404(Song.objects.select_for_update(), pk=pk, artist=artist)
-            links = list(
-                ArtistReleaseTrack.objects.select_for_update()
-                .select_related('release')
-                .filter(song=song)
-            )
+            song_ref = get_object_or_404(Song.objects.only('pk', 'album_id'), pk=pk, artist=artist)
+            album = None
+            if song_ref.album_id:
+                album = Album.objects.select_for_update().filter(pk=song_ref.album_id, artist=artist).first()
+            song = Song.objects.select_for_update().get(pk=song_ref.pk, artist=artist)
+            deletion, removed_media = _delete_artist_song_locked(song, actor=request.user)
+            media_urls.extend(removed_media)
 
-            draft_links = [link for link in links if link.release.status == ArtistRelease.STATUS_DRAFT]
+            if album and not album.songs.exclude(status=Song.STATUS_DELETED).exists():
+                album_deleted = True
+                if album.songs.exists():
+                    album_deletion = 'soft'
+                else:
+                    album_deletion = 'hard'
+                    if album.cover_image:
+                        media_urls.append(album.cover_image)
+                    album.delete()
 
-            def detach_from_drafts():
-                if not draft_links:
-                    return
-                release_ids = {link.release_id for link in draft_links}
-                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in draft_links]).delete()
-                for release_id in release_ids:
-                    remaining = list(
-                        ArtistReleaseTrack.objects.select_for_update()
-                        .filter(release_id=release_id)
-                        .order_by('position', 'id')
-                    )
-                    for index, link in enumerate(remaining, start=1):
-                        if link.position != index:
-                            ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=1000 + index)
-                    for index, link in enumerate(remaining, start=1):
-                        ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
-                ArtistRelease.objects.filter(pk__in=release_ids).update(
-                    validation_snapshot={},
-                    lock_version=F('lock_version') + 1,
-                    updated_at=timezone.now(),
-                )
+            if media_urls:
+                transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
 
-            if song.status == Song.STATUS_DELETED:
-                detach_from_drafts()
-                data = _apply_release_cover_fallback(
+            payload = {
+                "message": "OK",
+                "deletion": deletion,
+                "album_deleted": album_deleted,
+                "album_deletion": album_deletion,
+            }
+            if deletion == 'soft':
+                payload['song'] = _apply_release_cover_fallback(
                     song,
                     dict(SongSerializer(song, context={'request': request}).data),
                 )
-                return Response({"message": "OK", "deletion": "soft", "song": data})
-
-            has_accounting = bool(song.plays) or song.play_counts.exists()
-            released = song.status == Song.STATUS_PUBLISHED or any(
-                link.release.status in {ArtistRelease.STATUS_LIVE, ArtistRelease.STATUS_TAKEN_DOWN}
-                for link in links
-            )
-            if released or has_accounting:
-                detach_from_drafts()
-                song.status = Song.STATUS_DELETED
-                song.save(update_fields=['status', 'updated_at'])
-                data = _apply_release_cover_fallback(
-                    song,
-                    dict(SongSerializer(song, context={'request': request}).data),
-                )
-                return Response({"message": "OK", "deletion": "soft", "song": data})
-
-            locked_links = [link for link in links if link.release.status != ArtistRelease.STATUS_DRAFT]
-            if locked_links:
-                return Response({
-                    'detail': 'This recording belongs to a submitted release. Delete or withdraw that release first; the release itself was not changed.'
-                }, status=status.HTTP_409_CONFLICT)
-
-            media_urls.extend(filter(None, [
-                song.audio_file,
-                song.converted_audio_url,
-                song.preview_audio_url,
-                song.cover_image,
-            ]))
-            release_ids = [link.release_id for link in links]
-            if links:
-                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in links]).delete()
-                ArtistRelease.objects.filter(pk__in=release_ids).update(
-                    validation_snapshot={},
-                    lock_version=F('lock_version') + 1,
-                    updated_at=timezone.now(),
-                )
-            song.delete()
-            transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
-
-        return Response({"message": "OK", "deletion": "hard"})
-
+            return Response(payload)
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
@@ -7843,7 +7898,7 @@ class ArtistAlbumsManagementView(APIView):
         existing_song_ids = _normalize_id_list(raw_existing_song_ids) or []
         available_song_ids = set(Song.objects.filter(
             id__in=existing_song_ids, artist=artist, album__isnull=True
-        ).values_list('id', flat=True))
+        ).exclude(status=Song.STATUS_DELETED).values_list('id', flat=True))
         unavailable_song_ids = [song_id for song_id in existing_song_ids if song_id not in available_song_ids]
         if unavailable_song_ids:
             return Response({
@@ -8016,6 +8071,8 @@ class ArtistAlbumsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
+        if _album_is_deleted(album):
+            return Response({'detail': 'Deleted albums are read-only so historical track and payment records remain stable.'}, status=status.HTTP_409_CONFLICT)
 
         album_data = {
             field: request.data.get(field)
@@ -8034,7 +8091,7 @@ class ArtistAlbumsManagementView(APIView):
                 Q(album__isnull=True) | Q(album=album),
                 id__in=replace_song_ids,
                 artist=artist,
-            ).values_list('id', flat=True))
+            ).exclude(status=Song.STATUS_DELETED).values_list('id', flat=True))
             unavailable_song_ids = [song_id for song_id in replace_song_ids if song_id not in allowed_song_ids]
             if unavailable_song_ids:
                 return Response({
@@ -8071,7 +8128,7 @@ class ArtistAlbumsManagementView(APIView):
         with transaction.atomic():
             serializer.save(**({'cover_image': cover_url} if cover_url else {}))
             if replace_song_ids is not None:
-                Song.objects.filter(album=album).exclude(id__in=replace_song_ids).update(
+                Song.objects.filter(album=album).exclude(status=Song.STATUS_DELETED).exclude(id__in=replace_song_ids).update(
                     album=None, is_single=True
                 )
                 if replace_song_ids:
@@ -8095,27 +8152,63 @@ class ArtistAlbumsManagementView(APIView):
 
     @extend_schema(
         summary="حذف آلبوم",
-        description="حذف یک آلبوم خاص متعلق به هنرمند.",
-        responses={204: None}
+        description="حذف آلبوم با حفظ ترک‌ها و سوابق مالی منتشرشده.",
+        responses={200: None}
     )
     def delete(self, request, pk):
         artist = self.get_artist(request.user)
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
-        from django.db import transaction
-
-        album = get_object_or_404(Album, pk=pk, artist=artist)
-
-        # Deleting an album must not destroy the artist's audio catalog.
+        media_urls = []
+        soft_count = 0
+        hard_count = 0
         with transaction.atomic():
-            detached_songs = Song.objects.filter(album=album).update(album=None, is_single=True)
-            album.delete()
+            album = get_object_or_404(Album.objects.select_for_update(), pk=pk, artist=artist)
+            linked_release_ids = list(
+                ArtistRelease.objects.select_for_update()
+                .filter(album=album, artist=artist)
+                .values_list('pk', flat=True)
+            )
+            songs = list(Song.objects.select_for_update().filter(album=album).order_by('id'))
+            for song in songs:
+                deletion, removed_media = _delete_artist_song_locked(song, actor=request.user)
+                media_urls.extend(removed_media)
+                if deletion == 'soft':
+                    soft_count += 1
+                else:
+                    hard_count += 1
 
-        return Response({
-            "message": "Album deleted successfully. Its songs were kept as singles.",
-            "detached_songs": detached_songs,
-        }, status=status.HTTP_200_OK)
+            media_urls.extend(_mark_releases_without_active_tracks(linked_release_ids, actor=request.user))
+            ArtistRelease.objects.filter(
+                pk__in=linked_release_ids,
+                status=ArtistRelease.STATUS_DRAFT,
+                release_tracks__isnull=True,
+            ).delete()
+
+            if album.songs.exists():
+                album.refresh_from_db()
+                payload = {
+                    'message': 'Album disabled; released recordings and accounting history were preserved.',
+                    'deletion': 'soft',
+                    'soft_deleted_tracks': soft_count,
+                    'hard_deleted_tracks': hard_count,
+                    'album': AlbumSerializer(album, context={'request': request}).data,
+                }
+            else:
+                if album.cover_image:
+                    media_urls.append(album.cover_image)
+                album.delete()
+                payload = {
+                    'message': 'Album and its disposable recordings were permanently deleted.',
+                    'deletion': 'hard',
+                    'soft_deleted_tracks': soft_count,
+                    'hard_deleted_tracks': hard_count,
+                }
+
+            if media_urls:
+                transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
+            return Response(payload)
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
@@ -8150,6 +8243,8 @@ class ArtistAlbumSongsView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
+        if _album_is_deleted(album):
+            return Response({'detail': 'Deleted albums cannot accept new recordings.'}, status=status.HTTP_409_CONFLICT)
 
         raw = request.data.get('song_ids') or request.data.get('song_id') or request.data.getlist('song_ids')
         song_ids = _normalize_id_list(raw)
@@ -8160,7 +8255,7 @@ class ArtistAlbumSongsView(APIView):
             Q(album__isnull=True) | Q(album=album),
             id__in=song_ids,
             artist=artist,
-        )
+        ).exclude(status=Song.STATUS_DELETED)
         updated_ids = list(qs.values_list('id', flat=True))
         updated_count = qs.update(album=album, is_single=False)
         missing = [i for i in song_ids if i not in updated_ids]
@@ -8175,7 +8270,7 @@ class ArtistAlbumSongsView(APIView):
 
     @extend_schema(
         summary="حذف اختصاص آهنگ‌ها از آلبوم",
-        description="حذف رابطهٔ آلبوم از روی یک یا چند آهنگ (تنها اگر آن آهنگ‌ها در این آلبوم باشند).",
+        description="آهنگ‌ها را از آلبوم جدا می‌کند؛ اگر آخرین آهنگ فعال حذف شود، آلبوم نیز حذف/غیرفعال می‌شود.",
         request=inline_serializer(name='RemoveSongsFromAlbum', fields={
             'song_ids': serializers.ListField(child=serializers.IntegerField())
         }),
@@ -8186,24 +8281,54 @@ class ArtistAlbumSongsView(APIView):
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
-        album = get_object_or_404(Album, pk=pk, artist=artist)
-
         raw = request.data.get('song_ids') or request.data.get('song_id') or request.data.getlist('song_ids')
         song_ids = _normalize_id_list(raw)
         if not song_ids:
             return Response({'error': 'song_ids is required (list of integers)'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Only remove album relation if the song currently belongs to this album and the artist matches
-        qs = Song.objects.filter(id__in=song_ids, artist=artist, album=album)
-        removed_ids = list(qs.values_list('id', flat=True))
-        removed_count = qs.update(album=None, is_single=True)
-        missing = [i for i in song_ids if i not in removed_ids]
+        media_urls = []
+        with transaction.atomic():
+            album = get_object_or_404(Album.objects.select_for_update(), pk=pk, artist=artist)
+            qs = Song.objects.select_for_update().filter(id__in=song_ids, artist=artist, album=album)
+            removed_ids = list(qs.values_list('id', flat=True))
+            release_links = list(
+                ArtistReleaseTrack.objects.select_for_update()
+                .filter(release__artist=artist, release__album=album, song_id__in=removed_ids)
+            )
+            release_ids = {link.release_id for link in release_links}
+            if release_links:
+                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in release_links]).delete()
+                _renumber_release_tracks(release_ids)
+                ArtistRelease.objects.filter(pk__in=release_ids).update(
+                    validation_snapshot={},
+                    lock_version=F('lock_version') + 1,
+                    updated_at=timezone.now(),
+                )
 
-        return Response({
-            'removed_count': removed_count,
-            'removed_ids': removed_ids,
-            'missing_or_not_owned_or_not_in_album': missing
-        })
+            removed_count = qs.update(album=None, is_single=True)
+            missing = [song_id for song_id in song_ids if song_id not in removed_ids]
+            media_urls.extend(_mark_releases_without_active_tracks(release_ids, actor=request.user))
+
+            album_deleted = not album.songs.exclude(status=Song.STATUS_DELETED).exists()
+            album_deletion = None
+            if album_deleted:
+                if album.songs.exists():
+                    album_deletion = 'soft'
+                else:
+                    album_deletion = 'hard'
+                    if album.cover_image:
+                        media_urls.append(album.cover_image)
+                    album.delete()
+
+            if media_urls:
+                transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
+            return Response({
+                'removed_count': removed_count,
+                'removed_ids': removed_ids,
+                'missing_or_not_owned_or_not_in_album': missing,
+                'album_deleted': album_deleted,
+                'album_deletion': album_deletion,
+            })
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])

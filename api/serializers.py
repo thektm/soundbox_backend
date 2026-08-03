@@ -1265,16 +1265,22 @@ class AlbumSerializer(LocalizedModelSerializer):
     songs = serializers.SerializerMethodField()
     song_genre_names = serializers.SerializerMethodField()
     song_mood_names = serializers.SerializerMethodField()
+    is_deleted = serializers.SerializerMethodField()
+    active_songs_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Album
         fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'release_date',
                   'description', 'description_en', 'created_at', 'likes_count', 'songs_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
-                  'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'genre_items', 'sub_genre_items', 'mood_items', 'songs', 'song_genre_names', 'song_mood_names']
+                  'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'genre_items', 'sub_genre_items', 'mood_items', 'songs', 'song_genre_names', 'song_mood_names', 'is_deleted', 'active_songs_count']
         read_only_fields = ['id', 'created_at', 'likes_count', 'is_liked']
 
     def get_likes_count(self, obj): return int(_metric(obj, '_likes_count', lambda: AlbumLike.objects.filter(album=obj).count()))
     def get_songs_count(self, obj): return len(self._songs(obj))
+    def get_active_songs_count(self, obj): return sum(song.status != Song.STATUS_DELETED for song in self._songs(obj))
+    def get_is_deleted(self, obj):
+        songs = self._songs(obj)
+        return bool(songs) and not any(song.status != Song.STATUS_DELETED for song in songs)
     def get_is_liked(self, obj):
         request = self.context.get('request')
         return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and AlbumLike.objects.filter(user=request.user, album=obj).exists()))
@@ -1412,6 +1418,7 @@ class SongSerializer(LocalizedModelSerializer):
     genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     similar_songs = serializers.SerializerMethodField()
+    album_active_songs_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Song
@@ -1424,7 +1431,7 @@ class SongSerializer(LocalizedModelSerializer):
                   'acousticness', 'instrumentalness', 'live_performed', 'speechiness', 'label', 'label_en', 'producers', 'producers_en',
                   'composers', 'composers_en', 'lyricists', 'lyricists_en', 'credits', 'credits_en', 'uploader', 'uploader_phone', 'uploader_unique_id', 'created_at',
                   'updated_at', 'display_title', 'similar_songs', 'genre_ids_write', 'sub_genre_ids_write',
-                  'mood_ids_write', 'tag_ids_write']
+                  'mood_ids_write', 'tag_ids_write', 'album_active_songs_count']
         read_only_fields = ['id', 'plays', 'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked',
                             'created_at', 'updated_at', 'duration_display', 'display_title']
 
@@ -1454,6 +1461,11 @@ class SongSerializer(LocalizedModelSerializer):
     def get_sub_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.sub_genres.all()]
     def get_mood_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.moods.all()]
     def get_tag_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.tags.all()]
+    def get_album_active_songs_count(self, obj):
+        if not obj.album_id:
+            return 0
+        value = getattr(obj, 'album_active_songs_count_value', None)
+        return int(value if value is not None else obj.album.songs.exclude(status=Song.STATUS_DELETED).count())
     def get_plays(self, obj): return int(obj.plays or 0) + int(_metric(obj, '_play_count', lambda: obj.play_counts.count()))
     def get_likes_count(self, obj): return int(_metric(obj, '_likes_count', lambda: SongLike.objects.filter(song=obj).count()))
     def get_added_to_playlists_count(self, obj): return int(_metric(obj, '_playlist_count', lambda: obj.user_playlists.count()))
