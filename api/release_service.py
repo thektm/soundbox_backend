@@ -317,6 +317,8 @@ def validation_payload(release: ArtistRelease) -> dict:
     seen_title_versions: set[tuple[str, str]] = set()
     for link in tracks:
         song = link.song
+        if song.status == Song.STATUS_DELETED:
+            error('tracks', 'Deleted recordings cannot be submitted or published.', song.id)
         extras = normalize_track_extras(link.extras, link.position)
         completion, missing = _track_completion(song, extras)
         if completion >= 75:
@@ -628,7 +630,9 @@ def prepare_release(release: ArtistRelease, schedule=False) -> ArtistRelease:
         release = release_queryset().get(pk=release.pk)
         sync_release_tracks(release)
         for link in release.release_tracks.all():
-            Song.objects.filter(pk=link.song_id).update(status=Song.STATUS_APPROVED)
+            Song.objects.filter(pk=link.song_id).exclude(status=Song.STATUS_DELETED).update(
+                status=Song.STATUS_APPROVED
+            )
         release.scheduled_at = scheduled_datetime(release) if schedule else None
         release.save(update_fields=['scheduled_at', 'updated_at'])
         return release
@@ -717,7 +721,9 @@ def take_down_release(release: ArtistRelease) -> None:
         ArtistRelease.objects.select_for_update().only('pk').get(pk=release.pk)
         release = ArtistRelease.objects.select_related('album').get(pk=release.pk)
         release_song_ids = list(release.release_tracks.values_list('song_id', flat=True))
-        Song.objects.filter(pk__in=release_song_ids).update(status=Song.STATUS_APPROVED)
+        Song.objects.filter(pk__in=release_song_ids).exclude(status=Song.STATUS_DELETED).update(
+            status=Song.STATUS_APPROVED
+        )
         # Legacy Album has no visibility state and public endpoints query every
         # row. Delete the materialized album only when it belongs exclusively to
         # this release. The unrelated-song guard prevents accidental catalog loss

@@ -523,6 +523,7 @@ class Song(models.Model):
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
     STATUS_PUBLISHED = 'published'
+    STATUS_DELETED = 'deleted'
     
     STATUS_CHOICES = [
         (STATUS_DRAFT, 'Draft'),
@@ -530,6 +531,7 @@ class Song(models.Model):
         (STATUS_APPROVED, 'Approved'),
         (STATUS_REJECTED, 'Rejected'),
         (STATUS_PUBLISHED, 'Published'),
+        (STATUS_DELETED, 'Deleted by artist'),
     ]
     
     # Basic info

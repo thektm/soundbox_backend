@@ -433,25 +433,36 @@ class ArtistReleaseDetailView(APIView):
                 .exclude(release=release)
                 .values_list('song_id', flat=True)
             )
-            delete_song_ids = [song_id for song_id in song_ids if song_id not in shared_song_ids]
+            unique_links = [link for link in links if link.song_id not in shared_song_ids]
+            hard_delete_ids = []
+            soft_delete_songs = []
+            preserve_release_tracks = release.status in {ArtistRelease.STATUS_LIVE, ArtistRelease.STATUS_TAKEN_DOWN}
+            for link in unique_links:
+                song = link.song
+                has_accounting = bool(song.plays) or song.play_counts.exists()
+                if preserve_release_tracks or song.status in {Song.STATUS_PUBLISHED, Song.STATUS_DELETED} or has_accounting:
+                    soft_delete_songs.append(song)
+                else:
+                    hard_delete_ids.append(song.pk)
+                    media_urls.extend(filter(None, [
+                        song.audio_file,
+                        song.converted_audio_url,
+                        song.preview_audio_url,
+                        song.cover_image,
+                    ]))
 
             raw_cover = str((release.release_metadata or {}).get('cover_url') or '')
             if raw_cover:
                 media_urls.append(raw_cover)
-            for link in links:
-                if link.song_id not in delete_song_ids:
-                    continue
-                media_urls.extend(filter(None, [
-                    link.song.audio_file,
-                    link.song.converted_audio_url,
-                    link.song.preview_audio_url,
-                    link.song.cover_image,
-                ]))
 
             album = release.album
             ArtistReleaseTrack.objects.filter(release=release).delete()
-            if delete_song_ids:
-                Song.objects.filter(pk__in=delete_song_ids).delete()
+            for song in soft_delete_songs:
+                if song.status != Song.STATUS_DELETED:
+                    song.status = Song.STATUS_DELETED
+                    song.save(update_fields=['status', 'updated_at'])
+            if hard_delete_ids:
+                Song.objects.filter(pk__in=hard_delete_ids).delete()
             release.delete()
 
             if album and not album.songs.exists():
@@ -500,7 +511,9 @@ class ArtistReleaseTracksView(APIView):
                 song_ids = _id_list(request.data.get('song_ids'))
                 if not song_ids:
                     return Response({'song_ids': ['Select at least one recording.']}, status=status.HTTP_400_BAD_REQUEST)
-                songs = {song.id: song for song in Song.objects.filter(id__in=song_ids, artist=artist).prefetch_related(
+                songs = {song.id: song for song in Song.objects.filter(
+                    id__in=song_ids, artist=artist
+                ).exclude(status=Song.STATUS_DELETED).prefetch_related(
                     'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
                 )}
                 missing = [song_id for song_id in song_ids if song_id not in songs]
@@ -732,7 +745,7 @@ class ArtistReleaseSubmitView(APIView):
             for link in links:
                 link.metadata_snapshot = snapshot_song(link.song)
                 link.save(update_fields=['metadata_snapshot', 'updated_at'])
-                Song.objects.filter(pk=link.song_id).update(
+                Song.objects.filter(pk=link.song_id).exclude(status=Song.STATUS_DELETED).update(
                     status=Song.STATUS_PENDING,
                     is_single=release.release_type == ArtistRelease.TYPE_SINGLE,
                 )
@@ -933,7 +946,9 @@ class AdminReleaseActionView(APIView):
             if action == 'request_changes':
                 change_status(release, ArtistRelease.STATUS_CHANGES_REQUESTED, actor=request.user, note=note or 'Changes requested by admin.')
             elif action == 'reject':
-                Song.objects.filter(release_track_links__release=release).update(status=Song.STATUS_REJECTED)
+                Song.objects.filter(release_track_links__release=release).exclude(
+                    status=Song.STATUS_DELETED
+                ).update(status=Song.STATUS_REJECTED)
                 change_status(release, ArtistRelease.STATUS_REJECTED, actor=request.user, note=note or 'Release rejected by admin.')
             elif action == 'approve':
                 release = prepare_release(release, schedule=False)
@@ -955,14 +970,18 @@ class AdminReleaseActionView(APIView):
                 release = ArtistRelease.objects.select_for_update().get(pk=release.pk)
                 change_status(release, ArtistRelease.STATUS_TAKEN_DOWN, actor=request.user, note=note or 'Release taken down.')
             elif action == 'reopen':
-                Song.objects.filter(release_track_links__release=release).update(status=Song.STATUS_DRAFT)
+                Song.objects.filter(release_track_links__release=release).exclude(
+                    status=Song.STATUS_DELETED
+                ).update(status=Song.STATUS_DRAFT)
                 release.submitted_at = None
                 release.scheduled_at = None
                 release.validation_snapshot = {}
                 release.save(update_fields=['submitted_at', 'scheduled_at', 'validation_snapshot', 'updated_at'])
                 change_status(release, ArtistRelease.STATUS_DRAFT, actor=request.user, note=note or 'Release reopened for editing.')
             elif action == 'return_to_review':
-                Song.objects.filter(release_track_links__release=release).update(status=Song.STATUS_PENDING)
+                Song.objects.filter(release_track_links__release=release).exclude(
+                    status=Song.STATUS_DELETED
+                ).update(status=Song.STATUS_PENDING)
                 release.submitted_at = release.submitted_at or timezone.now()
                 release.save(update_fields=['submitted_at', 'updated_at'])
                 change_status(release, ArtistRelease.STATUS_IN_REVIEW, actor=request.user, note=note or 'Release returned to review.')

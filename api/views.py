@@ -7517,6 +7517,10 @@ class ArtistSongsManagementView(APIView):
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
+        if song.status == Song.STATUS_DELETED:
+            return Response({
+                'detail': 'Deleted recordings are read-only so their stream and payment history stays intact.'
+            }, status=status.HTTP_409_CONFLICT)
         if song.release_track_links.exclude(release__status=ArtistRelease.STATUS_DRAFT).exists():
             return Response({
                 'detail': 'This recording belongs to a submitted or published release. Create an editable release revision instead.'
@@ -7654,7 +7658,7 @@ class ArtistSongsManagementView(APIView):
         return Response({"message": "OK", "song": serializer.data})
 
     def delete(self, request, pk=None):
-        """Delete a recording without ever deleting its parent release."""
+        """Hard-delete drafts; soft-delete released recordings and preserve accounting history."""
         artist = self.get_artist(request.user)
         if not artist:
             return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
@@ -7667,10 +7671,58 @@ class ArtistSongsManagementView(APIView):
                 .select_related('release')
                 .filter(song=song)
             )
+
+            draft_links = [link for link in links if link.release.status == ArtistRelease.STATUS_DRAFT]
+
+            def detach_from_drafts():
+                if not draft_links:
+                    return
+                release_ids = {link.release_id for link in draft_links}
+                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in draft_links]).delete()
+                for release_id in release_ids:
+                    remaining = list(
+                        ArtistReleaseTrack.objects.select_for_update()
+                        .filter(release_id=release_id)
+                        .order_by('position', 'id')
+                    )
+                    for index, link in enumerate(remaining, start=1):
+                        if link.position != index:
+                            ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=1000 + index)
+                    for index, link in enumerate(remaining, start=1):
+                        ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
+                ArtistRelease.objects.filter(pk__in=release_ids).update(
+                    validation_snapshot={},
+                    lock_version=F('lock_version') + 1,
+                    updated_at=timezone.now(),
+                )
+
+            if song.status == Song.STATUS_DELETED:
+                detach_from_drafts()
+                data = _apply_release_cover_fallback(
+                    song,
+                    dict(SongSerializer(song, context={'request': request}).data),
+                )
+                return Response({"message": "OK", "deletion": "soft", "song": data})
+
+            has_accounting = bool(song.plays) or song.play_counts.exists()
+            released = song.status == Song.STATUS_PUBLISHED or any(
+                link.release.status in {ArtistRelease.STATUS_LIVE, ArtistRelease.STATUS_TAKEN_DOWN}
+                for link in links
+            )
+            if released or has_accounting:
+                detach_from_drafts()
+                song.status = Song.STATUS_DELETED
+                song.save(update_fields=['status', 'updated_at'])
+                data = _apply_release_cover_fallback(
+                    song,
+                    dict(SongSerializer(song, context={'request': request}).data),
+                )
+                return Response({"message": "OK", "deletion": "soft", "song": data})
+
             locked_links = [link for link in links if link.release.status != ArtistRelease.STATUS_DRAFT]
             if locked_links:
                 return Response({
-                    'detail': 'This recording belongs to a submitted or published release. Delete that release to remove both; the release itself was not changed.'
+                    'detail': 'This recording belongs to a submitted release. Delete or withdraw that release first; the release itself was not changed.'
                 }, status=status.HTTP_409_CONFLICT)
 
             media_urls.extend(filter(None, [
@@ -7690,7 +7742,7 @@ class ArtistSongsManagementView(APIView):
             song.delete()
             transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
 
-        return Response({"message": "OK"})
+        return Response({"message": "OK", "deletion": "hard"})
 
 
 
