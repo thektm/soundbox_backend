@@ -4,7 +4,7 @@ import json
 import logging
 from PIL import Image
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -112,6 +112,26 @@ def _draft_or_409(release):
     return None
 
 
+def _legacy_track(song):
+    return {
+        'id': song.id,
+        'title': song.title,
+        'title_en': song.title_en,
+        'artist_name': song.artist.name if song.artist_id else '',
+        'album_title': song.album.title if song.album_id else None,
+        'duration_display': song.duration_display,
+        'duration_seconds': song.duration_seconds,
+        'original_format': song.original_format,
+        'cover_image': song.cover_image,
+        'audio_file': song.audio_file,
+        'status': song.status,
+        'has_audio': bool(song.audio_file),
+        'metadata_completion': 100,
+        'missing_metadata': [],
+        'release_extras': {},
+    }
+
+
 def _legacy_release(album, request=None):
     songs = list(album.songs.all())
     statuses = {song.status for song in songs}
@@ -132,11 +152,11 @@ def _legacy_release(album, request=None):
         'album_id': album.id,
         'title': album.title,
         'title_en': album.title_en,
-        'release_type': ArtistRelease.TYPE_ALBUM if len(songs) > 1 else ArtistRelease.TYPE_SINGLE,
+        'release_type': ArtistRelease.TYPE_ALBUM,
         'status': release_status,
         'current_step': 6,
         'track_ids': [song.id for song in songs],
-        'tracks': [],
+        'tracks': [_legacy_track(song) for song in songs],
         'shared_metadata': merged_shared({}),
         'release_metadata': merged_release_metadata({
             'release_date': album.release_date.isoformat() if album.release_date else '',
@@ -185,7 +205,7 @@ def _legacy_single(song, request=None):
         'status': release_status,
         'current_step': 6,
         'track_ids': [song.id],
-        'tracks': [],
+        'tracks': [_legacy_track(song)],
         'shared_metadata': merged_shared({}),
         'release_metadata': merged_release_metadata({
             'release_date': song.release_date.isoformat() if song.release_date else '',
@@ -232,13 +252,17 @@ class ArtistReleaseListCreateView(APIView):
         releases = [serialize_release(item, request) for item in queryset[:250]]
 
         linked_album_ids = set(ArtistRelease.objects.filter(artist=artist, album__isnull=False).values_list('album_id', flat=True))
-        legacy_albums = Album.objects.filter(artist=artist).exclude(id__in=linked_album_ids).prefetch_related('songs').order_by('-created_at')[:100]
+        legacy_albums = Album.objects.filter(artist=artist).exclude(id__in=linked_album_ids).prefetch_related(
+            Prefetch('songs', queryset=Song.objects.select_related('artist', 'album').order_by('album_track_number', 'id'))
+        ).order_by('-created_at')[:100]
         releases.extend(_legacy_release(album, request) for album in legacy_albums)
 
         linked_song_ids = ArtistReleaseTrack.objects.filter(release__artist=artist).values_list('song_id', flat=True)
+        # Any unlinked, album-less recording is a standalone release candidate.
+        # Older uploads often left is_single=False, which made their drafts disappear here.
         legacy_singles = Song.objects.filter(
-            artist=artist, album__isnull=True, is_single=True,
-        ).exclude(id__in=linked_song_ids).order_by('-updated_at')[:100]
+            artist=artist, album__isnull=True,
+        ).exclude(id__in=linked_song_ids).select_related('artist').order_by('-updated_at')[:100]
         releases.extend(_legacy_single(song, request) for song in legacy_singles)
         releases.sort(key=lambda item: item.get('updated_at') or item.get('created_at'), reverse=True)
         return Response({'count': len(releases), 'results': releases})
