@@ -106,10 +106,10 @@ def provision_artist_profile(auth_id: int) -> Artist | None:
         profile.user = user
         profile.email = auth.email or user.email
         profile.city = auth.city
-        profile.city_en = auth.city_en or auth.city
+        profile.city_en = auth.city
         profile.date_of_birth = auth.birth_date
         profile.address = auth.address or ""
-        profile.address_en = auth.address_en or auth.address or ""
+        profile.address_en = auth.address or ""
         profile.id_number = auth.national_id
         profile.bio = auth.biography or ""
         profile.bio_en = auth.biography_en or auth.biography or ""

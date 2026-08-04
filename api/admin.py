@@ -113,8 +113,7 @@ class ArtistAuthAdmin(admin.ModelAdmin):
         ('Link', {'fields': ('user', 'auth_type', 'artist_claimed')}),
         ('Personal — Persian', {'fields': ('first_name', 'last_name', 'stage_name', 'birth_date')}),
         ('Personal — English', {'fields': ('first_name_en', 'last_name_en', 'stage_name_en')}),
-        ('Contact — Persian', {'fields': ('phone_number', 'email', 'city', 'address')}),
-        ('Contact — English', {'fields': ('city_en', 'address_en')}),
+        ('Contact', {'fields': ('phone_number', 'email', 'city', 'address')}),
         ('Verification', {
             'fields': (
                 'national_id', 'profile_image', 'national_id_image',

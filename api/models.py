@@ -562,6 +562,9 @@ class Song(models.Model):
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
     STATUS_PUBLISHED = 'published'
+    # Internal soft-delete state. Kept outside STATUS_CHOICES intentionally so
+    # this runtime fix does not require a database/schema migration.
+    STATUS_DELETED = 'deleted'
     
     STATUS_CHOICES = [
         (STATUS_DRAFT, 'Draft'),

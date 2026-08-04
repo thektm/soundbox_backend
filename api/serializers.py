@@ -1222,7 +1222,7 @@ class ArtistAuthSerializer(LocalizedModelSerializer):
             'id', 'user_id', 'auth_type', 'artist_claimed',
             'first_name', 'first_name_en', 'last_name', 'last_name_en',
             'stage_name', 'stage_name_en', 'birth_date', 'national_id',
-            'phone_number', 'email', 'city', 'city_en', 'address', 'address_en',
+            'phone_number', 'email', 'city', 'address',
             'biography', 'biography_en', 'profile_image', 'national_id_image',
             'status', 'is_verified', 'created_at', 'updated_at'
         ]
@@ -1244,7 +1244,7 @@ class ArtistAuthSerializer(LocalizedModelSerializer):
 
         # Fresh onboarding must capture real values in both supported languages.
         if auth_type == ArtistAuth.AUTH_FRESH and self.instance is None:
-            required = ('first_name_en', 'last_name_en', 'stage_name_en', 'city_en')
+            required = ('first_name_en', 'last_name_en', 'stage_name_en')
             missing = {
                 field: 'This English field is required for a fresh artist.'
                 for field in required

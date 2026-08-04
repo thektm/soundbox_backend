@@ -95,7 +95,7 @@ class AdminArtistAuthSerializer(serializers.ModelSerializer):
             'id', 'user', 'auth_type', 'artist_claimed',
             'first_name', 'first_name_en', 'last_name', 'last_name_en',
             'stage_name', 'stage_name_en', 'birth_date', 'national_id',
-            'phone_number', 'email', 'city', 'city_en', 'address', 'address_en',
+            'phone_number', 'email', 'city', 'address',
             'biography', 'biography_en', 'profile_image', 'national_id_image',
             'status', 'is_verified', 'created_at', 'updated_at'
         ]
