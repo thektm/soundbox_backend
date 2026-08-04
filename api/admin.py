@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.http import HttpResponseRedirect
@@ -294,6 +294,12 @@ class SongAdmin(admin.ModelAdmin):
     search_fields = ('title', 'title_en', 'artist__name', 'artist__name_en', 'description', 'description_en', 'lyrics', 'lyrics_en', 'label', 'label_en')
     readonly_fields = ('plays', 'duration_display', 'display_title', 'created_at', 'updated_at')
     autocomplete_fields = ['artist', 'album', 'uploader']
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj and obj.release_track_links.exists() and 'status' not in fields:
+            fields.append('status')
+        return tuple(fields)
     filter_horizontal = ('genres', 'moods', 'tags', 'featured_artists')
     
     fieldsets = (
@@ -351,35 +357,37 @@ class SongAdmin(admin.ModelAdmin):
     
     @staticmethod
     def _bulk_change_status(queryset, new_status):
-        # QuerySet.update() bypasses pre_save/post_save and therefore bypasses
-        # release, owner-status, cache, and notification hooks. Save each changed
-        # song inside one transaction so every normal lifecycle hook is preserved.
+        # Release-linked songs are moderated from ArtistRelease admin so their
+        # release and song states cannot drift apart. Standalone songs retain the
+        # legacy bulk actions.
+        linked_count = queryset.filter(release_track_links__isnull=False).distinct().count()
         changed = 0
         with transaction.atomic():
-            for song in queryset.select_for_update().only('id', 'status'):
+            standalone = queryset.filter(release_track_links__isnull=True).select_for_update().only('id', 'status')
+            for song in standalone:
                 if song.status == new_status:
                     continue
                 song.status = new_status
                 song.save(update_fields=['status'])
                 changed += 1
-        return changed
+        return changed, linked_count
 
     def mark_as_published(self, request, queryset):
-        """Bulk action to publish songs without bypassing lifecycle hooks."""
-        count = self._bulk_change_status(queryset, Song.STATUS_PUBLISHED)
-        self.message_user(request, f'{count} song(s) marked as published.')
+        """Bulk action to publish standalone songs without bypassing lifecycle hooks."""
+        count, skipped = self._bulk_change_status(queryset, Song.STATUS_PUBLISHED)
+        self.message_user(request, f'{count} song(s) marked as published; {skipped} release-linked song(s) skipped.')
     mark_as_published.short_description = 'Mark selected as Published'
     
     def mark_as_draft(self, request, queryset):
         """Bulk action to mark as draft without bypassing lifecycle hooks."""
-        count = self._bulk_change_status(queryset, Song.STATUS_DRAFT)
-        self.message_user(request, f'{count} song(s) marked as draft.')
+        count, skipped = self._bulk_change_status(queryset, Song.STATUS_DRAFT)
+        self.message_user(request, f'{count} song(s) marked as draft; {skipped} release-linked song(s) skipped.')
     mark_as_draft.short_description = 'Mark selected as Draft'
     
     def mark_as_pending(self, request, queryset):
         """Bulk action to mark as pending without bypassing lifecycle hooks."""
-        count = self._bulk_change_status(queryset, Song.STATUS_PENDING)
-        self.message_user(request, f'{count} song(s) marked as pending review.')
+        count, skipped = self._bulk_change_status(queryset, Song.STATUS_PENDING)
+        self.message_user(request, f'{count} song(s) marked as pending review; {skipped} release-linked song(s) skipped.')
     mark_as_pending.short_description = 'Mark selected as Pending Review'
 
 
@@ -684,12 +692,74 @@ class ArtistReleaseAdmin(admin.ModelAdmin):
     search_fields = ('title', 'title_en', 'artist__name', 'artist__artistic_name')
     readonly_fields = ('id', 'lock_version', 'created_at', 'updated_at', 'submitted_at', 'reviewed_at', 'published_at', 'taken_down_at')
     inlines = (ArtistReleaseTrackInline, ArtistReleaseStatusHistoryInline)
+    actions = ('synchronize_selected_releases',)
     fieldsets = (
         ('Release', {'fields': ('id', 'artist', 'title', 'title_en', 'release_type', 'status', 'previously_released', 'album')}),
         ('Workflow', {'fields': ('current_step', 'source_release', 'revision_number', 'lock_version', 'review_note', 'admin_note')}),
         ('Metadata', {'fields': ('shared_metadata', 'release_metadata', 'validation_snapshot')}),
         ('Timestamps', {'fields': ('created_at', 'updated_at', 'submitted_at', 'reviewed_at', 'scheduled_at', 'published_at', 'taken_down_at')}),
     )
+
+    def save_model(self, request, obj, form, change):
+        """Delay status transitions until release-track inlines are saved.
+
+        Django admin normally writes ``status`` directly, bypassing the release
+        service. Keep the previous status during the base save, then run the
+        authoritative workflow from ``save_related`` after all track links exist.
+        """
+        target_status = obj.status
+        if change:
+            previous_status = ArtistRelease.objects.only('status').get(pk=obj.pk).status
+        else:
+            previous_status = ArtistRelease.STATUS_DRAFT
+        obj._admin_target_status = target_status
+        obj._admin_previous_status = previous_status
+        if target_status != previous_status:
+            obj.status = previous_status
+        super().save_model(request, obj, form, change)
+
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        target_status = getattr(form.instance, '_admin_target_status', form.instance.status)
+        previous_status = getattr(form.instance, '_admin_previous_status', form.instance.status)
+        if target_status == previous_status:
+            return
+        from .release_service import set_release_status_from_admin
+        try:
+            with transaction.atomic():
+                release = ArtistRelease.objects.select_for_update().get(pk=form.instance.pk)
+                updated = set_release_status_from_admin(
+                    release,
+                    target_status,
+                    actor=request.user,
+                    note='Status changed in Django admin.',
+                )
+            form.instance.status = updated.status
+            form.instance.lock_version = updated.lock_version
+            messages.success(
+                request,
+                f'Release status synchronized to {updated.get_status_display()} and linked songs were updated.',
+            )
+        except ValueError as exc:
+            messages.error(request, f'Release status was not changed: {exc}')
+
+    @admin.action(description='Synchronize selected releases with linked songs')
+    def synchronize_selected_releases(self, request, queryset):
+        from .release_service import synchronize_release_state
+        synchronized = 0
+        failed = []
+        for release_id in queryset.values_list('pk', flat=True):
+            try:
+                with transaction.atomic():
+                    release = ArtistRelease.objects.select_for_update().get(pk=release_id)
+                    synchronize_release_state(release)
+                synchronized += 1
+            except Exception as exc:
+                failed.append(f'{release_id}: {exc}')
+        if synchronized:
+            messages.success(request, f'{synchronized} release(s) synchronized with their linked songs.')
+        if failed:
+            messages.error(request, 'Some releases could not be synchronized: ' + ' | '.join(failed[:5]))
 
 
 @admin.register(ReleaseContributor)

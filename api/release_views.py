@@ -40,6 +40,7 @@ from .release_service import (
     scheduled_datetime,
     serialize_release,
     snapshot_song,
+    sync_release_artwork,
     sync_release_tracks,
     take_down_release,
     validation_payload,
@@ -826,16 +827,10 @@ class ArtistReleaseArtworkView(APIView):
                 release.lock_version += 1
                 release.validation_snapshot = {}
                 release.save(update_fields=['release_metadata', 'lock_version', 'validation_snapshot', 'updated_at'])
-                if release.release_type != ArtistRelease.TYPE_SINGLE:
-                    for link in release.release_tracks.select_related('song'):
-                        extras = dict(link.extras or {})
-                        source = str(extras.get('_cover_source') or '')
-                        inherited = source == 'release' or (not source and bool(old_url) and link.song.cover_image == old_url)
-                        if inherited:
-                            Song.objects.filter(pk=link.song_id).update(cover_image=url, updated_at=timezone.now())
-                            extras['_cover_source'] = 'release'
-                            link.extras = extras
-                            link.save(update_fields=['extras', 'updated_at'])
+                # Persist the release artwork onto song rows immediately. Singles
+                # always share the release cover; collection tracks keep their own
+                # cover when one was explicitly uploaded for that track.
+                sync_release_artwork(release, previous_cover=old_url)
                 if release.status == ArtistRelease.STATUS_IN_REVIEW:
                     Song.objects.filter(release_track_links__release=release).exclude(
                         status=Song.STATUS_DELETED

@@ -563,8 +563,43 @@ def apply_track_metadata(song: Song, metadata: dict) -> None:
     serializer.save()
 
 
+def sync_release_artwork(release: ArtistRelease, previous_cover: str = '') -> None:
+    """Persist release artwork onto linked song rows without destroying track covers.
+
+    A single has one canonical cover, so its song row always receives the release
+    cover immediately. Collection tracks inherit the release cover only while
+    they do not own a dedicated cover. Stable, unsigned R2 values are stored in
+    the database; response middleware signs them for the Artist Panel.
+    """
+    cover_url = str((release.release_metadata or {}).get('cover_url') or '').strip()
+    if not cover_url:
+        return
+    links = ArtistReleaseTrack.objects.select_related('song').filter(release=release)
+    for link in links:
+        song = link.song
+        extras = dict(link.extras or {})
+        source = str(extras.get('_cover_source') or '')
+        if release.release_type == ArtistRelease.TYPE_SINGLE:
+            should_inherit = True
+        else:
+            should_inherit = (
+                source == 'release'
+                or not song.cover_image
+                or (bool(previous_cover) and song.cover_image == previous_cover)
+            )
+        if not should_inherit:
+            continue
+        changed_song = song.cover_image != cover_url
+        changed_extras = source != 'release'
+        if changed_song:
+            Song.objects.filter(pk=song.pk).update(cover_image=cover_url, updated_at=timezone.now())
+        if changed_extras:
+            extras['_cover_source'] = 'release'
+            ArtistReleaseTrack.objects.filter(pk=link.pk).update(extras=extras, updated_at=timezone.now())
+
+
 def sync_release_tracks(release: ArtistRelease) -> None:
-    """Apply the single handwritten release metadata source to every linked track."""
+    """Apply release-level metadata to linked tracks and keep artwork inheritance aligned."""
     shared = merged_shared(release.shared_metadata)
     metadata = merged_release_metadata(release.release_metadata, release.artist_id)
     common = {
@@ -590,6 +625,7 @@ def sync_release_tracks(release: ArtistRelease) -> None:
             payload['title'] = release.title
             payload['title_en'] = release.title_en
         apply_track_metadata(link.song, payload)
+    sync_release_artwork(release)
 
 
 def scheduled_datetime(release: ArtistRelease):
@@ -801,9 +837,12 @@ def set_release_status_from_admin(
     if target_status not in dict(ArtistRelease.STATUS_CHOICES):
         raise ValueError('Invalid release status.')
 
+    # Admin moderation is authoritative for the entire release. Always repair
+    # titles, metadata, and cover inheritance before changing lifecycle state.
+    sync_release_tracks(release)
+    release = release_queryset().get(pk=release.pk)
+
     if target_status in {ArtistRelease.STATUS_APPROVED, ArtistRelease.STATUS_SCHEDULED, ArtistRelease.STATUS_LIVE}:
-        sync_release_tracks(release)
-        release = release_queryset().get(pk=release.pk)
         validation = validation_payload(release)
         release.validation_snapshot = validation
         release.save(update_fields=['validation_snapshot', 'updated_at'])
@@ -848,6 +887,35 @@ def set_release_status_from_admin(
             Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_APPROVED)
         change_status(release, target_status, actor=actor, note=note)
     return release_queryset().get(pk=release.pk)
+
+
+def synchronize_release_state(release: ArtistRelease) -> ArtistRelease:
+    """Repair linked-song state from the release's current authoritative status.
+
+    This is intentionally idempotent and is used by Django admin after manual
+    database-era inconsistencies. It preserves deleted songs and accounting rows.
+    """
+    with transaction.atomic():
+        ArtistRelease.objects.select_for_update().only('pk').get(pk=release.pk)
+        release = release_queryset().get(pk=release.pk)
+        sync_release_tracks(release)
+        songs = Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED)
+        if release.status == ArtistRelease.STATUS_LIVE:
+            release = materialize_release(release, publish=True)
+        elif release.status in {ArtistRelease.STATUS_APPROVED, ArtistRelease.STATUS_SCHEDULED}:
+            songs.update(status=Song.STATUS_APPROVED)
+        elif release.status in {ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_CHANGES_REQUESTED}:
+            songs.update(status=Song.STATUS_PENDING)
+        elif release.status == ArtistRelease.STATUS_REJECTED:
+            songs.update(status=Song.STATUS_REJECTED)
+        elif release.status == ArtistRelease.STATUS_DRAFT:
+            songs.update(status=Song.STATUS_DRAFT)
+        elif release.status == ArtistRelease.STATUS_TAKEN_DOWN:
+            if release.album_id:
+                take_down_release(release)
+                release = ArtistRelease.objects.get(pk=release.pk)
+            songs.update(status=Song.STATUS_APPROVED)
+        return release_queryset().get(pk=release.pk)
 
 
 def publish_due_releases(limit=50) -> int:
