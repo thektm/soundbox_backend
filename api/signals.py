@@ -464,6 +464,19 @@ def _status_changed(instance) -> bool:
     return getattr(instance, "_notification_old_status", None) != instance.status
 
 
+@receiver(post_save, sender=ArtistAuth, dispatch_uid="api.artist-auth.provision-profile")
+def provision_approved_artist_auth(sender, instance, **kwargs):
+    if instance.status != ArtistAuth.STATUS_ACCEPTED or not instance.is_verified:
+        return
+    auth_id = instance.pk
+
+    def provision():
+        from .artist_auth_service import provision_artist_profile
+        provision_artist_profile(auth_id)
+
+    _after_commit(f"artist-auth-profile:{auth_id}", provision)
+
+
 @receiver(pre_save, sender=ArtistAuth, dispatch_uid="api.notification.artist-auth.capture-status")
 def capture_old_artist_auth_status(sender, instance, **kwargs):
     _capture_previous_status(instance, ArtistAuth)

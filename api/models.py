@@ -352,10 +352,13 @@ class ArtistAuth(models.Model):
         help_text='If the user is claiming an existing artist, link it here'
     )
 
-    # Personal fields (Persian form mapping provided by frontend)
+    # Personal fields in both supported languages.
     first_name = models.CharField(max_length=150)
+    first_name_en = models.CharField(max_length=150, blank=True, default="")
     last_name = models.CharField(max_length=150)
+    last_name_en = models.CharField(max_length=150, blank=True, default="")
     stage_name = models.CharField(max_length=200)
+    stage_name_en = models.CharField(max_length=200, blank=True, default="")
     birth_date = models.DateField()
 
     national_id_validator = RegexValidator(regex=r'^\d{10}$', message='National ID must be exactly 10 digits')
@@ -366,8 +369,15 @@ class ArtistAuth(models.Model):
 
     email = models.EmailField(blank=True, null=True)
     city = models.CharField(max_length=100)
+    city_en = models.CharField(max_length=100, blank=True, default="")
     address = models.TextField(blank=True, null=True)
+    address_en = models.TextField(blank=True, default="")
     biography = models.TextField(blank=True, null=True)
+    biography_en = models.TextField(blank=True, default="")
+    profile_image = models.ImageField(
+        upload_to='artist_auth_profiles/', blank=True, null=True,
+        validators=[FileExtensionValidator(['jpg', 'jpeg', 'png']), validate_file_size]
+    )
 
     national_id_image = models.ImageField(
         upload_to='national_ids/',
@@ -399,15 +409,44 @@ class ArtistAuth(models.Model):
         claimed = f" claimed: {self.artist_claimed.name}" if self.artist_claimed else ""
         return f"{self.stage_name} ({self.user.phone_number if self.user else 'no-user'}){claimed}"
 
+    def save(self, *args, **kwargs):
+        if self.status == self.STATUS_REJECTED:
+            self.is_verified = False
+        elif self.status == self.STATUS_ACCEPTED or self.is_verified:
+            self.status = self.STATUS_ACCEPTED
+            self.is_verified = True
+        else:
+            self.status = self.STATUS_PENDING
+            self.is_verified = False
+        if kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'status', 'is_verified'}
+        super().save(*args, **kwargs)
+
     def clean(self):
+        errors = {}
+        approving = self.status == self.STATUS_ACCEPTED or self.is_verified
+        if approving and not self.user_id:
+            errors['user'] = 'An approved artist authentication must be linked to a user.'
+        if approving and self.auth_type == self.AUTH_EXISTING:
+            if not self.artist_claimed_id:
+                errors['artist_claimed'] = 'Select the existing artist before approval.'
+            elif self.user_id:
+                claimed_user_id = Artist.objects.filter(pk=self.artist_claimed_id).values_list('user_id', flat=True).first()
+                if claimed_user_id not in (None, self.user_id):
+                    errors['artist_claimed'] = 'This artist is already linked to another user.'
+                if Artist.objects.filter(user_id=self.user_id).exclude(pk=self.artist_claimed_id).exists():
+                    errors['user'] = 'This user is already linked to another artist profile.'
+
         # Ensure national id has correct format (redundant with validator but safe)
         if self.national_id and (not self.national_id.isdigit() or len(self.national_id) != 10):
-            raise ValidationError({'national_id': 'National ID must be exactly 10 digits'})
+            errors['national_id'] = 'National ID must be exactly 10 digits'
         # Phone number basic normalization check
         if self.phone_number:
             digits = ''.join(ch for ch in self.phone_number if ch.isdigit())
             if not digits.startswith('09') or len(digits) != 11:
-                raise ValidationError({'phone_number': 'Phone number must be in local format starting with 09 and 11 digits'})
+                errors['phone_number'] = 'Phone number must be in local format starting with 09 and 11 digits'
+        if errors:
+            raise ValidationError(errors)
 
 
 class ArtistMonthlyListener(models.Model):
@@ -523,7 +562,6 @@ class Song(models.Model):
     STATUS_APPROVED = 'approved'
     STATUS_REJECTED = 'rejected'
     STATUS_PUBLISHED = 'published'
-    STATUS_DELETED = 'deleted'
     
     STATUS_CHOICES = [
         (STATUS_DRAFT, 'Draft'),
@@ -531,7 +569,6 @@ class Song(models.Model):
         (STATUS_APPROVED, 'Approved'),
         (STATUS_REJECTED, 'Rejected'),
         (STATUS_PUBLISHED, 'Published'),
-        (STATUS_DELETED, 'Deleted by artist'),
     ]
     
     # Basic info
@@ -728,9 +765,7 @@ class PlayCount(models.Model):
     country = models.CharField(max_length=100)
     city = models.CharField(max_length=100)
     ip = models.GenericIPAddressField()
-    # Keep the same precision as PlayConfiguration. Using fewer decimal places
-    # here silently turned very small configured royalties into zero.
-    pay = models.DecimalField(max_digits=15, decimal_places=8, default='0.00000000')
+    pay = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -92,11 +92,32 @@ class AdminArtistAuthSerializer(serializers.ModelSerializer):
     class Meta:
         model = ArtistAuth
         fields = [
-            'id', 'user', 'auth_type', 'artist_claimed', 'first_name', 'last_name', 'stage_name',
-            'birth_date', 'national_id', 'phone_number', 'email', 'city', 'address',
-            'biography', 'national_id_image', 'status', 'is_verified', 'created_at', 'updated_at'
+            'id', 'user', 'auth_type', 'artist_claimed',
+            'first_name', 'first_name_en', 'last_name', 'last_name_en',
+            'stage_name', 'stage_name_en', 'birth_date', 'national_id',
+            'phone_number', 'email', 'city', 'city_en', 'address', 'address_en',
+            'biography', 'biography_en', 'profile_image', 'national_id_image',
+            'status', 'is_verified', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        status_value = attrs.get('status', getattr(self.instance, 'status', ArtistAuth.STATUS_PENDING))
+        verified = attrs.get('is_verified', getattr(self.instance, 'is_verified', False))
+        auth_type = attrs.get('auth_type', getattr(self.instance, 'auth_type', ArtistAuth.AUTH_FRESH))
+        user = attrs.get('user', getattr(self.instance, 'user', None))
+        claimed = attrs.get('artist_claimed', getattr(self.instance, 'artist_claimed', None))
+        if status_value == ArtistAuth.STATUS_ACCEPTED or verified:
+            if not user:
+                raise serializers.ValidationError({'user': 'Approval requires a linked user.'})
+            if auth_type == ArtistAuth.AUTH_EXISTING:
+                if not claimed:
+                    raise serializers.ValidationError({'artist_claimed': 'Select the existing artist before approval.'})
+                if claimed.user_id not in (None, user.pk):
+                    raise serializers.ValidationError({'artist_claimed': 'This artist is linked to another user.'})
+                if Artist.objects.filter(user=user).exclude(pk=claimed.pk).exists():
+                    raise serializers.ValidationError({'user': 'This user is linked to another artist profile.'})
+        return attrs
 
 class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'), ('description', 'description_en'), ('lyrics', 'lyrics_en'), ('label', 'label_en'), ('credits', 'credits_en'))
