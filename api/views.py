@@ -145,6 +145,27 @@ def _finance_zero():
     return Value(Decimal('0.00000000'), output_field=_finance_output_field())
 
 
+def _artist_album_payload(album, serialized, songs=None):
+    """Add artist-only operational stats without changing public album serializers."""
+    tracks = list(songs if songs is not None else album.songs.all())
+    active = [song for song in tracks if song.status != Song.STATUS_DELETED]
+    total_income = sum((_finance_decimal(getattr(song, 'artist_income', 0)) for song in tracks), Decimal('0'))
+    total_streams = sum(
+        int(getattr(song, 'plays', 0) or 0) + int(getattr(song, 'artist_tracked_plays', 0) or 0)
+        for song in tracks
+    )
+    total_duration = sum(int(getattr(song, 'duration_seconds', 0) or 0) for song in active)
+    return {
+        **dict(serialized),
+        'active_songs_count': len(active),
+        'deleted_songs_count': len(tracks) - len(active),
+        'published_songs_count': sum(song.status == Song.STATUS_PUBLISHED for song in active),
+        'total_streams': total_streams,
+        'total_income': _finance_string(total_income),
+        'total_duration_seconds': total_duration,
+    }
+
+
 _ARTIST_UPLOAD_ID_RE = re.compile(r'^[A-Za-z0-9_-]{16,96}$')
 
 
@@ -6879,21 +6900,22 @@ class ArtistAnalyticsView(APIView):
                 qs = qs.filter(**{f'{field}__gte': start})
             return qs
 
-        current_plays = period_qs(PlayCount.objects.filter(songs__artist=artist))
+        active_songs = Song.objects.filter(artist=artist).exclude(status=Song.STATUS_DELETED)
+        current_plays = period_qs(PlayCount.objects.filter(songs__in=active_songs)).distinct()
         previous_plays = PlayCount.objects.none()
         if previous_start and previous_end:
             previous_plays = PlayCount.objects.filter(
-                songs__artist=artist,
+                songs__in=active_songs,
                 created_at__gte=previous_start,
                 created_at__lt=previous_end,
-            )
+            ).distinct()
 
-        current_likes = period_qs(SongLike.objects.filter(song__artist=artist))
+        current_likes = period_qs(SongLike.objects.filter(song__in=active_songs))
         current_followers = period_qs(Follow.objects.filter(followed_artist=artist))
         previous_likes = SongLike.objects.none()
         previous_followers = Follow.objects.none()
         if previous_start and previous_end:
-            previous_likes = SongLike.objects.filter(song__artist=artist, created_at__gte=previous_start, created_at__lt=previous_end)
+            previous_likes = SongLike.objects.filter(song__in=active_songs, created_at__gte=previous_start, created_at__lt=previous_end)
             previous_followers = Follow.objects.filter(followed_artist=artist, created_at__gte=previous_start, created_at__lt=previous_end)
 
         current_income = current_plays.aggregate(total=Coalesce(
@@ -6905,7 +6927,7 @@ class ArtistAnalyticsView(APIView):
         current_play_count = current_plays.count()
         previous_play_count = previous_plays.count()
         if period == 'all':
-            current_play_count += Song.objects.filter(artist=artist).aggregate(total=Coalesce(Sum('plays'), Value(0, output_field=BigIntegerField())))['total'] or 0
+            current_play_count += active_songs.aggregate(total=Coalesce(Sum('plays'), Value(0, output_field=BigIntegerField())))['total'] or 0
 
         def change(current, previous):
             if previous in (None, 0):
@@ -6931,12 +6953,12 @@ class ArtistAnalyticsView(APIView):
 
         chart_qs = current_plays
         bucket = TruncHour('created_at') if chart_type == 'hourly' else TruncMonth('created_at') if chart_type == 'monthly' else TruncDate('created_at')
-        chart_rows = chart_qs.annotate(bucket=bucket).values('bucket').annotate(count=Count('id')).order_by('bucket')
+        chart_rows = chart_qs.annotate(bucket=bucket).values('bucket').annotate(count=Count('id', distinct=True)).order_by('bucket')
         chart = [{'time': row['bucket'].isoformat(), 'count': row['count']} for row in chart_rows]
 
         base_count = current_plays.count()
         def distribution(field, label):
-            rows = current_plays.values(field).annotate(count=Count('id')).order_by('-count')[:20]
+            rows = current_plays.values(field).annotate(count=Count('id', distinct=True)).order_by('-count')[:20]
             return [{
                 label: row[field] or 'Unknown',
                 'count': row['count'],
@@ -6944,7 +6966,7 @@ class ArtistAnalyticsView(APIView):
             } for row in rows]
 
         plan_rows = current_plays.values('user__plan').annotate(
-            count=Count('id'),
+            count=Count('id', distinct=True),
             income=Coalesce(Sum('pay'), Value(0, output_field=DecimalField(max_digits=20, decimal_places=8))),
         ).order_by('user__plan')
         plan_distribution = [{
@@ -6955,7 +6977,7 @@ class ArtistAnalyticsView(APIView):
         } for row in plan_rows]
 
         period_filter = Q(play_counts__created_at__gte=start) if start else Q()
-        top_qs = Song.objects.filter(artist=artist).annotate(
+        top_qs = active_songs.annotate(
             period_plays=Count('play_counts', filter=period_filter, distinct=True),
             likes_total=Count('liked_by', distinct=True),
         )
@@ -8110,6 +8132,9 @@ class ArtistAlbumsManagementView(APIView):
 
         songs_qs = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
             'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        ).annotate(
+            artist_tracked_plays=Count('play_counts', distinct=True),
+            artist_income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
         ).order_by('id')
         albums_qs = Album.objects.filter(artist=artist).prefetch_related(
             'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=songs_qs)
@@ -8119,9 +8144,13 @@ class ArtistAlbumsManagementView(APIView):
             album = get_object_or_404(albums_qs, pk=pk)
             hydrate_album_metrics([album], request.user)
             hydrate_song_metrics(album.songs.all(), request.user)
-            serializer = AlbumSerializer(album, context={'request': request})
-            data = serializer.data
-            data['songs'] = SongSerializer(album.songs.all(), many=True, context={'request': request}).data
+            tracks = list(album.songs.all())
+            data = _artist_album_payload(
+                album,
+                AlbumSerializer(album, context={'request': request}).data,
+                tracks,
+            )
+            data['songs'] = SongSerializer(tracks, many=True, context={'request': request}).data
             return Response(data)
 
         queryset = albums_qs.order_by('-release_date', '-created_at')
@@ -8131,13 +8160,20 @@ class ArtistAlbumsManagementView(APIView):
             hydrate_album_metrics(page, request.user)
             hydrate_song_metrics([song for album in page for song in album.songs.all()], request.user)
             serializer = AlbumSerializer(page, many=True, context={'request': request})
-            return paginator.get_paginated_response(serializer.data)
+            results = [
+                _artist_album_payload(album, item, list(album.songs.all()))
+                for album, item in zip(page, serializer.data)
+            ]
+            return paginator.get_paginated_response(results)
 
         albums = list(queryset)
         hydrate_album_metrics(albums, request.user)
         hydrate_song_metrics([song for album in albums for song in album.songs.all()], request.user)
         serializer = AlbumSerializer(albums, many=True, context={'request': request})
-        return Response(serializer.data)
+        return Response([
+            _artist_album_payload(album, item, list(album.songs.all()))
+            for album, item in zip(albums, serializer.data)
+        ])
 
     @extend_schema(
         summary="ایجاد آلبوم جدید",
@@ -8422,9 +8458,19 @@ class ArtistAlbumsManagementView(APIView):
                     ).update(album=album, is_single=False)
 
         album.refresh_from_db()
-        response_data = AlbumSerializer(album, context={'request': request}).data
+        response_tracks = list(
+            Song.objects.filter(album=album).annotate(
+                artist_tracked_plays=Count('play_counts', distinct=True),
+                artist_income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
+            ).order_by('id')
+        )
+        response_data = _artist_album_payload(
+            album,
+            AlbumSerializer(album, context={'request': request}).data,
+            response_tracks,
+        )
         response_data['songs'] = SongSerializer(
-            Song.objects.filter(album=album).order_by('id'),
+            response_tracks,
             many=True,
             context={'request': request},
         ).data
@@ -8476,7 +8522,14 @@ class ArtistAlbumsManagementView(APIView):
                     'deletion': 'soft',
                     'soft_deleted_tracks': soft_count,
                     'hard_deleted_tracks': hard_count,
-                    'album': AlbumSerializer(album, context={'request': request}).data,
+                    'album': _artist_album_payload(
+                        album,
+                        AlbumSerializer(album, context={'request': request}).data,
+                        list(album.songs.annotate(
+                            artist_tracked_plays=Count('play_counts', distinct=True),
+                            artist_income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
+                        )),
+                    ),
                 }
             else:
                 if album.cover_image:
