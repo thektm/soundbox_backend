@@ -102,7 +102,7 @@ import secrets
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
 from django.utils import timezone
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from django.db.models import Q, Count, Avg, F, Value
 from django.db.models.functions import Concat, Replace, Lower
 from django.shortcuts import get_object_or_404
@@ -143,6 +143,39 @@ def _finance_output_field():
 
 def _finance_zero():
     return Value(Decimal('0.00000000'), output_field=_finance_output_field())
+
+
+def _finance_day_start(value):
+    return timezone.make_aware(
+        datetime.combine(value, datetime.min.time()),
+        timezone.get_current_timezone(),
+    )
+
+
+def _finance_month_start(value):
+    return value.replace(day=1)
+
+
+def _finance_shift_month(value, offset):
+    month_index = value.year * 12 + value.month - 1 + offset
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _finance_bucket_key(value, group):
+    if isinstance(value, datetime):
+        value = timezone.localtime(value).date() if timezone.is_aware(value) else value.date()
+    if group == 'monthly':
+        return _finance_month_start(value)
+    if group == 'weekly':
+        return value - timedelta(days=value.weekday())
+    return value
+
+
+def _finance_bucket_range(group, start, end):
+    current = start
+    while current <= end:
+        yield current
+        current = _finance_shift_month(current, 1) if group == 'monthly' else current + timedelta(days=7 if group == 'weekly' else 1)
 
 
 def _artist_album_payload(album, serialized, songs=None):
@@ -7141,31 +7174,66 @@ class ArtistFinanceView(APIView):
             return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
         period = request.query_params.get('period', '30d').lower()
-        now = timezone.now()
+        today = timezone.localdate()
+        tomorrow = today + timedelta(days=1)
+
         if period in ('all', 'lifetime'):
             start = previous_start = previous_end = None
+            end = _finance_day_start(tomorrow)
             group = 'monthly'
+            chart_start = None
+            chart_end = _finance_month_start(today)
             period = 'all'
         elif period in ('7d', 'week'):
-            start, previous_start, previous_end, group = now - timedelta(days=7), now - timedelta(days=14), now - timedelta(days=7), 'daily'
+            chart_start = today - timedelta(days=6)
+            chart_end = today
+            start = _finance_day_start(chart_start)
+            end = _finance_day_start(tomorrow)
+            previous_start = _finance_day_start(chart_start - timedelta(days=7))
+            previous_end = start
+            group = 'daily'
             period = '7d'
         elif period in ('30d', 'month', 'daily'):
-            start, previous_start, previous_end, group = now - timedelta(days=30), now - timedelta(days=60), now - timedelta(days=30), 'daily'
+            chart_start = today - timedelta(days=29)
+            chart_end = today
+            start = _finance_day_start(chart_start)
+            end = _finance_day_start(tomorrow)
+            previous_start = _finance_day_start(chart_start - timedelta(days=30))
+            previous_end = start
+            group = 'daily'
             period = '30d'
         elif period in ('monthly', 'year', '365d'):
-            start, previous_start, previous_end, group = now - timedelta(days=365), now - timedelta(days=730), now - timedelta(days=365), 'monthly'
+            chart_end = _finance_month_start(today)
+            chart_start = _finance_shift_month(chart_end, -11)
+            start = _finance_day_start(chart_start)
+            end = _finance_day_start(_finance_shift_month(chart_end, 1))
+            previous_start = _finance_day_start(_finance_shift_month(chart_start, -12))
+            previous_end = start
+            group = 'monthly'
             period = 'monthly'
         elif period == 'weekly':
-            start, previous_start, previous_end, group = now - timedelta(weeks=12), now - timedelta(weeks=24), now - timedelta(weeks=12), 'weekly'
+            chart_end = today - timedelta(days=today.weekday())
+            chart_start = chart_end - timedelta(weeks=11)
+            start = _finance_day_start(chart_start)
+            end = _finance_day_start(chart_end + timedelta(weeks=1))
+            previous_start = _finance_day_start(chart_start - timedelta(weeks=12))
+            previous_end = start
+            group = 'weekly'
         elif period == 'today':
-            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            previous_start, previous_end, group = start - timedelta(days=1), start, 'daily'
+            chart_start = chart_end = today
+            start = _finance_day_start(today)
+            end = _finance_day_start(tomorrow)
+            previous_start, previous_end = start - timedelta(days=1), start
+            group = 'daily'
         else:
             return Response({"error": "Invalid period."}, status=status.HTTP_400_BAD_REQUEST)
 
         current = PlayCount.objects.filter(songs__artist=artist).distinct()
         if start:
             current = current.filter(created_at__gte=start)
+        if end:
+            current = current.filter(created_at__lt=end)
+
         previous = PlayCount.objects.none()
         if previous_start and previous_end:
             previous = PlayCount.objects.filter(
@@ -7176,6 +7244,7 @@ class ArtistFinanceView(APIView):
 
         def amount(qs):
             return qs.aggregate(total=Coalesce(Sum('pay'), _finance_zero()))['total']
+
         income = amount(current)
         previous_income = amount(previous)
         plays = current.count()
@@ -7201,26 +7270,30 @@ class ArtistFinanceView(APIView):
             'period': period,
         }
 
-        if group == 'plan':
-            chart = [
-                {'label': 'free', 'income': summary['free_income'], 'plays': summary['free_plays']},
-                {'label': 'premium', 'income': summary['premium_income'], 'plays': summary['premium_plays']},
-            ]
-        else:
-            trunc = TruncDate('created_at') if group == 'daily' else TruncWeek('created_at') if group == 'weekly' else TruncMonth('created_at')
-            rows = current.annotate(period_bucket=trunc).values('period_bucket').annotate(
-                income=Coalesce(Sum('pay'), _finance_zero()),
-                free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), _finance_zero()),
-                premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), _finance_zero()),
-                plays=Count('id'),
-            ).order_by('period_bucket')
-            chart = [{
-                'time': row['period_bucket'].isoformat(),
-                'income': _finance_string(row['income']),
-                'free_income': _finance_string(row['free_income']),
-                'premium_income': _finance_string(row['premium_income']),
-                'plays': row['plays'],
-            } for row in rows]
+        trunc = TruncDate('created_at') if group == 'daily' else TruncWeek('created_at') if group == 'weekly' else TruncMonth('created_at')
+        chart_source = PlayCount.objects.filter(pk__in=current.values('pk'))
+        rows = list(chart_source.annotate(period_bucket=trunc).values('period_bucket').annotate(
+            income=Coalesce(Sum('pay'), _finance_zero()),
+            free_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_FREE)), _finance_zero()),
+            premium_income=Coalesce(Sum('pay', filter=Q(user__plan=User.PLAN_PREMIUM)), _finance_zero()),
+            plays=Count('id'),
+        ).order_by('period_bucket'))
+
+        by_bucket = {_finance_bucket_key(row['period_bucket'], group): row for row in rows}
+        if chart_start is None:
+            chart_start = min(by_bucket, default=chart_end)
+
+        chart = []
+        for bucket in _finance_bucket_range(group, chart_start, chart_end):
+            row = by_bucket.get(bucket)
+            chart.append({
+                'time': bucket.isoformat(),
+                'income': _finance_string(row['income'] if row else 0),
+                'free_income': _finance_string(row['free_income'] if row else 0),
+                'premium_income': _finance_string(row['premium_income'] if row else 0),
+                'plays': int(row['plays']) if row else 0,
+            })
+
         return Response({'summary': summary, 'chart': chart})
 
 
