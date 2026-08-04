@@ -103,6 +103,8 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         request = self.context.get('request')
         language = get_request_language(request)
+        request_path = str(getattr(request, 'path', '') or '')
+        artist_panel = request_path.startswith('/api/artist/') or request_path.startswith('/artist/')
         model = getattr(getattr(self, 'Meta', None), 'model', None)
 
         if model is not None:
@@ -117,7 +119,14 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
                     en_value = translate_generated_text(fa_value) if isinstance(fa_value, str) else fa_value
                 data[f'{base_field}_fa'] = fa_value
                 data[f'{base_field}_en'] = en_value
-                data[base_field] = en_value if language == 'en' and en_value not in (None, '', [], {}) else fa_value
+                # Artist editing must always receive the canonical Persian/base
+                # value in the base field and the real English value separately.
+                # Audience endpoints keep their existing request-language behavior.
+                data[base_field] = (
+                    fa_value
+                    if artist_panel
+                    else en_value if language == 'en' and en_value not in (None, '', [], {}) else fa_value
+                )
 
         # Localize declared fields sourced from related objects, such as
         # ``artist_name = CharField(source='artist.name')``.

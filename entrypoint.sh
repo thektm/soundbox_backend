@@ -90,7 +90,6 @@ else:
     )
 PY
 
-
 python manage.py ensure_guest_preview_schema
 python manage.py ensure_artist_release_schema
 [ "${ENSURE_SEARCH_INDEXES_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_search_indexes || true
