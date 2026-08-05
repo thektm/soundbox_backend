@@ -44,6 +44,24 @@ class ArtistPlayIncomeSettingsForm(forms.Form):
             }
         ),
     )
+    minimum_payout_amount = forms.DecimalField(
+        label="Minimum payout request amount",
+        help_text="An artist can request a payout only when the rounded withdrawable balance reaches this amount.",
+        max_digits=15,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+        max_value=Decimal("9999999999999.99"),
+        widget=forms.NumberInput(
+            attrs={
+                "min": "0.01",
+                "max": "9999999999999.99",
+                "step": "0.01",
+                "inputmode": "decimal",
+                "autocomplete": "off",
+                "placeholder": "0.01",
+            }
+        ),
+    )
 
     @classmethod
     def from_configuration(cls, configuration, **kwargs):
@@ -51,6 +69,7 @@ class ArtistPlayIncomeSettingsForm(forms.Form):
             initial={
                 "normal_play_income": configuration.free_play_worth,
                 "premium_play_income": configuration.premium_play_worth,
+                "minimum_payout_amount": configuration.minimum_payout_amount,
             },
             **kwargs,
         )
@@ -61,10 +80,12 @@ class ArtistPlayIncomeSettingsForm(forms.Form):
 
         configuration.free_play_worth = self.cleaned_data["normal_play_income"]
         configuration.premium_play_worth = self.cleaned_data["premium_play_income"]
+        configuration.minimum_payout_amount = self.cleaned_data["minimum_payout_amount"]
         configuration.save(
             update_fields=(
                 "free_play_worth",
                 "premium_play_worth",
+                "minimum_payout_amount",
                 "updated_at",
             )
         )

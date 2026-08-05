@@ -127,6 +127,8 @@ from .release_service import mark_release_for_review, merged_release_metadata, m
 logger = logging.getLogger(__name__)
 
 FINANCE_QUANTUM = Decimal('0.00000001')
+PAYOUT_QUANTUM = Decimal('0.01')
+DEFAULT_MINIMUM_PAYOUT_AMOUNT = Decimal('0.01')
 
 
 def _finance_decimal(value):
@@ -143,6 +145,26 @@ def _finance_output_field():
 
 def _finance_zero():
     return Value(Decimal('0.00000000'), output_field=_finance_output_field())
+
+
+def _payout_decimal(value):
+    return Decimal(str(value or 0)).quantize(PAYOUT_QUANTUM, rounding=ROUND_DOWN)
+
+
+def _payout_string(value):
+    return format(_payout_decimal(value), 'f')
+
+
+def _minimum_payout_amount():
+    configuration = (
+        PlayConfiguration.objects.order_by('-updated_at', '-pk')
+        .only('minimum_payout_amount')
+        .first()
+    )
+    configured = getattr(configuration, 'minimum_payout_amount', None)
+    if configured is None:
+        return DEFAULT_MINIMUM_PAYOUT_AMOUNT
+    return max(DEFAULT_MINIMUM_PAYOUT_AMOUNT, _payout_decimal(configured))
 
 
 def _finance_day_start(value):
@@ -7242,9 +7264,20 @@ class DepositRequestView(APIView):
             ).aggregate(total=Coalesce(
                 Sum('amount'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=2))
             ))['total']
-            available = max(Decimal('0'), total_credit - reserved).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
-            if available < Decimal('0.01'):
-                return Response({"error": "No available balance to request a payout."}, status=status.HTTP_400_BAD_REQUEST)
+            available = max(Decimal('0'), total_credit - reserved).quantize(PAYOUT_QUANTUM, rounding=ROUND_DOWN)
+            minimum_payout = _minimum_payout_amount()
+            if available < minimum_payout:
+                amount_needed = (minimum_payout - available).quantize(PAYOUT_QUANTUM)
+                return Response(
+                    {
+                        "error": "The available balance has not reached the minimum payout amount.",
+                        "code": "minimum_payout_not_reached",
+                        "available_amount": _payout_string(available),
+                        "minimum_payout_amount": _payout_string(minimum_payout),
+                        "amount_needed": _payout_string(amount_needed),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             total_plays = plays.count()
             free_plays = plays.filter(user__plan=User.PLAN_FREE).count()
@@ -7319,18 +7352,28 @@ class ArtistWalletView(APIView):
             Sum('amount'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=2))
         ))['total']
         available = max(Decimal('0'), total_credit - reserved)
-        withdrawable = available.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+        withdrawable = available.quantize(PAYOUT_QUANTUM, rounding=ROUND_DOWN)
+        minimum_payout = _minimum_payout_amount()
+        amount_needed = max(Decimal('0'), minimum_payout - withdrawable).quantize(PAYOUT_QUANTUM)
+        meets_minimum = withdrawable >= minimum_payout
+        has_active_request = requests.filter(
+            status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED]
+        ).exists()
 
         return Response({
             'total_credit': _finance_string(total_credit),
             'requested_credit': _finance_string(reserved),
             'available_credit': _finance_string(available),
-            'withdrawable_credit': format(withdrawable, 'f'),
+            'withdrawable_credit': _payout_string(withdrawable),
             'withdrawn_credit': _finance_string(withdrawn),
             'pending_credit': _finance_string(pending_amount),
+            'minimum_payout_amount': _payout_string(minimum_payout),
+            'amount_needed_for_payout': _payout_string(amount_needed),
+            'meets_minimum_payout': meets_minimum,
+            'can_request_payout': meets_minimum and not has_active_request,
             'paid_plays': plays.filter(pay__gt=0).count(),
             'zero_value_plays': plays.filter(pay=0).count(),
-            'has_active_request': requests.filter(status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED]).exists(),
+            'has_active_request': has_active_request,
             'deposit_requests': {
                 'total_submissions': requests.count(),
                 'pending': requests.filter(status=DepositRequest.STATUS_PENDING).count(),

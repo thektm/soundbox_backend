@@ -5,7 +5,7 @@
 {{ block.super }}
 <style>
     .income-settings {
-        max-width: 980px;
+        max-width: 1120px;
         margin: 0 auto;
     }
 
@@ -72,7 +72,7 @@
 
     .income-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 18px;
     }
 
@@ -226,6 +226,12 @@
         font-weight: 700;
     }
 
+    @media (max-width: 980px) {
+        .income-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
     @media (max-width: 760px) {
         .income-settings {
             margin: 0;
@@ -277,8 +283,8 @@
 
     <section class="income-panel">
         <header class="income-panel__header">
-            <h2>Per-play earnings</h2>
-            <p>Use up to eight digits after the decimal point. Values cannot be negative.</p>
+            <h2>Artist earnings and payout threshold</h2>
+            <p>Set both per-play rates and the minimum withdrawable balance required to submit a payout request.</p>
         </header>
 
         <form method="post" novalidate>
@@ -326,13 +332,33 @@
                             </div>
                         </div>
                     </div>
+
+                    <div class="income-field">
+                        <label for="{{ form.minimum_payout_amount.id_for_label }}">{{ form.minimum_payout_amount.label }}</label>
+                        <p class="income-field__help">{{ form.minimum_payout_amount.help_text }}</p>
+                        <div class="income-input-wrap">
+                            {{ form.minimum_payout_amount }}
+                            <span class="income-input-unit">minimum balance</span>
+                        </div>
+                        {{ form.minimum_payout_amount.errors }}
+                        <div class="income-preview">
+                            <div class="income-stat">
+                                <span>Current minimum</span>
+                                <strong>{{ minimum_payout_amount|floatformat:2 }}</strong>
+                            </div>
+                            <div class="income-stat">
+                                <span>Precision</span>
+                                <strong>0.01</strong>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <aside class="income-note">
                     <span class="income-note__icon" aria-hidden="true">ⓘ</span>
                     <div>
-                        <strong>When does a new rate take effect?</strong>
-                        <p>The saved amount is used for newly recorded valid plays. Existing play records and their previously stored earnings are not recalculated.</p>
+                        <strong>When do these settings take effect?</strong>
+                        <p>New play rates apply only to newly recorded valid plays. The payout minimum applies immediately to every new artist payout request and does not change existing requests.</p>
                     </div>
                 </aside>
 
@@ -343,7 +369,7 @@
                     {% if has_change_permission %}
                     <div class="income-buttons">
                         <button class="button" type="reset">Reset unsaved changes</button>
-                        <input type="submit" value="Save income settings">
+                        <input type="submit" value="Save settings">
                     </div>
                     {% endif %}
                 </div>

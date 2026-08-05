@@ -10,6 +10,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, RegexValidator
 import os
 import uuid
+from decimal import Decimal
 
 
 class UserManager(BaseUserManager):
@@ -779,9 +780,16 @@ class PlayCount(models.Model):
 
 
 class PlayConfiguration(models.Model):
-    """Configuration for play worth based on user plan and other settings"""
+    """Configuration for play worth based on user plan and payout rules."""
     free_play_worth = models.DecimalField(max_digits=12, decimal_places=8, default=0.000000)
     premium_play_worth = models.DecimalField(max_digits=12, decimal_places=8, default=0.000000)
+    minimum_payout_amount = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=Decimal("0.01"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text="Minimum withdrawable artist balance required to submit a payout request.",
+    )
     premium_plan_price = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
     ad_frequency = models.PositiveIntegerField(default=0, help_text="Number of songs between ads for free users")
     updated_at = models.DateTimeField(auto_now=True)

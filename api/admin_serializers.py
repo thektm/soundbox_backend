@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from .models import (
     User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, 
@@ -204,11 +206,17 @@ class AdminAlbumSerializer(RequireEnglishTranslationSerializerMixin, serializers
 class AdminPlayConfigurationSerializer(serializers.ModelSerializer):
     per_normal_play_pay = serializers.DecimalField(source='free_play_worth', max_digits=12, decimal_places=8, min_value=0)
     per_premium_play_pay = serializers.DecimalField(source='premium_play_worth', max_digits=12, decimal_places=8, min_value=0)
+    minimum_payout_amount = serializers.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+    )
 
     class Meta:
         model = PlayConfiguration
         fields = [
-            'premium_plan_price', 'per_normal_play_pay', 'per_premium_play_pay', 'ad_frequency', 'updated_at'
+            'premium_plan_price', 'per_normal_play_pay', 'per_premium_play_pay',
+            'minimum_payout_amount', 'ad_frequency', 'updated_at'
         ]
         read_only_fields = ['updated_at']
 

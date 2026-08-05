@@ -666,7 +666,7 @@ class PlayConfigurationAdmin(admin.ModelAdmin):
 
                 self.message_user(
                     request,
-                    'Artist play income settings were updated successfully.',
+                    'Artist income and payout settings were updated successfully.',
                     level=messages.SUCCESS,
                 )
                 return HttpResponseRedirect(request.path)
@@ -680,15 +680,17 @@ class PlayConfigurationAdmin(admin.ModelAdmin):
 
         normal_income = configuration.free_play_worth
         premium_income = configuration.premium_play_worth
+        minimum_payout_amount = configuration.minimum_payout_amount
         context = {
             **self.admin_site.each_context(request),
-            'title': 'Artist play income',
-            'subtitle': 'Control how much an artist earns from each valid play.',
+            'title': 'Artist income and payout settings',
+            'subtitle': 'Control per-play artist income and the minimum balance required for payout requests.',
             'opts': self.model._meta,
             'form': form,
             'configuration': configuration,
             'normal_income': normal_income,
             'premium_income': premium_income,
+            'minimum_payout_amount': minimum_payout_amount,
             'normal_income_per_thousand': normal_income * 1000,
             'premium_income_per_thousand': premium_income * 1000,
             'has_change_permission': has_change_permission,
