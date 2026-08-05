@@ -2,6 +2,8 @@ from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.http import HttpResponseRedirect
+from django.core.exceptions import PermissionDenied
+from django.template.response import TemplateResponse
 from .models import (
     Artist, ArtistAuth, Album, Genre, Mood, Tag, SubGenre, Song, Playlist, 
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
@@ -14,6 +16,8 @@ from .models import OtpCode
 from .models import ActivePlayback
 from django.utils import timezone
 from django.db import transaction
+
+from .forms import ArtistPlayIncomeSettingsForm
 
 User = get_user_model()
 
@@ -628,8 +632,84 @@ class RulesAdmin(admin.ModelAdmin):
 
 @admin.register(PlayConfiguration)
 class PlayConfigurationAdmin(admin.ModelAdmin):
-    list_display = ('free_play_worth', 'premium_play_worth', 'updated_at')
-    readonly_fields = ('updated_at',)
+    """Dedicated singleton-style page for artist play income settings."""
+
+    change_list_template = 'admin/api/playconfiguration/income_settings.html'
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        if not self.has_view_or_change_permission(request):
+            raise PermissionDenied
+
+        configuration = self._get_or_create_configuration()
+
+        if request.method == 'POST':
+            if not self.has_change_permission(request, configuration):
+                raise PermissionDenied
+
+            form = ArtistPlayIncomeSettingsForm(request.POST)
+            if form.is_valid():
+                with transaction.atomic():
+                    locked_configuration = (
+                        PlayConfiguration.objects.select_for_update()
+                        .filter(pk=configuration.pk)
+                        .first()
+                    )
+                    if locked_configuration is None:
+                        locked_configuration = self._get_or_create_configuration()
+                    configuration = form.save(locked_configuration)
+
+                self.message_user(
+                    request,
+                    'Artist play income settings were updated successfully.',
+                    level=messages.SUCCESS,
+                )
+                return HttpResponseRedirect(request.path)
+        else:
+            form = ArtistPlayIncomeSettingsForm.from_configuration(configuration)
+
+        has_change_permission = self.has_change_permission(request, configuration)
+        if not has_change_permission:
+            for field in form.fields.values():
+                field.disabled = True
+
+        normal_income = configuration.free_play_worth
+        premium_income = configuration.premium_play_worth
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Artist play income',
+            'subtitle': 'Control how much an artist earns from each valid play.',
+            'opts': self.model._meta,
+            'form': form,
+            'configuration': configuration,
+            'normal_income': normal_income,
+            'premium_income': premium_income,
+            'normal_income_per_thousand': normal_income * 1000,
+            'premium_income_per_thousand': premium_income * 1000,
+            'has_change_permission': has_change_permission,
+            'media': self.media + form.media,
+        }
+        if extra_context:
+            context.update(extra_context)
+        return TemplateResponse(request, self.change_list_template, context)
+
+    def add_view(self, request, form_url='', extra_context=None):
+        return HttpResponseRedirect(reverse('admin:api_playconfiguration_changelist'))
+
+    def change_view(self, request, object_id, form_url='', extra_context=None):
+        return HttpResponseRedirect(reverse('admin:api_playconfiguration_changelist'))
+
+    @staticmethod
+    def _get_or_create_configuration():
+        configuration = PlayConfiguration.objects.order_by('-pk').first()
+        if configuration is None:
+            configuration = PlayConfiguration.objects.create()
+        return configuration
 
 
 @admin.register(ActivePlayback)

@@ -1,0 +1,354 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+    .income-settings {
+        max-width: 980px;
+        margin: 0 auto;
+    }
+
+    .income-hero,
+    .income-panel,
+    .income-note {
+        border: 1px solid var(--hairline-color);
+        border-radius: 12px;
+        background: var(--body-bg);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.06);
+    }
+
+    .income-hero {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 24px;
+        margin-bottom: 20px;
+        background: linear-gradient(135deg, var(--darkened-bg), var(--body-bg));
+    }
+
+    .income-hero h1 {
+        margin: 0 0 7px;
+        font-size: 24px;
+        line-height: 1.25;
+    }
+
+    .income-hero p,
+    .income-panel p,
+    .income-note p {
+        margin: 0;
+        color: var(--body-quiet-color);
+    }
+
+    .income-badge {
+        flex: 0 0 auto;
+        padding: 7px 11px;
+        border-radius: 999px;
+        background: var(--selected-row);
+        color: var(--body-fg);
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+
+    .income-panel {
+        overflow: hidden;
+    }
+
+    .income-panel__header {
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--hairline-color);
+    }
+
+    .income-panel__header h2 {
+        margin: 0 0 5px;
+        font-size: 18px;
+    }
+
+    .income-form-body {
+        padding: 24px;
+    }
+
+    .income-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+    }
+
+    .income-field {
+        padding: 20px;
+        border: 1px solid var(--hairline-color);
+        border-radius: 10px;
+        background: var(--darkened-bg);
+    }
+
+    .income-field label {
+        display: block;
+        margin-bottom: 7px;
+        color: var(--body-fg);
+        font-size: 15px;
+        font-weight: 700;
+    }
+
+    .income-field__help {
+        min-height: 42px;
+        margin-bottom: 14px !important;
+        font-size: 12px;
+        line-height: 1.6;
+    }
+
+    .income-input-wrap {
+        display: flex;
+        align-items: stretch;
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--body-bg);
+    }
+
+    .income-input-wrap:focus-within {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+    }
+
+    .income-input-wrap input {
+        width: 100%;
+        min-width: 0;
+        padding: 12px 13px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--body-fg);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 16px;
+        font-weight: 700;
+        outline: none;
+    }
+
+    .income-input-unit {
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        border-left: 1px solid var(--hairline-color);
+        color: var(--body-quiet-color);
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .income-preview {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+    }
+
+    .income-stat {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--body-bg);
+    }
+
+    .income-stat span {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--body-quiet-color);
+        font-size: 11px;
+    }
+
+    .income-stat strong {
+        display: block;
+        overflow-wrap: anywhere;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+    }
+
+    .errorlist {
+        margin: 9px 0 0;
+        padding: 0;
+        color: var(--error-fg);
+        list-style: none;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    .income-note {
+        display: flex;
+        gap: 13px;
+        margin-top: 18px;
+        padding: 17px 19px;
+        box-shadow: none;
+    }
+
+    .income-note__icon {
+        flex: 0 0 auto;
+        font-size: 20px;
+        line-height: 1;
+    }
+
+    .income-note strong {
+        display: block;
+        margin-bottom: 4px;
+    }
+
+    .income-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+        margin-top: 22px;
+        padding-top: 20px;
+        border-top: 1px solid var(--hairline-color);
+    }
+
+    .income-updated {
+        color: var(--body-quiet-color);
+        font-size: 12px;
+    }
+
+    .income-buttons {
+        display: flex;
+        gap: 10px;
+    }
+
+    .income-buttons .button,
+    .income-buttons input[type="submit"] {
+        min-height: 38px;
+        padding: 9px 16px;
+        border-radius: 7px;
+        cursor: pointer;
+    }
+
+    .income-buttons input[type="submit"] {
+        border: 0;
+        background: var(--primary);
+        color: var(--primary-fg);
+        font-weight: 700;
+    }
+
+    @media (max-width: 760px) {
+        .income-settings {
+            margin: 0;
+        }
+
+        .income-hero,
+        .income-actions {
+            align-items: stretch;
+            flex-direction: column;
+        }
+
+        .income-grid,
+        .income-preview {
+            grid-template-columns: 1fr;
+        }
+
+        .income-field__help {
+            min-height: 0;
+        }
+
+        .income-buttons {
+            width: 100%;
+        }
+
+        .income-buttons .button,
+        .income-buttons input[type="submit"] {
+            flex: 1;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+    &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main" class="income-settings">
+    <section class="income-hero">
+        <div>
+            <h1>{{ title }}</h1>
+            <p>{{ subtitle }}</p>
+        </div>
+        <span class="income-badge">Global configuration</span>
+    </section>
+
+    <section class="income-panel">
+        <header class="income-panel__header">
+            <h2>Per-play earnings</h2>
+            <p>Use up to eight digits after the decimal point. Values cannot be negative.</p>
+        </header>
+
+        <form method="post" novalidate>
+            {% csrf_token %}
+            <div class="income-form-body">
+                {{ form.non_field_errors }}
+
+                <div class="income-grid">
+                    <div class="income-field">
+                        <label for="{{ form.normal_play_income.id_for_label }}">{{ form.normal_play_income.label }}</label>
+                        <p class="income-field__help">{{ form.normal_play_income.help_text }}</p>
+                        <div class="income-input-wrap">
+                            {{ form.normal_play_income }}
+                            <span class="income-input-unit">per valid play</span>
+                        </div>
+                        {{ form.normal_play_income.errors }}
+                        <div class="income-preview">
+                            <div class="income-stat">
+                                <span>Current rate</span>
+                                <strong>{{ normal_income|floatformat:8 }}</strong>
+                            </div>
+                            <div class="income-stat">
+                                <span>Current value / 1,000 plays</span>
+                                <strong>{{ normal_income_per_thousand|floatformat:8 }}</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="income-field">
+                        <label for="{{ form.premium_play_income.id_for_label }}">{{ form.premium_play_income.label }}</label>
+                        <p class="income-field__help">{{ form.premium_play_income.help_text }}</p>
+                        <div class="income-input-wrap">
+                            {{ form.premium_play_income }}
+                            <span class="income-input-unit">per valid play</span>
+                        </div>
+                        {{ form.premium_play_income.errors }}
+                        <div class="income-preview">
+                            <div class="income-stat">
+                                <span>Current rate</span>
+                                <strong>{{ premium_income|floatformat:8 }}</strong>
+                            </div>
+                            <div class="income-stat">
+                                <span>Current value / 1,000 plays</span>
+                                <strong>{{ premium_income_per_thousand|floatformat:8 }}</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <aside class="income-note">
+                    <span class="income-note__icon" aria-hidden="true">ⓘ</span>
+                    <div>
+                        <strong>When does a new rate take effect?</strong>
+                        <p>The saved amount is used for newly recorded valid plays. Existing play records and their previously stored earnings are not recalculated.</p>
+                    </div>
+                </aside>
+
+                <div class="income-actions">
+                    <div class="income-updated">
+                        Last updated: {{ configuration.updated_at|date:"Y-m-d H:i:s" }}
+                    </div>
+                    {% if has_change_permission %}
+                    <div class="income-buttons">
+                        <button class="button" type="reset">Reset unsaved changes</button>
+                        <input type="submit" value="Save income settings">
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </form>
+    </section>
+</div>
+{% endblock %}

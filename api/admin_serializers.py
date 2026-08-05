@@ -202,8 +202,8 @@ class AdminAlbumSerializer(RequireEnglishTranslationSerializerMixin, serializers
 
 
 class AdminPlayConfigurationSerializer(serializers.ModelSerializer):
-    per_normal_play_pay = serializers.DecimalField(source='free_play_worth', max_digits=12, decimal_places=8)
-    per_premium_play_pay = serializers.DecimalField(source='premium_play_worth', max_digits=12, decimal_places=8)
+    per_normal_play_pay = serializers.DecimalField(source='free_play_worth', max_digits=12, decimal_places=8, min_value=0)
+    per_premium_play_pay = serializers.DecimalField(source='premium_play_worth', max_digits=12, decimal_places=8, min_value=0)
 
     class Meta:
         model = PlayConfiguration
