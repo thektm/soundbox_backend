@@ -178,6 +178,108 @@ def _finance_bucket_range(group, start, end):
         current = _finance_shift_month(current, 1) if group == 'monthly' else current + timedelta(days=7 if group == 'weekly' else 1)
 
 
+def _finance_song_totals(artist):
+    rows = Song.objects.filter(artist=artist).annotate(
+        finance_income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
+    ).values_list('id', 'finance_income')
+    return {int(song_id): _finance_decimal(income) for song_id, income in rows}
+
+
+def _finance_saved_song_allocations(summary):
+    if not isinstance(summary, dict):
+        return {}
+    raw = summary.get('song_allocations')
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, list):
+        items = ((item.get('song_id'), item.get('amount')) for item in raw if isinstance(item, dict))
+    else:
+        return {}
+
+    allocations = {}
+    for song_id, amount in items:
+        try:
+            song_id = int(song_id)
+            value = max(Decimal('0'), _finance_decimal(amount))
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+        if value:
+            allocations[song_id] = allocations.get(song_id, Decimal('0')) + value
+    return allocations
+
+
+def _finance_allocate_across_songs(song_totals, already_allocated, amount):
+    target = max(Decimal('0'), _finance_decimal(amount))
+    available = {
+        song_id: max(Decimal('0'), _finance_decimal(total) - _finance_decimal(already_allocated.get(song_id, 0)))
+        for song_id, total in song_totals.items()
+    }
+    available = {song_id: value for song_id, value in available.items() if value > 0}
+    available_total = sum(available.values(), Decimal('0'))
+    target = min(target, available_total)
+    if target <= 0 or available_total <= 0:
+        return {}
+
+    ordered = sorted(available.items(), key=lambda item: (-item[1], item[0]))
+    allocations = {}
+    allocated_total = Decimal('0')
+    for song_id, balance in ordered:
+        share = (target * balance / available_total).quantize(FINANCE_QUANTUM, rounding=ROUND_DOWN)
+        share = min(balance, share)
+        if share > 0:
+            allocations[song_id] = share
+            allocated_total += share
+
+    remainder = target - allocated_total
+    if remainder > 0:
+        for song_id, balance in ordered:
+            capacity = balance - allocations.get(song_id, Decimal('0'))
+            if capacity <= 0:
+                continue
+            addition = min(capacity, remainder)
+            allocations[song_id] = allocations.get(song_id, Decimal('0')) + addition
+            remainder -= addition
+            if remainder <= 0:
+                break
+
+    return {song_id: _finance_decimal(value) for song_id, value in allocations.items() if value > 0}
+
+
+def _finance_artist_song_allocations(artist, song_totals=None, requests=None):
+    song_totals = song_totals if song_totals is not None else _finance_song_totals(artist)
+    requests = requests if requests is not None else DepositRequest.objects.filter(
+        artist=artist,
+        status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE],
+    ).order_by('submission_date', 'pk')
+
+    reserved = {song_id: Decimal('0') for song_id in song_totals}
+    deposited = {song_id: Decimal('0') for song_id in song_totals}
+    pending = {song_id: Decimal('0') for song_id in song_totals}
+
+    for payout in requests:
+        saved = _finance_saved_song_allocations(payout.summary)
+        valid_saved = {
+            song_id: min(value, max(Decimal('0'), song_totals.get(song_id, Decimal('0')) - reserved.get(song_id, Decimal('0'))))
+            for song_id, value in saved.items()
+            if song_id in song_totals and value > 0
+        }
+        requested_amount = max(Decimal('0'), _finance_decimal(payout.amount))
+        saved_total = sum(valid_saved.values(), Decimal('0'))
+        if not valid_saved or abs(saved_total - requested_amount) > FINANCE_QUANTUM:
+            allocation = _finance_allocate_across_songs(song_totals, reserved, requested_amount)
+        else:
+            allocation = valid_saved
+
+        for song_id, value in allocation.items():
+            reserved[song_id] = reserved.get(song_id, Decimal('0')) + value
+            if payout.status == DepositRequest.STATUS_DONE:
+                deposited[song_id] = deposited.get(song_id, Decimal('0')) + value
+            else:
+                pending[song_id] = pending.get(song_id, Decimal('0')) + value
+
+    return reserved, deposited, pending
+
+
 def _artist_album_payload(album, serialized, songs=None):
     """Add artist-only operational stats without changing public album serializers."""
     tracks = list(songs if songs is not None else album.songs.all())
@@ -6916,16 +7018,19 @@ class ArtistAnalyticsView(APIView):
             return Response({"error": "Invalid chart type. Use hourly, daily, or monthly."}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
-        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_date = timezone.localdate(now)
+        today = _finance_day_start(today_date)
+        current_month = _finance_month_start(today_date)
+        twelve_month_start = _finance_shift_month(current_month, -11)
         windows = {
             'today': (today, today - timedelta(days=1), today),
-            '7d': (now - timedelta(days=7), now - timedelta(days=14), now - timedelta(days=7)),
-            '30d': (now - timedelta(days=30), now - timedelta(days=60), now - timedelta(days=30)),
-            '365d': (now - timedelta(days=365), now - timedelta(days=730), now - timedelta(days=365)),
+            '7d': (_finance_day_start(today_date - timedelta(days=6)), _finance_day_start(today_date - timedelta(days=13)), _finance_day_start(today_date - timedelta(days=6))),
+            '30d': (_finance_day_start(today_date - timedelta(days=29)), _finance_day_start(today_date - timedelta(days=59)), _finance_day_start(today_date - timedelta(days=29))),
+            '365d': (_finance_day_start(twelve_month_start), _finance_day_start(_finance_shift_month(twelve_month_start, -12)), _finance_day_start(twelve_month_start)),
             'all': (None, None, None),
         }
         start, previous_start, previous_end = windows[period]
-        chart_type = chart_type or ('hourly' if period == 'today' else 'monthly' if period == '365d' else 'daily')
+        chart_type = chart_type or ('hourly' if period == 'today' else 'monthly' if period in {'365d', 'all'} else 'daily')
 
         def period_qs(model, field='created_at'):
             qs = model
@@ -6987,7 +7092,37 @@ class ArtistAnalyticsView(APIView):
         chart_qs = current_plays
         bucket = TruncHour('created_at') if chart_type == 'hourly' else TruncMonth('created_at') if chart_type == 'monthly' else TruncDate('created_at')
         chart_rows = chart_qs.annotate(bucket=bucket).values('bucket').annotate(count=Count('id', distinct=True)).order_by('bucket')
-        chart = [{'time': row['bucket'].isoformat(), 'count': row['count']} for row in chart_rows]
+
+        def chart_bucket_key(value):
+            if chart_type == 'hourly':
+                if timezone.is_aware(value):
+                    value = timezone.localtime(value)
+                return value.replace(minute=0, second=0, microsecond=0)
+            return _finance_bucket_key(value, 'monthly' if chart_type == 'monthly' else 'daily')
+
+        chart_counts = {chart_bucket_key(row['bucket']): int(row['count']) for row in chart_rows}
+        if chart_type == 'hourly':
+            chart_start = today
+            chart_end = today + timedelta(hours=23)
+            chart_buckets = (chart_start + timedelta(hours=hour) for hour in range(24))
+        elif chart_type == 'monthly':
+            chart_end = current_month
+            if period == 'all':
+                chart_start = min(chart_counts, default=chart_end)
+            elif period == '365d':
+                chart_start = twelve_month_start
+            else:
+                chart_start = _finance_month_start(timezone.localdate(start)) if start else chart_end
+            chart_buckets = _finance_bucket_range('monthly', chart_start, chart_end)
+        else:
+            chart_end = today_date
+            if period == 'all':
+                chart_start = min(chart_counts, default=chart_end)
+            else:
+                chart_start = timezone.localdate(start) if start else chart_end
+            chart_buckets = _finance_bucket_range('daily', chart_start, chart_end)
+
+        chart = [{'time': item.isoformat(), 'count': chart_counts.get(item, 0)} for item in chart_buckets]
 
         base_count = current_plays.count()
         def distribution(field, label):
@@ -7088,12 +7223,31 @@ class DepositRequestView(APIView):
             total_plays = plays.count()
             free_plays = plays.filter(user__plan=User.PLAN_FREE).count()
             premium_plays = plays.filter(user__plan=User.PLAN_PREMIUM).count()
+            song_totals = _finance_song_totals(artist)
+            existing_requests = DepositRequest.objects.filter(
+                artist=artist,
+                status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE],
+            ).order_by('submission_date', 'pk')
+            already_reserved, _, _ = _finance_artist_song_allocations(
+                artist,
+                song_totals=song_totals,
+                requests=existing_requests,
+            )
+            song_allocations = _finance_allocate_across_songs(song_totals, already_reserved, available)
+            if abs(sum(song_allocations.values(), Decimal('0')) - _finance_decimal(available)) > FINANCE_QUANTUM:
+                return Response({"error": "Could not allocate the payout across songs."}, status=status.HTTP_409_CONFLICT)
+
             summary = {
                 'total_plays': total_plays,
                 'free_plays': free_plays,
                 'premium_plays': premium_plays,
                 'free_percentage': round((free_plays / total_plays * 100), 1) if total_plays else 0,
                 'premium_percentage': round((premium_plays / total_plays * 100), 1) if total_plays else 0,
+                'allocation_version': 1,
+                'song_allocations': [
+                    {'song_id': song_id, 'amount': _finance_string(amount)}
+                    for song_id, amount in sorted(song_allocations.items())
+                ],
             }
             item = DepositRequest.objects.create(artist=artist, amount=available, summary=summary)
         return Response(DepositRequestSerializer(item).data, status=status.HTTP_201_CREATED)
@@ -7299,90 +7453,146 @@ class ArtistFinanceView(APIView):
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistFinanceSongsView(APIView):
-    """
-    Return paginated list of artist's songs with total income and plays.
-    - default sort: most income (desc)
-    - query param `sort=release_date` will sort by release_date (desc)
-    """
+    """Paginated song-level earnings, paid allocations, and remaining balances."""
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         summary="آمار مالی آهنگ‌های هنرمند",
-        description="دریافت لیست آهنگ‌های هنرمند به همراه درآمد و تعداد پخش هر کدام با قابلیت مرتب‌سازی.",
+        description=(
+            "لیست صفحه‌بندی‌شده آهنگ‌ها با کل درآمد، مبلغ تسویه‌شده، مبلغ در انتظار "
+            "و مانده قابل تسویه. مرتب‌سازی پیش‌فرض بر اساس بیشترین مانده قابل تسویه است."
+        ),
         parameters=[
-            OpenApiParameter("sort", OpenApiTypes.STR, description="مرتب‌سازی: release_date یا income (پیش‌فرض)")
+            OpenApiParameter(
+                "sort",
+                OpenApiTypes.STR,
+                description="مرتب‌سازی: available (پیش‌فرض)، remaining، income یا release_date",
+            ),
+            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
+            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد نتیجه در هر صفحه؛ حداکثر ۱۰۰"),
         ],
-        responses={200: SongSerializer(many=True)}
+        responses={200: SongSerializer(many=True)},
     )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            artist = user.artist_profile
-        except Artist.DoesNotExist:
+        artist = getattr(user, 'artist_profile', None)
+        if not artist:
             return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        sort = request.query_params.get('sort')
+        sort = request.query_params.get('sort', 'available').lower()
+        allowed_sorts = {'available', 'remaining', 'income', 'release_date'}
+        if sort not in allowed_sorts:
+            return Response(
+                {"error": "Invalid sort. Use available, remaining, income, or release_date."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Annotate songs with income and play counts
-        qs = Song.objects.filter(artist=artist).select_related(
+        songs = list(Song.objects.filter(artist=artist).select_related(
             'artist', 'album', 'uploader'
-        ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags').annotate(
+        ).prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        ).annotate(
             play_counts_count=Count('play_counts', distinct=True),
             paid_plays=Count('play_counts', filter=Q(play_counts__pay__gt=0), distinct=True),
             zero_value_plays=Count('play_counts', filter=Q(play_counts__pay=0), distinct=True),
-            income=Coalesce(Sum('play_counts__pay'), _finance_zero())
+            income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
         ).annotate(
-            total_plays=ExpressionWrapper(F('plays') + F('play_counts_count'), output_field=BigIntegerField())
+            total_plays=ExpressionWrapper(F('plays') + F('play_counts_count'), output_field=BigIntegerField()),
+        ))
+
+        song_totals = {
+            song.id: _finance_decimal(getattr(song, 'income', 0))
+            for song in songs
+        }
+        payout_requests = DepositRequest.objects.filter(
+            artist=artist,
+            status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE],
+        ).order_by('submission_date', 'pk')
+        reserved_by_song, deposited_by_song, pending_by_song = _finance_artist_song_allocations(
+            artist,
+            song_totals=song_totals,
+            requests=payout_requests,
         )
 
-        # Sorting
+        records = []
+        for song in songs:
+            total_income = song_totals.get(song.id, Decimal('0'))
+            deposited_income = min(total_income, deposited_by_song.get(song.id, Decimal('0')))
+            pending_income = min(
+                max(Decimal('0'), total_income - deposited_income),
+                pending_by_song.get(song.id, Decimal('0')),
+            )
+            remaining_income = max(Decimal('0'), total_income - deposited_income)
+            available_income = max(Decimal('0'), total_income - reserved_by_song.get(song.id, Decimal('0')))
+            records.append({
+                'song': song,
+                'total_income': total_income,
+                'deposited_income': deposited_income,
+                'pending_income': pending_income,
+                'remaining_income': remaining_income,
+                'available_income': available_income,
+            })
+
         if sort == 'release_date':
-            qs = qs.order_by('-release_date', '-income')
+            records.sort(
+                key=lambda item: (
+                    item['song'].release_date or date.min,
+                    item['available_income'],
+                    item['total_income'],
+                    item['song'].id,
+                ),
+                reverse=True,
+            )
         else:
-            # default: sort by income desc, tie-breaker total_plays desc
-            qs = qs.order_by('-income', '-total_plays')
+            metric = {
+                'available': 'available_income',
+                'remaining': 'remaining_income',
+                'income': 'total_income',
+            }[sort]
+            records.sort(
+                key=lambda item: (
+                    item[metric],
+                    item['remaining_income'],
+                    item['total_income'],
+                    int(getattr(item['song'], 'total_plays', 0) or 0),
+                    item['song'].id,
+                ),
+                reverse=True,
+            )
 
-        # Pagination
         paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(qs, request)
-        if page is not None:
-            hydrate_song_metrics(page, request.user)
-            serializer = SongSerializer(page, many=True, context={'request': request})
-            results = []
-            for song_obj, song_data in zip(page, serializer.data):
-                tracked_plays = int(getattr(song_obj, 'play_counts_count', 0) or 0)
-                income = _finance_decimal(getattr(song_obj, 'income', 0))
-                results.append({
-                    **song_data,
-                    'income': _finance_string(income),
-                    'total_plays': int(getattr(song_obj, 'total_plays', 0)),
-                    'tracked_plays': tracked_plays,
-                    'paid_plays': int(getattr(song_obj, 'paid_plays', 0) or 0),
-                    'zero_value_plays': int(getattr(song_obj, 'zero_value_plays', 0) or 0),
-                    'average_revenue_per_play': _finance_string((income / tracked_plays) if tracked_plays else 0),
-                })
-            return paginator.get_paginated_response(results)
+        page = paginator.paginate_queryset(records, request)
+        page_records = page if page is not None else records
+        page_songs = [record['song'] for record in page_records]
+        hydrate_song_metrics(page_songs, request.user)
+        serialized = SongSerializer(page_songs, many=True, context={'request': request}).data
 
-        # non-paginated fallback
-        songs = list(qs)
-        hydrate_song_metrics(songs, request.user)
-        serializer = SongSerializer(songs, many=True, context={'request': request})
         results = []
-        for song_obj, song_data in zip(songs, serializer.data):
+        for record, song_data in zip(page_records, serialized):
+            song_obj = record['song']
             tracked_plays = int(getattr(song_obj, 'play_counts_count', 0) or 0)
-            income = _finance_decimal(getattr(song_obj, 'income', 0))
             results.append({
                 **song_data,
-                'income': _finance_string(income),
-                'total_plays': int(getattr(song_obj, 'total_plays', 0)),
+                'income': _finance_string(record['total_income']),
+                'total_income': _finance_string(record['total_income']),
+                'deposited_income': _finance_string(record['deposited_income']),
+                'pending_income': _finance_string(record['pending_income']),
+                'remaining_income': _finance_string(record['remaining_income']),
+                'available_income': _finance_string(record['available_income']),
+                'total_plays': int(getattr(song_obj, 'total_plays', 0) or 0),
                 'tracked_plays': tracked_plays,
                 'paid_plays': int(getattr(song_obj, 'paid_plays', 0) or 0),
                 'zero_value_plays': int(getattr(song_obj, 'zero_value_plays', 0) or 0),
-                'average_revenue_per_play': _finance_string((income / tracked_plays) if tracked_plays else 0),
+                'average_revenue_per_play': _finance_string(
+                    (record['total_income'] / tracked_plays) if tracked_plays else 0
+                ),
             })
+
+        if page is not None:
+            return paginator.get_paginated_response(results)
         return Response(results)
 
 
