@@ -178,6 +178,32 @@ def _finance_bucket_range(group, start, end):
         current = _finance_shift_month(current, 1) if group == 'monthly' else current + timedelta(days=7 if group == 'weekly' else 1)
 
 
+def _complete_daily_count_series(queryset, days, field='created_at'):
+    """Return an exact calendar-day window and include zero-count days."""
+    days = max(1, int(days))
+    end_date = timezone.localdate()
+    start_date = end_date - timedelta(days=days - 1)
+    start_at = _finance_day_start(start_date)
+    end_at = _finance_day_start(end_date + timedelta(days=1))
+
+    scoped = queryset.filter(**{
+        f'{field}__gte': start_at,
+        f'{field}__lt': end_at,
+    })
+    rows = scoped.annotate(chart_date=TruncDate(field)).values('chart_date').annotate(
+        count=Count('id')
+    ).order_by('chart_date')
+    counts = {
+        _finance_bucket_key(row['chart_date'], 'daily'): int(row['count'])
+        for row in rows
+    }
+    series = [
+        {'date': bucket.isoformat(), 'count': counts.get(bucket, 0)}
+        for bucket in _finance_bucket_range('daily', start_date, end_date)
+    ]
+    return scoped, series
+
+
 def _finance_song_totals(artist):
     rows = Song.objects.filter(artist=artist).annotate(
         finance_income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
@@ -3009,14 +3035,14 @@ class SongDetailView(APIView):
         if artist_profile and song.artist_id == artist_profile.id:
             try: days = max(1, min(int(request.query_params.get('days', 30)), 365))
             except (TypeError, ValueError): days = 30
-            plays = song.play_counts.filter(created_at__gte=timezone.now() - timedelta(days=days))
+            plays, daily_plays = _complete_daily_count_series(song.play_counts.all(), days)
             total = plays.count()
             def distribution(field):
                 return [{field: row[field], 'count': row['count'],
                          'percentage': round(row['count'] * 100 / total, 2) if total else 0}
                         for row in plays.values(field).annotate(count=Count('id')).order_by('-count')]
             data['analytics'] = {'days': days, 'total_period_plays': total,
-                'daily_plays': list(plays.annotate(date=TruncDate('created_at')).values('date').annotate(count=Count('id')).order_by('date')),
+                'daily_plays': daily_plays,
                 'city_distribution': distribution('city'), 'country_distribution': distribution('country')}
         return Response(data)
 
@@ -7855,20 +7881,14 @@ class ArtistSongsManagementView(APIView):
             except (ValueError, TypeError):
                 days = 30
 
-            start_date = timezone.now() - timedelta(days=days)
-
             # Total stats
             total_plays = (song.plays or 0) + song.play_counts.count()
             total_likes = song.liked_by.count()
             added_to_playlists = song.user_playlists.count()
 
-            # Analytics for the period
-            period_plays = song.play_counts.filter(created_at__gte=start_date)
+            # Exact calendar-day analytics window, including empty days.
+            period_plays, daily_plays = _complete_daily_count_series(song.play_counts.all(), days)
             total_period_plays = period_plays.count()
-
-            # Daily plays for chart
-            daily_plays = period_plays.annotate(date=TruncDate('created_at')) \
-                .values('date').annotate(count=Count('id')).order_by('date')
 
             # City distribution
             city_dist = period_plays.values('city').annotate(count=Count('id')).order_by('-count')
@@ -7899,7 +7919,7 @@ class ArtistSongsManagementView(APIView):
             data['analytics'] = {
                 'days': days,
                 'total_period_plays': total_period_plays,
-                'daily_plays': list(daily_plays),
+                'daily_plays': daily_plays,
                 'city_distribution': city_data,
                 'country_distribution': country_data
             }
