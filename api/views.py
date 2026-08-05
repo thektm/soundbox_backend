@@ -17,6 +17,7 @@ from .models import (
 from .models import BannerAd, BannerAdServeCounter
 from .localization import generated_term_en, get_request_language
 from .realtime_notifications import (
+    normalize_notification_role,
     publish_all_notifications_read,
     publish_notification_read,
 )
@@ -68,6 +69,7 @@ from .serializers import (
     UserImageProfileSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
@@ -127,8 +129,6 @@ from .release_service import mark_release_for_review, merged_release_metadata, m
 logger = logging.getLogger(__name__)
 
 FINANCE_QUANTUM = Decimal('0.00000001')
-PAYOUT_QUANTUM = Decimal('0.01')
-DEFAULT_MINIMUM_PAYOUT_AMOUNT = Decimal('0.01')
 
 
 def _finance_decimal(value):
@@ -145,26 +145,6 @@ def _finance_output_field():
 
 def _finance_zero():
     return Value(Decimal('0.00000000'), output_field=_finance_output_field())
-
-
-def _payout_decimal(value):
-    return Decimal(str(value or 0)).quantize(PAYOUT_QUANTUM, rounding=ROUND_DOWN)
-
-
-def _payout_string(value):
-    return format(_payout_decimal(value), 'f')
-
-
-def _minimum_payout_amount():
-    configuration = (
-        PlayConfiguration.objects.order_by('-updated_at', '-pk')
-        .only('minimum_payout_amount')
-        .first()
-    )
-    configured = getattr(configuration, 'minimum_payout_amount', None)
-    if configured is None:
-        return DEFAULT_MINIMUM_PAYOUT_AMOUNT
-    return max(DEFAULT_MINIMUM_PAYOUT_AMOUNT, _payout_decimal(configured))
 
 
 def _finance_day_start(value):
@@ -198,134 +178,6 @@ def _finance_bucket_range(group, start, end):
     while current <= end:
         yield current
         current = _finance_shift_month(current, 1) if group == 'monthly' else current + timedelta(days=7 if group == 'weekly' else 1)
-
-
-def _complete_daily_count_series(queryset, days, field='created_at'):
-    """Return an exact calendar-day window and include zero-count days."""
-    days = max(1, int(days))
-    end_date = timezone.localdate()
-    start_date = end_date - timedelta(days=days - 1)
-    start_at = _finance_day_start(start_date)
-    end_at = _finance_day_start(end_date + timedelta(days=1))
-
-    scoped = queryset.filter(**{
-        f'{field}__gte': start_at,
-        f'{field}__lt': end_at,
-    })
-    rows = scoped.annotate(chart_date=TruncDate(field)).values('chart_date').annotate(
-        count=Count('id')
-    ).order_by('chart_date')
-    counts = {
-        _finance_bucket_key(row['chart_date'], 'daily'): int(row['count'])
-        for row in rows
-    }
-    series = [
-        {'date': bucket.isoformat(), 'count': counts.get(bucket, 0)}
-        for bucket in _finance_bucket_range('daily', start_date, end_date)
-    ]
-    return scoped, series
-
-
-def _finance_song_totals(artist):
-    rows = Song.objects.filter(artist=artist).annotate(
-        finance_income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
-    ).values_list('id', 'finance_income')
-    return {int(song_id): _finance_decimal(income) for song_id, income in rows}
-
-
-def _finance_saved_song_allocations(summary):
-    if not isinstance(summary, dict):
-        return {}
-    raw = summary.get('song_allocations')
-    if isinstance(raw, dict):
-        items = raw.items()
-    elif isinstance(raw, list):
-        items = ((item.get('song_id'), item.get('amount')) for item in raw if isinstance(item, dict))
-    else:
-        return {}
-
-    allocations = {}
-    for song_id, amount in items:
-        try:
-            song_id = int(song_id)
-            value = max(Decimal('0'), _finance_decimal(amount))
-        except (TypeError, ValueError, ArithmeticError):
-            continue
-        if value:
-            allocations[song_id] = allocations.get(song_id, Decimal('0')) + value
-    return allocations
-
-
-def _finance_allocate_across_songs(song_totals, already_allocated, amount):
-    target = max(Decimal('0'), _finance_decimal(amount))
-    available = {
-        song_id: max(Decimal('0'), _finance_decimal(total) - _finance_decimal(already_allocated.get(song_id, 0)))
-        for song_id, total in song_totals.items()
-    }
-    available = {song_id: value for song_id, value in available.items() if value > 0}
-    available_total = sum(available.values(), Decimal('0'))
-    target = min(target, available_total)
-    if target <= 0 or available_total <= 0:
-        return {}
-
-    ordered = sorted(available.items(), key=lambda item: (-item[1], item[0]))
-    allocations = {}
-    allocated_total = Decimal('0')
-    for song_id, balance in ordered:
-        share = (target * balance / available_total).quantize(FINANCE_QUANTUM, rounding=ROUND_DOWN)
-        share = min(balance, share)
-        if share > 0:
-            allocations[song_id] = share
-            allocated_total += share
-
-    remainder = target - allocated_total
-    if remainder > 0:
-        for song_id, balance in ordered:
-            capacity = balance - allocations.get(song_id, Decimal('0'))
-            if capacity <= 0:
-                continue
-            addition = min(capacity, remainder)
-            allocations[song_id] = allocations.get(song_id, Decimal('0')) + addition
-            remainder -= addition
-            if remainder <= 0:
-                break
-
-    return {song_id: _finance_decimal(value) for song_id, value in allocations.items() if value > 0}
-
-
-def _finance_artist_song_allocations(artist, song_totals=None, requests=None):
-    song_totals = song_totals if song_totals is not None else _finance_song_totals(artist)
-    requests = requests if requests is not None else DepositRequest.objects.filter(
-        artist=artist,
-        status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE],
-    ).order_by('submission_date', 'pk')
-
-    reserved = {song_id: Decimal('0') for song_id in song_totals}
-    deposited = {song_id: Decimal('0') for song_id in song_totals}
-    pending = {song_id: Decimal('0') for song_id in song_totals}
-
-    for payout in requests:
-        saved = _finance_saved_song_allocations(payout.summary)
-        valid_saved = {
-            song_id: min(value, max(Decimal('0'), song_totals.get(song_id, Decimal('0')) - reserved.get(song_id, Decimal('0'))))
-            for song_id, value in saved.items()
-            if song_id in song_totals and value > 0
-        }
-        requested_amount = max(Decimal('0'), _finance_decimal(payout.amount))
-        saved_total = sum(valid_saved.values(), Decimal('0'))
-        if not valid_saved or abs(saved_total - requested_amount) > FINANCE_QUANTUM:
-            allocation = _finance_allocate_across_songs(song_totals, reserved, requested_amount)
-        else:
-            allocation = valid_saved
-
-        for song_id, value in allocation.items():
-            reserved[song_id] = reserved.get(song_id, Decimal('0')) + value
-            if payout.status == DepositRequest.STATUS_DONE:
-                deposited[song_id] = deposited.get(song_id, Decimal('0')) + value
-            else:
-                pending[song_id] = pending.get(song_id, Decimal('0')) + value
-
-    return reserved, deposited, pending
 
 
 def _artist_album_payload(album, serialized, songs=None):
@@ -3057,14 +2909,14 @@ class SongDetailView(APIView):
         if artist_profile and song.artist_id == artist_profile.id:
             try: days = max(1, min(int(request.query_params.get('days', 30)), 365))
             except (TypeError, ValueError): days = 30
-            plays, daily_plays = _complete_daily_count_series(song.play_counts.all(), days)
+            plays = song.play_counts.filter(created_at__gte=timezone.now() - timedelta(days=days))
             total = plays.count()
             def distribution(field):
                 return [{field: row[field], 'count': row['count'],
                          'percentage': round(row['count'] * 100 / total, 2) if total else 0}
                         for row in plays.values(field).annotate(count=Count('id')).order_by('-count')]
             data['analytics'] = {'days': days, 'total_period_plays': total,
-                'daily_plays': daily_plays,
+                'daily_plays': list(plays.annotate(date=TruncDate('created_at')).values('date').annotate(count=Count('id')).order_by('date')),
                 'city_distribution': distribution('city'), 'country_distribution': distribution('country')}
         return Response(data)
 
@@ -7066,19 +6918,16 @@ class ArtistAnalyticsView(APIView):
             return Response({"error": "Invalid chart type. Use hourly, daily, or monthly."}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
-        today_date = timezone.localdate(now)
-        today = _finance_day_start(today_date)
-        current_month = _finance_month_start(today_date)
-        twelve_month_start = _finance_shift_month(current_month, -11)
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         windows = {
             'today': (today, today - timedelta(days=1), today),
-            '7d': (_finance_day_start(today_date - timedelta(days=6)), _finance_day_start(today_date - timedelta(days=13)), _finance_day_start(today_date - timedelta(days=6))),
-            '30d': (_finance_day_start(today_date - timedelta(days=29)), _finance_day_start(today_date - timedelta(days=59)), _finance_day_start(today_date - timedelta(days=29))),
-            '365d': (_finance_day_start(twelve_month_start), _finance_day_start(_finance_shift_month(twelve_month_start, -12)), _finance_day_start(twelve_month_start)),
+            '7d': (now - timedelta(days=7), now - timedelta(days=14), now - timedelta(days=7)),
+            '30d': (now - timedelta(days=30), now - timedelta(days=60), now - timedelta(days=30)),
+            '365d': (now - timedelta(days=365), now - timedelta(days=730), now - timedelta(days=365)),
             'all': (None, None, None),
         }
         start, previous_start, previous_end = windows[period]
-        chart_type = chart_type or ('hourly' if period == 'today' else 'monthly' if period in {'365d', 'all'} else 'daily')
+        chart_type = chart_type or ('hourly' if period == 'today' else 'monthly' if period == '365d' else 'daily')
 
         def period_qs(model, field='created_at'):
             qs = model
@@ -7140,37 +6989,7 @@ class ArtistAnalyticsView(APIView):
         chart_qs = current_plays
         bucket = TruncHour('created_at') if chart_type == 'hourly' else TruncMonth('created_at') if chart_type == 'monthly' else TruncDate('created_at')
         chart_rows = chart_qs.annotate(bucket=bucket).values('bucket').annotate(count=Count('id', distinct=True)).order_by('bucket')
-
-        def chart_bucket_key(value):
-            if chart_type == 'hourly':
-                if timezone.is_aware(value):
-                    value = timezone.localtime(value)
-                return value.replace(minute=0, second=0, microsecond=0)
-            return _finance_bucket_key(value, 'monthly' if chart_type == 'monthly' else 'daily')
-
-        chart_counts = {chart_bucket_key(row['bucket']): int(row['count']) for row in chart_rows}
-        if chart_type == 'hourly':
-            chart_start = today
-            chart_end = today + timedelta(hours=23)
-            chart_buckets = (chart_start + timedelta(hours=hour) for hour in range(24))
-        elif chart_type == 'monthly':
-            chart_end = current_month
-            if period == 'all':
-                chart_start = min(chart_counts, default=chart_end)
-            elif period == '365d':
-                chart_start = twelve_month_start
-            else:
-                chart_start = _finance_month_start(timezone.localdate(start)) if start else chart_end
-            chart_buckets = _finance_bucket_range('monthly', chart_start, chart_end)
-        else:
-            chart_end = today_date
-            if period == 'all':
-                chart_start = min(chart_counts, default=chart_end)
-            else:
-                chart_start = timezone.localdate(start) if start else chart_end
-            chart_buckets = _finance_bucket_range('daily', chart_start, chart_end)
-
-        chart = [{'time': item.isoformat(), 'count': chart_counts.get(item, 0)} for item in chart_buckets]
+        chart = [{'time': row['bucket'].isoformat(), 'count': row['count']} for row in chart_rows]
 
         base_count = current_plays.count()
         def distribution(field, label):
@@ -7264,49 +7083,19 @@ class DepositRequestView(APIView):
             ).aggregate(total=Coalesce(
                 Sum('amount'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=2))
             ))['total']
-            available = max(Decimal('0'), total_credit - reserved).quantize(PAYOUT_QUANTUM, rounding=ROUND_DOWN)
-            minimum_payout = _minimum_payout_amount()
-            if available < minimum_payout:
-                amount_needed = (minimum_payout - available).quantize(PAYOUT_QUANTUM)
-                return Response(
-                    {
-                        "error": "The available balance has not reached the minimum payout amount.",
-                        "code": "minimum_payout_not_reached",
-                        "available_amount": _payout_string(available),
-                        "minimum_payout_amount": _payout_string(minimum_payout),
-                        "amount_needed": _payout_string(amount_needed),
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            available = max(Decimal('0'), total_credit - reserved).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+            if available < Decimal('0.01'):
+                return Response({"error": "No available balance to request a payout."}, status=status.HTTP_400_BAD_REQUEST)
 
             total_plays = plays.count()
             free_plays = plays.filter(user__plan=User.PLAN_FREE).count()
             premium_plays = plays.filter(user__plan=User.PLAN_PREMIUM).count()
-            song_totals = _finance_song_totals(artist)
-            existing_requests = DepositRequest.objects.filter(
-                artist=artist,
-                status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE],
-            ).order_by('submission_date', 'pk')
-            already_reserved, _, _ = _finance_artist_song_allocations(
-                artist,
-                song_totals=song_totals,
-                requests=existing_requests,
-            )
-            song_allocations = _finance_allocate_across_songs(song_totals, already_reserved, available)
-            if abs(sum(song_allocations.values(), Decimal('0')) - _finance_decimal(available)) > FINANCE_QUANTUM:
-                return Response({"error": "Could not allocate the payout across songs."}, status=status.HTTP_409_CONFLICT)
-
             summary = {
                 'total_plays': total_plays,
                 'free_plays': free_plays,
                 'premium_plays': premium_plays,
                 'free_percentage': round((free_plays / total_plays * 100), 1) if total_plays else 0,
                 'premium_percentage': round((premium_plays / total_plays * 100), 1) if total_plays else 0,
-                'allocation_version': 1,
-                'song_allocations': [
-                    {'song_id': song_id, 'amount': _finance_string(amount)}
-                    for song_id, amount in sorted(song_allocations.items())
-                ],
             }
             item = DepositRequest.objects.create(artist=artist, amount=available, summary=summary)
         return Response(DepositRequestSerializer(item).data, status=status.HTTP_201_CREATED)
@@ -7352,28 +7141,18 @@ class ArtistWalletView(APIView):
             Sum('amount'), Value(0, output_field=DecimalField(max_digits=15, decimal_places=2))
         ))['total']
         available = max(Decimal('0'), total_credit - reserved)
-        withdrawable = available.quantize(PAYOUT_QUANTUM, rounding=ROUND_DOWN)
-        minimum_payout = _minimum_payout_amount()
-        amount_needed = max(Decimal('0'), minimum_payout - withdrawable).quantize(PAYOUT_QUANTUM)
-        meets_minimum = withdrawable >= minimum_payout
-        has_active_request = requests.filter(
-            status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED]
-        ).exists()
+        withdrawable = available.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
 
         return Response({
             'total_credit': _finance_string(total_credit),
             'requested_credit': _finance_string(reserved),
             'available_credit': _finance_string(available),
-            'withdrawable_credit': _payout_string(withdrawable),
+            'withdrawable_credit': format(withdrawable, 'f'),
             'withdrawn_credit': _finance_string(withdrawn),
             'pending_credit': _finance_string(pending_amount),
-            'minimum_payout_amount': _payout_string(minimum_payout),
-            'amount_needed_for_payout': _payout_string(amount_needed),
-            'meets_minimum_payout': meets_minimum,
-            'can_request_payout': meets_minimum and not has_active_request,
             'paid_plays': plays.filter(pay__gt=0).count(),
             'zero_value_plays': plays.filter(pay=0).count(),
-            'has_active_request': has_active_request,
+            'has_active_request': requests.filter(status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED]).exists(),
             'deposit_requests': {
                 'total_submissions': requests.count(),
                 'pending': requests.filter(status=DepositRequest.STATUS_PENDING).count(),
@@ -7522,146 +7301,90 @@ class ArtistFinanceView(APIView):
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
 class ArtistFinanceSongsView(APIView):
-    """Paginated song-level earnings, paid allocations, and remaining balances."""
+    """
+    Return paginated list of artist's songs with total income and plays.
+    - default sort: most income (desc)
+    - query param `sort=release_date` will sort by release_date (desc)
+    """
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
         summary="آمار مالی آهنگ‌های هنرمند",
-        description=(
-            "لیست صفحه‌بندی‌شده آهنگ‌ها با کل درآمد، مبلغ تسویه‌شده، مبلغ در انتظار "
-            "و مانده قابل تسویه. مرتب‌سازی پیش‌فرض بر اساس بیشترین مانده قابل تسویه است."
-        ),
+        description="دریافت لیست آهنگ‌های هنرمند به همراه درآمد و تعداد پخش هر کدام با قابلیت مرتب‌سازی.",
         parameters=[
-            OpenApiParameter(
-                "sort",
-                OpenApiTypes.STR,
-                description="مرتب‌سازی: available (پیش‌فرض)، remaining، income یا release_date",
-            ),
-            OpenApiParameter("page", OpenApiTypes.INT, description="شماره صفحه"),
-            OpenApiParameter("page_size", OpenApiTypes.INT, description="تعداد نتیجه در هر صفحه؛ حداکثر ۱۰۰"),
+            OpenApiParameter("sort", OpenApiTypes.STR, description="مرتب‌سازی: release_date یا income (پیش‌فرض)")
         ],
-        responses={200: SongSerializer(many=True)},
+        responses={200: SongSerializer(many=True)}
     )
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
             return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
 
-        artist = getattr(user, 'artist_profile', None)
-        if not artist:
+        try:
+            artist = user.artist_profile
+        except Artist.DoesNotExist:
             return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        sort = request.query_params.get('sort', 'available').lower()
-        allowed_sorts = {'available', 'remaining', 'income', 'release_date'}
-        if sort not in allowed_sorts:
-            return Response(
-                {"error": "Invalid sort. Use available, remaining, income, or release_date."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        sort = request.query_params.get('sort')
 
-        songs = list(Song.objects.filter(artist=artist).select_related(
+        # Annotate songs with income and play counts
+        qs = Song.objects.filter(artist=artist).select_related(
             'artist', 'album', 'uploader'
-        ).prefetch_related(
-            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
-        ).annotate(
+        ).prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags').annotate(
             play_counts_count=Count('play_counts', distinct=True),
             paid_plays=Count('play_counts', filter=Q(play_counts__pay__gt=0), distinct=True),
             zero_value_plays=Count('play_counts', filter=Q(play_counts__pay=0), distinct=True),
-            income=Coalesce(Sum('play_counts__pay'), _finance_zero()),
+            income=Coalesce(Sum('play_counts__pay'), _finance_zero())
         ).annotate(
-            total_plays=ExpressionWrapper(F('plays') + F('play_counts_count'), output_field=BigIntegerField()),
-        ))
-
-        song_totals = {
-            song.id: _finance_decimal(getattr(song, 'income', 0))
-            for song in songs
-        }
-        payout_requests = DepositRequest.objects.filter(
-            artist=artist,
-            status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE],
-        ).order_by('submission_date', 'pk')
-        reserved_by_song, deposited_by_song, pending_by_song = _finance_artist_song_allocations(
-            artist,
-            song_totals=song_totals,
-            requests=payout_requests,
+            total_plays=ExpressionWrapper(F('plays') + F('play_counts_count'), output_field=BigIntegerField())
         )
 
-        records = []
-        for song in songs:
-            total_income = song_totals.get(song.id, Decimal('0'))
-            deposited_income = min(total_income, deposited_by_song.get(song.id, Decimal('0')))
-            pending_income = min(
-                max(Decimal('0'), total_income - deposited_income),
-                pending_by_song.get(song.id, Decimal('0')),
-            )
-            remaining_income = max(Decimal('0'), total_income - deposited_income)
-            available_income = max(Decimal('0'), total_income - reserved_by_song.get(song.id, Decimal('0')))
-            records.append({
-                'song': song,
-                'total_income': total_income,
-                'deposited_income': deposited_income,
-                'pending_income': pending_income,
-                'remaining_income': remaining_income,
-                'available_income': available_income,
-            })
-
+        # Sorting
         if sort == 'release_date':
-            records.sort(
-                key=lambda item: (
-                    item['song'].release_date or date.min,
-                    item['available_income'],
-                    item['total_income'],
-                    item['song'].id,
-                ),
-                reverse=True,
-            )
+            qs = qs.order_by('-release_date', '-income')
         else:
-            metric = {
-                'available': 'available_income',
-                'remaining': 'remaining_income',
-                'income': 'total_income',
-            }[sort]
-            records.sort(
-                key=lambda item: (
-                    item[metric],
-                    item['remaining_income'],
-                    item['total_income'],
-                    int(getattr(item['song'], 'total_plays', 0) or 0),
-                    item['song'].id,
-                ),
-                reverse=True,
-            )
+            # default: sort by income desc, tie-breaker total_plays desc
+            qs = qs.order_by('-income', '-total_plays')
 
+        # Pagination
         paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(records, request)
-        page_records = page if page is not None else records
-        page_songs = [record['song'] for record in page_records]
-        hydrate_song_metrics(page_songs, request.user)
-        serialized = SongSerializer(page_songs, many=True, context={'request': request}).data
+        page = paginator.paginate_queryset(qs, request)
+        if page is not None:
+            hydrate_song_metrics(page, request.user)
+            serializer = SongSerializer(page, many=True, context={'request': request})
+            results = []
+            for song_obj, song_data in zip(page, serializer.data):
+                tracked_plays = int(getattr(song_obj, 'play_counts_count', 0) or 0)
+                income = _finance_decimal(getattr(song_obj, 'income', 0))
+                results.append({
+                    **song_data,
+                    'income': _finance_string(income),
+                    'total_plays': int(getattr(song_obj, 'total_plays', 0)),
+                    'tracked_plays': tracked_plays,
+                    'paid_plays': int(getattr(song_obj, 'paid_plays', 0) or 0),
+                    'zero_value_plays': int(getattr(song_obj, 'zero_value_plays', 0) or 0),
+                    'average_revenue_per_play': _finance_string((income / tracked_plays) if tracked_plays else 0),
+                })
+            return paginator.get_paginated_response(results)
 
+        # non-paginated fallback
+        songs = list(qs)
+        hydrate_song_metrics(songs, request.user)
+        serializer = SongSerializer(songs, many=True, context={'request': request})
         results = []
-        for record, song_data in zip(page_records, serialized):
-            song_obj = record['song']
+        for song_obj, song_data in zip(songs, serializer.data):
             tracked_plays = int(getattr(song_obj, 'play_counts_count', 0) or 0)
+            income = _finance_decimal(getattr(song_obj, 'income', 0))
             results.append({
                 **song_data,
-                'income': _finance_string(record['total_income']),
-                'total_income': _finance_string(record['total_income']),
-                'deposited_income': _finance_string(record['deposited_income']),
-                'pending_income': _finance_string(record['pending_income']),
-                'remaining_income': _finance_string(record['remaining_income']),
-                'available_income': _finance_string(record['available_income']),
-                'total_plays': int(getattr(song_obj, 'total_plays', 0) or 0),
+                'income': _finance_string(income),
+                'total_plays': int(getattr(song_obj, 'total_plays', 0)),
                 'tracked_plays': tracked_plays,
                 'paid_plays': int(getattr(song_obj, 'paid_plays', 0) or 0),
                 'zero_value_plays': int(getattr(song_obj, 'zero_value_plays', 0) or 0),
-                'average_revenue_per_play': _finance_string(
-                    (record['total_income'] / tracked_plays) if tracked_plays else 0
-                ),
+                'average_revenue_per_play': _finance_string((income / tracked_plays) if tracked_plays else 0),
             })
-
-        if page is not None:
-            return paginator.get_paginated_response(results)
         return Response(results)
 
 
@@ -7924,14 +7647,20 @@ class ArtistSongsManagementView(APIView):
             except (ValueError, TypeError):
                 days = 30
 
+            start_date = timezone.now() - timedelta(days=days)
+
             # Total stats
             total_plays = (song.plays or 0) + song.play_counts.count()
             total_likes = song.liked_by.count()
             added_to_playlists = song.user_playlists.count()
 
-            # Exact calendar-day analytics window, including empty days.
-            period_plays, daily_plays = _complete_daily_count_series(song.play_counts.all(), days)
+            # Analytics for the period
+            period_plays = song.play_counts.filter(created_at__gte=start_date)
             total_period_plays = period_plays.count()
+
+            # Daily plays for chart
+            daily_plays = period_plays.annotate(date=TruncDate('created_at')) \
+                .values('date').annotate(count=Count('id')).order_by('date')
 
             # City distribution
             city_dist = period_plays.values('city').annotate(count=Count('id')).order_by('-count')
@@ -7962,7 +7691,7 @@ class ArtistSongsManagementView(APIView):
             data['analytics'] = {
                 'days': days,
                 'total_period_plays': total_period_plays,
-                'daily_plays': daily_plays,
+                'daily_plays': list(daily_plays),
                 'city_distribution': city_data,
                 'country_distribution': country_data
             }
@@ -9031,17 +8760,46 @@ class ReportCreateView(generics.CreateAPIView):
         serializer.save(user=self.request.user)
 
 
+class NotificationRoleMixin:
+    """Resolve and authorize the explicit app role for notification APIs."""
+
+    def get_notification_role(self, request):
+        role = normalize_notification_role(request.query_params.get('role'))
+        if not role:
+            raise serializers.ValidationError({
+                'role': "A valid notification role is required: 'audience' or 'artist'."
+            })
+        if role not in (request.user.roles or []):
+            raise PermissionDenied(
+                f"This account does not have access to {role} notifications."
+            )
+        return role
+
+    def owned_notifications(self, request):
+        role = self.get_notification_role(request)
+        return role, Notification.objects.filter(
+            user=request.user,
+            recipient_role=role,
+        )
+
+
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
-class NotificationListView(generics.ListAPIView):
-    """List notifications for the authenticated user or their artist profile."""
+class NotificationListView(NotificationRoleMixin, generics.ListAPIView):
+    """List unread notifications for exactly one authenticated app role."""
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = NotificationSerializer
 
     @extend_schema(
         summary="لیست اعلان‌ها",
-        description="دریافت هر اعلان خوانده‌نشده به‌صورت یک رکورد مستقل برای کاربر یا پنل هنرمند.",
+        description="دریافت اعلان‌های خوانده‌نشده فقط برای نقش صریح اپلیکیشن جاری.",
         parameters=[
-            OpenApiParameter("artist", OpenApiTypes.BOOL, description="دریافت اعلان‌های مربوط به پنل هنرمند")
+            OpenApiParameter(
+                "role",
+                OpenApiTypes.STR,
+                required=True,
+                enum=[Notification.ROLE_AUDIENCE, Notification.ROLE_ARTIST],
+                description="نقش اپلیکیشن جاری؛ audience یا artist",
+            )
         ],
         responses={200: NotificationSerializer(many=True)}
     )
@@ -9049,34 +8807,26 @@ class NotificationListView(generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
-        user = self.request.user
-        is_artist = self.request.query_params.get('artist', '').lower() == 'true'
-
-        if is_artist:
-            if hasattr(user, 'artist_profile'):
-                return Notification.objects.filter(artist=user.artist_profile, has_read=False).order_by('-created_at')
-            return Notification.objects.none()
-
-        return Notification.objects.filter(user=user, has_read=False).order_by('-created_at')
-
-    def list(self, request, *args, **kwargs):
-        # Return each unread row independently.  The previous text/number based
-        # grouping hid multiple database rows behind one id, so marking the
-        # visible item as read left invisible unread notifications that returned
-        # on the next refresh.
-        return super().list(request, *args, **kwargs)
+        _, owned = self.owned_notifications(self.request)
+        return owned.filter(has_read=False).order_by('-created_at', '-id')
 
 
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و  صفحات جزئیات و عملیات'])
-class NotificationMarkReadView(APIView):
-    """Mark a specific notification or all notifications as read."""
+class NotificationMarkReadView(NotificationRoleMixin, APIView):
+    """Mark role-owned notifications as read without touching the other app."""
     permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         summary="خوانده شده کردن اعلان‌ها",
-        description="علامت‌گذاری یک اعلان خاص یا تمامی اعلان‌ها به عنوان خوانده شده.",
+        description="علامت‌گذاری اعلان‌ها فقط در نقش صریح اپلیکیشن جاری.",
         parameters=[
-            OpenApiParameter("artist", OpenApiTypes.BOOL, description="اعمال بر روی اعلان‌های پنل هنرمند")
+            OpenApiParameter(
+                "role",
+                OpenApiTypes.STR,
+                required=True,
+                enum=[Notification.ROLE_AUDIENCE, Notification.ROLE_ARTIST],
+                description="نقش اپلیکیشن جاری؛ audience یا artist",
+            )
         ],
         responses={
             200: inline_serializer(
@@ -9090,53 +8840,31 @@ class NotificationMarkReadView(APIView):
     )
     def post(self, request, pk=None):
         user = request.user
-        is_artist = request.query_params.get('artist', '').lower() == 'true'
-
-        if is_artist:
-            artist = getattr(user, 'artist_profile', None)
-            if not artist:
-                return Response(
-                    {"error": "No artist profile found"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            owned = Notification.objects.filter(artist=artist)
-        else:
-            owned = Notification.objects.filter(user=user)
+        role, owned = self.owned_notifications(request)
 
         if pk is not None:
-            # Idempotent and ownership-safe: unauthorized ids are indistinguishable
-            # from missing ids and an already-read row still returns success.
             with transaction.atomic():
-                if not is_artist:
-                    # Notification producers lock this same user row. The lock
-                    # gives read-vs-create races a deterministic commit order.
-                    User.objects.select_for_update().only("id").get(pk=user.pk)
+                User.objects.select_for_update().only("id").get(pk=user.pk)
                 notification = get_object_or_404(owned.select_for_update(), pk=pk)
                 if not notification.has_read:
                     owned.filter(pk=pk, has_read=False).update(has_read=True)
-                if not is_artist:
-                    transaction.on_commit(
-                        lambda user_id=user.pk, notification_id=notification.pk:
-                        publish_notification_read(user_id, notification_id)
-                    )
+                transaction.on_commit(
+                    lambda user_id=user.pk, recipient_role=role, notification_id=notification.pk:
+                    publish_notification_read(user_id, recipient_role, notification_id)
+                )
             return Response({"message": "Notification marked as read"})
 
         with transaction.atomic():
-            if not is_artist:
-                User.objects.select_for_update().only("id").get(pk=user.pk)
+            User.objects.select_for_update().only("id").get(pk=user.pk)
             read_through_id = owned.filter(has_read=False).aggregate(
                 max_id=Max("id")
             )["max_id"]
             if read_through_id is not None:
-                owned.filter(
-                    has_read=False,
-                    id__lte=read_through_id,
-                ).update(has_read=True)
-            if not is_artist:
-                transaction.on_commit(
-                    lambda user_id=user.pk, through=read_through_id:
-                    publish_all_notifications_read(user_id, through)
-                )
+                owned.filter(has_read=False, id__lte=read_through_id).update(has_read=True)
+            transaction.on_commit(
+                lambda user_id=user.pk, recipient_role=role, through=read_through_id:
+                publish_all_notifications_read(user_id, recipient_role, through)
+            )
         return Response({
             "message": "All notifications marked as read",
             "read_through_id": read_through_id,

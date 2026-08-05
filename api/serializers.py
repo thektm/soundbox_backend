@@ -2406,7 +2406,7 @@ class ReportSerializer(LocalizedModelSerializer):
 class NotificationSerializer(LocalizedModelSerializer):
     class Meta:
         model = Notification
-        fields = ['id', 'text', 'text_en', 'has_read', 'created_at']
+        fields = ['id', 'recipient_role', 'text', 'text_en', 'has_read', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 

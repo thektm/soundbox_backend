@@ -10,7 +10,6 @@ from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, RegexValidator
 import os
 import uuid
-from decimal import Decimal
 
 
 class UserManager(BaseUserManager):
@@ -780,16 +779,9 @@ class PlayCount(models.Model):
 
 
 class PlayConfiguration(models.Model):
-    """Configuration for play worth based on user plan and payout rules."""
+    """Configuration for play worth based on user plan and other settings"""
     free_play_worth = models.DecimalField(max_digits=12, decimal_places=8, default=0.000000)
     premium_play_worth = models.DecimalField(max_digits=12, decimal_places=8, default=0.000000)
-    minimum_payout_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.01"),
-        validators=[MinValueValidator(Decimal("0.01"))],
-        help_text="Minimum withdrawable artist balance required to submit a payout request.",
-    )
     premium_plan_price = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
     ad_frequency = models.PositiveIntegerField(default=0, help_text="Number of songs between ads for free users")
     updated_at = models.DateTimeField(auto_now=True)
@@ -1253,9 +1245,36 @@ class AudioAd(models.Model):
 
 
 class Notification(models.Model):
-    """Notifications for users or artists."""
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
-    artist = models.ForeignKey('Artist', on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
+    """Role-scoped notifications delivered to one authenticated account."""
+
+    ROLE_AUDIENCE = User.ROLE_AUDIENCE
+    ROLE_ARTIST = User.ROLE_ARTIST
+    ROLE_CHOICES = [
+        (ROLE_AUDIENCE, 'Audience app'),
+        (ROLE_ARTIST, 'Artist app'),
+    ]
+
+    # ``user`` is the authenticated account that owns the notification.  The
+    # optional artist relation keeps artist-context ownership explicit without
+    # making artist verification notifications impossible before provisioning.
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='notifications',
+    )
+    artist = models.ForeignKey(
+        'Artist',
+        on_delete=models.CASCADE,
+        related_name='notifications',
+        null=True,
+        blank=True,
+    )
+    recipient_role = models.CharField(
+        max_length=20,
+        choices=ROLE_CHOICES,
+        default=ROLE_AUDIENCE,
+        db_index=True,
+    )
     text = models.TextField()
     text_en = models.TextField(blank=True, default="")
     has_read = models.BooleanField(default=False)
@@ -1263,10 +1282,33 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        recipient_role=User.ROLE_AUDIENCE,
+                        artist__isnull=True,
+                    )
+                    | models.Q(recipient_role=User.ROLE_ARTIST)
+                ),
+                name='notification_has_role_recipient',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['user', 'recipient_role', 'has_read', '-created_at'],
+                name='notif_user_role_unread_idx',
+            ),
+        ]
+
+    @property
+    def resolved_user_id(self):
+        return self.user_id
 
     def __str__(self):
-        target = f"User: {self.user.phone_number}" if self.user else f"Artist: {self.artist.name}"
-        return f"Notification for {target}: {self.text[:20]}..."
+        account = self.user.phone_number if self.user else 'unlinked'
+        artist = f" / {self.artist.name}" if self.artist else ''
+        return f"Notification [{self.recipient_role}] for {account}{artist}: {self.text[:20]}..."
 
 
 class InitialCheck(models.Model):

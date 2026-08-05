@@ -3,12 +3,14 @@ import logging
 from django.db import transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 from .models import (
     Album,
     AlbumLike,
     Artist,
     ArtistAuth,
+    ArtistRelease,
     ArtistMonthlyListener,
     DepositRequest,
     Follow,
@@ -32,6 +34,8 @@ from .notification_service import (
     EVENT_NEW_PLAYLIST,
     EVENT_NEW_SONG,
     broadcast_user_notification,
+    send_artist_notification,
+    send_artist_system_notification,
     send_system_notification,
     send_user_notification,
 )
@@ -64,6 +68,32 @@ def _get_user_display_name(user: User) -> str:
 
     unique_id = (getattr(user, "unique_id", None) or "").strip()
     return unique_id or "یک کاربر"
+
+
+def _content_label(primary, secondary, numeric_fallback) -> str:
+    """Prefer real titles/names; use an id only as the final fallback."""
+    for candidate in (primary, secondary):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return numeric_fallback
+
+
+def _artist_display_name(artist: Artist | None, *, english: bool = False) -> str:
+    """Use the artist's public stage/name fields before falling back to its id."""
+    if not artist:
+        return "An artist" if english else "یک هنرمند"
+    if english:
+        return _content_label(
+            artist.artistic_name_en or artist.name_en,
+            artist.artistic_name or artist.name,
+            f"Artist #{artist.pk}",
+        )
+    return _content_label(
+        artist.artistic_name or artist.name,
+        artist.artistic_name_en or artist.name_en,
+        f"هنرمند شماره {artist.pk}",
+    )
 
 
 def _run_safely(label, callback):
@@ -118,7 +148,7 @@ def create_user_notification_settings(sender, instance, created, **kwargs):
 @receiver(post_save, sender=Notification, dispatch_uid="api.notification.realtime.created")
 def publish_created_notification(sender, instance, created, **kwargs):
     """Push committed unread user notifications to connected browser clients."""
-    if created and instance.user_id and not instance.has_read:
+    if created and (instance.user_id or instance.artist_id) and not instance.has_read:
         schedule_notification_publish(instance.pk)
 
 
@@ -155,8 +185,8 @@ def notify_new_follower(sender, instance, created, **kwargs):
             actor_fa = _get_user_display_name(follow.follower_user)
             actor_en = actor_fa
         elif follow.follower_artist:
-            actor_fa = follow.follower_artist.name
-            actor_en = follow.follower_artist.name_en or actor_fa
+            actor_fa = _artist_display_name(follow.follower_artist)
+            actor_en = _artist_display_name(follow.follower_artist, english=True)
         else:
             actor_fa, actor_en = "یک کاربر", "A user"
 
@@ -167,12 +197,20 @@ def notify_new_follower(sender, instance, created, **kwargs):
             text = f"{actor_fa} شروع به دنبال کردن شما کرد."
             text_en = f"{actor_en} started following you."
 
-        send_user_notification(
-            user=recipient,
-            event=EVENT_NEW_FOLLOWER,
-            text=text,
-            text_en=text_en,
-        )
+        if follow.followed_artist:
+            send_artist_notification(
+                artist=follow.followed_artist,
+                event=EVENT_NEW_FOLLOWER,
+                text=text,
+                text_en=text_en,
+            )
+        else:
+            send_user_notification(
+                user=recipient,
+                event=EVENT_NEW_FOLLOWER,
+                text=text,
+                text_en=text_en,
+            )
 
     _after_commit(f"follow:{follow_id}", deliver)
 
@@ -188,11 +226,14 @@ def _deliver_user_playlist_likes(playlist_id, liker_ids):
         if liker.pk == playlist.user_id:
             continue
         liker_name = _get_user_display_name(liker)
+        playlist_title_fa = _content_label(
+            playlist.title, None, f"پلی‌لیست شماره {playlist.pk}"
+        )
         send_user_notification(
             user=playlist.user,
             event=EVENT_NEW_LIKE,
-            text=f"{liker_name} پلی‌لیست «{playlist.title}» شما را پسندید.",
-            text_en=f"{liker_name} liked your playlist '{playlist.title}'.",
+            text=f"{liker_name} پلی‌لیست «{playlist_title_fa}» شما را پسندید.",
+            text_en=f"{liker_name} liked your playlist '{playlist_title_fa}'.",
         )
 
 
@@ -230,21 +271,32 @@ def notify_song_like(sender, instance, created, **kwargs):
     def deliver():
         like = (
             SongLike.objects.select_related("user", "song", "song__artist", "song__artist__user")
+            .prefetch_related("song__featured_artists__user")
             .filter(pk=like_id)
             .first()
         )
         if not like:
             return
-        recipient = _linked_user(like.song.artist)
-        if not recipient or recipient.pk == like.user_id:
-            return
         liker_name = _get_user_display_name(like.user)
-        send_user_notification(
-            user=recipient,
-            event=EVENT_NEW_LIKE,
-            text=f"{liker_name} آهنگ «{like.song.title}» شما را پسندید.",
-            text_en=f"{liker_name} liked your song '{like.song.title_en or like.song.title}'.",
-        )
+        song_title_fa = _content_label(like.song.title, like.song.title_en, f"آهنگ شماره {like.song_id}")
+        song_title_en = _content_label(like.song.title_en, like.song.title, f"Song #{like.song_id}")
+        contributors = [like.song.artist, *list(like.song.featured_artists.all())]
+        delivered_user_ids = set()
+        for artist in contributors:
+            recipient = _linked_user(artist)
+            if (
+                not recipient
+                or recipient.pk == like.user_id
+                or recipient.pk in delivered_user_ids
+            ):
+                continue
+            delivered_user_ids.add(recipient.pk)
+            send_artist_notification(
+                artist=artist,
+                event=EVENT_NEW_LIKE,
+                text=f"{liker_name} آهنگ «{song_title_fa}» شما را پسندید.",
+                text_en=f"{liker_name} liked your song '{song_title_en}'.",
+            )
 
     _after_commit(f"song-like:{like_id}", deliver)
 
@@ -267,11 +319,13 @@ def notify_album_like(sender, instance, created, **kwargs):
         if not recipient or recipient.pk == like.user_id:
             return
         liker_name = _get_user_display_name(like.user)
-        send_user_notification(
-            user=recipient,
+        album_title_fa = _content_label(like.album.title, like.album.title_en, f"آلبوم شماره {like.album_id}")
+        album_title_en = _content_label(like.album.title_en, like.album.title, f"Album #{like.album_id}")
+        send_artist_notification(
+            artist=like.album.artist,
             event=EVENT_NEW_LIKE,
-            text=f"{liker_name} آلبوم «{like.album.title}» شما را پسندید.",
-            text_en=f"{liker_name} liked your album '{like.album.title_en or like.album.title}'.",
+            text=f"{liker_name} آلبوم «{album_title_fa}» شما را پسندید.",
+            text_en=f"{liker_name} liked your album '{album_title_en}'.",
         )
 
     _after_commit(f"album-like:{like_id}", deliver)
@@ -296,6 +350,10 @@ def _deliver_song_release(song_id, followed_artist_ids=None):
     )
     if not song:
         return
+    # Albums/EPs are announced once through their real album title. Singles and
+    # standalone songs continue through the song notification path.
+    if song.album_id:
+        return
 
     contributors = [song.artist, *list(song.featured_artists.all())]
     all_artist_ids = {artist.pk for artist in contributors}
@@ -309,14 +367,16 @@ def _deliver_song_release(song_id, followed_artist_ids=None):
     recipients = User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
         "notification_setting"
     )
-    artist_name_fa = song.artist.name
-    artist_name_en = song.artist.name_en or artist_name_fa
+    song_title_fa = _content_label(song.title, song.title_en, f"آهنگ شماره {song.pk}")
+    song_title_en = _content_label(song.title_en, song.title, f"Song #{song.pk}")
+    artist_name_fa = _artist_display_name(song.artist)
+    artist_name_en = _artist_display_name(song.artist, english=True)
     for recipient in recipients.iterator(chunk_size=500):
         send_user_notification(
             user=recipient,
             event=EVENT_NEW_SONG,
-            text=f"آهنگ جدید «{song.title}» از {artist_name_fa} منتشر شد!",
-            text_en=f"New song '{song.title_en or song.title}' by {artist_name_en} is out!",
+            text=f"آهنگ جدید «{song_title_fa}» از {artist_name_fa} منتشر شد!",
+            text_en=f"New song '{song_title_en}' by {artist_name_en} is out!",
         )
 
 
@@ -368,22 +428,23 @@ def notify_new_album_created(sender, instance, created, **kwargs):
             .filter(pk=album_id)
             .first()
         )
-        if not album:
+        if not album or not album.songs.filter(status=Song.STATUS_PUBLISHED).exists():
             return
         excluded = {album.artist.user_id} if album.artist.user_id else set()
         recipient_ids = _follower_recipient_user_ids(artist_ids={album.artist_id}) - excluded
         recipients = User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
             "notification_setting"
         )
+        album_title_fa = _content_label(album.title, album.title_en, f"آلبوم شماره {album.pk}")
+        album_title_en = _content_label(album.title_en, album.title, f"Album #{album.pk}")
+        artist_name_fa = _artist_display_name(album.artist)
+        artist_name_en = _artist_display_name(album.artist, english=True)
         for recipient in recipients.iterator(chunk_size=500):
             send_user_notification(
                 user=recipient,
                 event=EVENT_NEW_ALBUM,
-                text=f"آلبوم جدید «{album.title}» از {album.artist.name} منتشر شد!",
-                text_en=(
-                    f"New album '{album.title_en or album.title}' by "
-                    f"{album.artist.name_en or album.artist.name} is out!"
-                ),
+                text=f"آلبوم جدید «{album_title_fa}» از {artist_name_fa} منتشر شد!",
+                text_en=f"New album '{album_title_en}' by {artist_name_en} is out!",
             )
 
     _after_commit(f"album-created:{album_id}", deliver)
@@ -412,14 +473,17 @@ def notify_public_user_playlist(sender, instance, created, **kwargs):
             return
         recipient_ids = _follower_recipient_user_ids(user_ids={playlist.user_id}) - {playlist.user_id}
         owner_name = _get_user_display_name(playlist.user)
+        playlist_title = _content_label(
+            playlist.title, None, f"پلی‌لیست شماره {playlist.pk}"
+        )
         for recipient in User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
             "notification_setting"
         ).iterator(chunk_size=500):
             send_user_notification(
                 user=recipient,
                 event=EVENT_NEW_PLAYLIST,
-                text=f"{owner_name} پلی‌لیست عمومی جدید «{playlist.title}» را منتشر کرد.",
-                text_en=f"{owner_name} published a new public playlist, '{playlist.title}'.",
+                text=f"{owner_name} پلی‌لیست عمومی جدید «{playlist_title}» را منتشر کرد.",
+                text_en=f"{owner_name} published a new public playlist, '{playlist_title}'.",
             )
 
     _after_commit(f"user-playlist-public:{playlist_id}", deliver)
@@ -441,10 +505,16 @@ def notify_new_catalog_playlist(sender, instance, created, **kwargs):
         ).first()
         if not playlist:
             return
+        playlist_title_fa = _content_label(
+            playlist.title, playlist.title_en, f"پلی‌لیست شماره {playlist.pk}"
+        )
+        playlist_title_en = _content_label(
+            playlist.title_en, playlist.title, f"Playlist #{playlist.pk}"
+        )
         broadcast_user_notification(
             event=EVENT_NEW_PLAYLIST,
-            text=f"پلی‌لیست جدید «{playlist.title}» به صداباکس اضافه شد.",
-            text_en=f"New playlist '{playlist.title_en or playlist.title}' was added to Sedabox.",
+            text=f"پلی‌لیست جدید «{playlist_title_fa}» به صداباکس اضافه شد.",
+            text_en=f"New playlist '{playlist_title_en}' was added to Sedabox.",
         )
 
     _after_commit(f"catalog-playlist-created:{playlist_id}", deliver)
@@ -462,6 +532,66 @@ def _capture_previous_status(instance, model):
 
 def _status_changed(instance) -> bool:
     return getattr(instance, "_notification_old_status", None) != instance.status
+
+
+@receiver(pre_save, sender=ArtistRelease, dispatch_uid="api.notification.artist-release.capture-status")
+def capture_old_artist_release_status(sender, instance, **kwargs):
+    _capture_previous_status(instance, ArtistRelease)
+
+
+@receiver(post_save, sender=ArtistRelease, dispatch_uid="api.notification.artist-release.status")
+def notify_artist_release_status(sender, instance, created, **kwargs):
+    visible_statuses = {
+        ArtistRelease.STATUS_CHANGES_REQUESTED,
+        ArtistRelease.STATUS_APPROVED,
+        ArtistRelease.STATUS_SCHEDULED,
+        ArtistRelease.STATUS_LIVE,
+        ArtistRelease.STATUS_REJECTED,
+        ArtistRelease.STATUS_TAKEN_DOWN,
+    }
+    if created or not _status_changed(instance) or instance.status not in visible_statuses:
+        return
+
+    release_id = instance.pk
+    expected_status = instance.status
+
+    def deliver():
+        release = ArtistRelease.objects.select_related("artist", "artist__user").filter(
+            pk=release_id,
+            status=expected_status,
+        ).first()
+        if not release or not release.artist.user_id:
+            return
+
+        title_fa = _content_label(release.title, release.title_en, f"انتشار شماره {release.pk}")
+        title_en = _content_label(release.title_en, release.title, f"Release #{release.pk}")
+        if expected_status == ArtistRelease.STATUS_CHANGES_REQUESTED:
+            text = f"برای انتشار «{title_fa}» درخواست اصلاح ثبت شد."
+            text_en = f"Changes were requested for your release '{title_en}'."
+        elif expected_status == ArtistRelease.STATUS_APPROVED:
+            text = f"انتشار «{title_fa}» تأیید شد."
+            text_en = f"Your release '{title_en}' was approved."
+        elif expected_status == ArtistRelease.STATUS_SCHEDULED:
+            scheduled = timezone.localtime(release.scheduled_at).strftime('%Y-%m-%d %H:%M') if release.scheduled_at else "زمان تعیین‌شده"
+            text = f"انتشار «{title_fa}» برای {scheduled} زمان‌بندی شد."
+            text_en = f"Your release '{title_en}' was scheduled for {scheduled}."
+        elif expected_status == ArtistRelease.STATUS_LIVE:
+            text = f"انتشار «{title_fa}» منتشر شد و اکنون در دسترس مخاطبان است."
+            text_en = f"Your release '{title_en}' is now live."
+        elif expected_status == ArtistRelease.STATUS_REJECTED:
+            text = f"انتشار «{title_fa}» تأیید نشد. برای جزئیات، یادداشت بررسی را مشاهده کنید."
+            text_en = f"Your release '{title_en}' was rejected. Review the moderation note for details."
+        else:
+            text = f"انتشار «{title_fa}» از دسترس مخاطبان خارج شد."
+            text_en = f"Your release '{title_en}' was taken down."
+
+        send_artist_system_notification(
+            artist=release.artist,
+            text=text,
+            text_en=text_en,
+        )
+
+    _after_commit(f"artist-release-status:{release_id}:{expected_status}", deliver)
 
 
 @receiver(post_save, sender=ArtistAuth, dispatch_uid="api.artist-auth.provision-profile")
@@ -505,7 +635,7 @@ def notify_artist_auth_status(sender, instance, created, **kwargs):
         else:
             text = "درخواست احراز هویت هنرمندی شما رد شد. برای جزئیات با پشتیبانی تماس بگیرید."
             text_en = "Your artist verification request was rejected. Contact support for details."
-        send_system_notification(user=auth.user, text=text, text_en=text_en)
+        send_artist_system_notification(user=auth.user, text=text, text_en=text_en)
 
     _after_commit(f"artist-auth-status:{auth_id}:{expected_status}", deliver)
 
@@ -609,7 +739,7 @@ def notify_deposit_status(sender, instance, created, **kwargs):
         else:
             text = "درخواست تسویه شما رد شد. برای جزئیات با پشتیبانی تماس بگیرید."
             text_en = "Your payout request was rejected. Contact support for details."
-        send_system_notification(user=deposit.artist.user, text=text, text_en=text_en)
+        send_artist_system_notification(artist=deposit.artist, text=text, text_en=text_en)
 
     _after_commit(f"deposit-status:{deposit_id}:{expected_status}", deliver)
 
@@ -621,17 +751,23 @@ def _deliver_song_owner_status(song_id, expected_status):
     ).first()
     if not song or not song.artist.user:
         return
+    # Release-linked tracks are represented by one release-level notification;
+    # sending one card per track creates noisy duplicates for EPs/albums.
+    if song.release_track_links.exists():
+        return
 
+    title_fa = _content_label(song.title, song.title_en, f"آهنگ شماره {song.pk}")
+    title_en = _content_label(song.title_en, song.title, f"Song #{song.pk}")
     if expected_status == Song.STATUS_APPROVED:
-        text = f"آهنگ «{song.title}» تأیید شد."
-        text_en = f"Your song '{song.title_en or song.title}' was approved."
+        text = f"آهنگ «{title_fa}» تأیید شد."
+        text_en = f"Your song '{title_en}' was approved."
     elif expected_status == Song.STATUS_PUBLISHED:
-        text = f"آهنگ «{song.title}» منتشر شد."
-        text_en = f"Your song '{song.title_en or song.title}' was published."
+        text = f"آهنگ «{title_fa}» منتشر شد."
+        text_en = f"Your song '{title_en}' was published."
     else:
-        text = f"آهنگ «{song.title}» تأیید نشد. برای جزئیات با پشتیبانی تماس بگیرید."
-        text_en = f"Your song '{song.title_en or song.title}' was rejected. Contact support for details."
-    send_system_notification(user=song.artist.user, text=text, text_en=text_en)
+        text = f"آهنگ «{title_fa}» تأیید نشد. برای جزئیات با پشتیبانی تماس بگیرید."
+        text_en = f"Your song '{title_en}' was rejected. Contact support for details."
+    send_artist_system_notification(artist=song.artist, text=text, text_en=text_en)
 
 
 @receiver(post_save, sender=Song, dispatch_uid="api.notification.song.owner-status")
