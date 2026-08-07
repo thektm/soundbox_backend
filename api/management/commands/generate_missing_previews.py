@@ -11,6 +11,7 @@ from django.utils import timezone
 from datetime import timedelta
 
 from api.models import Song
+from api.performance import CATALOG_VERSION_KEY, cache_increment
 from api.utils import generate_signed_r2_url, upload_file_to_r2
 
 
@@ -192,6 +193,9 @@ class Command(BaseCommand):
                         preview_last_attempt_at=timezone.now(),
                     )
                     self.stderr.write(self.style.ERROR(f"[{song.pk}] failed: {message}"))
+
+            if generated:
+                cache_increment(CATALOG_VERSION_KEY, 7 * 24 * 60 * 60)
 
             self.stdout.write(
                 self.style.SUCCESS(f"Preview generation complete: generated={generated}, failed={failed}")

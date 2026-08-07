@@ -8138,7 +8138,8 @@ class ArtistSongsManagementView(APIView):
             messages = {
                 'analyzing': 'سرور در حال اعتبارسنجی فایل صوتی است.',
                 'converting_128': 'سرور در حال ساخت نسخه ۱۲۸ کیلوبیت‌برثانیه است.',
-                'uploading_r2': 'سرور در حال ذخیره هر دو کیفیت فایل صوتی است.',
+                'creating_preview': 'سرور در حال ساخت پیش‌نمایش ۳۰ ثانیه‌ای است.',
+                'uploading_r2': 'سرور در حال ذخیره فایل‌های صوتی و پیش‌نمایش است.',
                 'saving': 'سرور در حال ذخیره اطلاعات ضبط است.',
             }
             _set_artist_upload_state(
@@ -8151,7 +8152,9 @@ class ArtistSongsManagementView(APIView):
 
         try:
             variants = upload_audio_variants(audio_file, filename_base, stage_callback=report_stage)
-            uploaded_urls.extend(filter(None, [variants['audio_file'], variants['converted_audio_url']]))
+            uploaded_urls.extend(filter(None, [
+                variants['audio_file'], variants['converted_audio_url'], variants['preview_audio_url']
+            ]))
 
             cover_url = ''
             if cover_image:
@@ -8181,7 +8184,15 @@ class ArtistSongsManagementView(APIView):
                 )
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             with transaction.atomic():
-                song = serializer.save(artist=artist)
+                now = timezone.now()
+                song = serializer.save(
+                    artist=artist,
+                    preview_audio_url=variants['preview_audio_url'],
+                    preview_generated_at=now,
+                    preview_error='',
+                    preview_attempts=0,
+                    preview_last_attempt_at=now,
+                )
             _set_artist_upload_state(
                 request.user.id,
                 upload_id,
@@ -8318,6 +8329,7 @@ class ArtistSongsManagementView(APIView):
 
         new_urls = []
         old_urls = []
+        preview_save_kwargs = {}
         stage = 'audio_file'
         try:
             if audio_file:
@@ -8326,14 +8338,24 @@ class ArtistSongsManagementView(APIView):
                 filename_base = f"{artist_filename_name(artist)} - {title_en or title}"
 
                 variants = upload_audio_variants(audio_file, filename_base)
-                new_urls.extend(filter(None, [variants['audio_file'], variants['converted_audio_url']]))
-                old_urls.extend(filter(None, [song.audio_file, song.converted_audio_url]))
+                new_urls.extend(filter(None, [
+                    variants['audio_file'], variants['converted_audio_url'], variants['preview_audio_url']
+                ]))
+                old_urls.extend(filter(None, [song.audio_file, song.converted_audio_url, song.preview_audio_url]))
                 data.update({
                     'audio_file': variants['audio_file'],
                     'converted_audio_url': variants['converted_audio_url'],
                     'duration_seconds': variants['duration_seconds'],
                     'original_format': variants['original_format'],
                 })
+                now = timezone.now()
+                preview_save_kwargs = {
+                    'preview_audio_url': variants['preview_audio_url'],
+                    'preview_generated_at': now,
+                    'preview_error': '',
+                    'preview_attempts': 0,
+                    'preview_last_attempt_at': now,
+                }
 
             if cover_image:
                 stage = 'cover_image'
@@ -8372,7 +8394,7 @@ class ArtistSongsManagementView(APIView):
                 if not serializer.is_valid():
                     cleanup_r2_urls(new_urls)
                     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-                saved_song = serializer.save()
+                saved_song = serializer.save(**preview_save_kwargs)
                 for linked_release in linked_releases:
                     _sync_release_from_artist_song(linked_release, saved_song, cover_changed=bool(cover_image))
                     if linked_release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW}:

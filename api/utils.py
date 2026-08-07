@@ -396,6 +396,90 @@ def convert_to_128kbps(file_obj):
                 pass
 
 
+def create_30_second_preview(file_obj, *, start_seconds=0):
+    """Create a lightweight 30-second MP3 preview from an uploaded audio file.
+
+    The source may be an in-memory Django upload or a temporary uploaded file.
+    Only the small preview is kept in memory, and the caller retains ownership of
+    the source file. The source seek position is restored to the beginning.
+    """
+    source_path = None
+    temporary_source = False
+    try:
+        try:
+            source_path = file_obj.temporary_file_path()
+        except (AttributeError, OSError):
+            suffix = os.path.splitext(getattr(file_obj, 'name', '') or '')[1] or '.audio'
+            source = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            source_path, temporary_source = source.name, True
+            if hasattr(file_obj, 'seek'):
+                file_obj.seek(0)
+            with source:
+                shutil.copyfileobj(file_obj, source, length=1024 * 1024)
+
+        start = max(0, int(start_seconds or 0))
+        command = [
+            'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+        ]
+        if start:
+            command.extend(['-ss', str(start)])
+        command.extend([
+            '-i', source_path,
+            '-t', '30',
+            '-map', '0:a:0',
+            '-vn',
+            '-map_metadata', '-1',
+            '-ac', '2',
+            '-ar', '44100',
+            '-c:a', 'libmp3lame',
+            '-b:a', '96k',
+            '-threads', str(max(1, int(os.environ.get('PREVIEW_FFMPEG_THREADS', '1')))),
+            '-f', 'mp3',
+            'pipe:1',
+        ])
+        process = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=int(getattr(settings, 'AUDIO_PREVIEW_TIMEOUT_SECONDS', 180)),
+            check=False,
+        )
+        if process.returncode != 0 or not process.stdout:
+            logger.error('ffmpeg preview generation failed: %s', process.stderr.decode(errors='ignore')[-1000:])
+            raise MediaPipelineError(
+                'ساخت پیش‌نمایش ۳۰ ثانیه‌ای فایل صوتی انجام نشد. لطفاً فایل را بررسی و دوباره تلاش کنید.',
+                'audio_preview_failed',
+            )
+
+        result = tempfile.SpooledTemporaryFile(max_size=4 * 1024 * 1024, mode='w+b')
+        result.write(process.stdout)
+        result.seek(0)
+        return result
+    except subprocess.TimeoutExpired as exc:
+        raise MediaPipelineError(
+            'مهلت ساخت پیش‌نمایش فایل صوتی تمام شد. لطفاً دوباره تلاش کنید.',
+            'audio_preview_timeout',
+            504,
+        ) from exc
+    except FileNotFoundError as exc:
+        raise MediaPipelineError(
+            'سرویس پردازش صوت در حال حاضر در دسترس نیست. لطفاً کمی بعد دوباره تلاش کنید.',
+            'ffmpeg_missing',
+            503,
+        ) from exc
+    finally:
+        if hasattr(file_obj, 'seek'):
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
+        if temporary_source and source_path:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
+
+
 def get_audio_info(file_path_or_obj):
     """Return ``(duration_seconds, bitrate_kbps, format)`` for MP3/WAV files."""
     try:
@@ -441,11 +525,15 @@ def upload_audio_variants(file_obj, filename_base, stage_callback=None):
     safe_base = make_safe_filename(filename_base) or 'track'
     uploaded = []
     converted = None
+    preview = None
     try:
         needs_conversion = audio_format != 'mp3' or bitrate is None or bitrate > 128
         if needs_conversion:
             notify('converting_128')
             converted = convert_to_128kbps(file_obj)
+
+        notify('creating_preview')
+        preview = create_30_second_preview(file_obj)
 
         notify('uploading_r2')
         jobs = {
@@ -453,6 +541,11 @@ def upload_audio_variants(file_obj, filename_base, stage_callback=None):
                 file_obj,
                 'songs',
                 f'{safe_base}.{audio_format}',
+            ),
+            'preview_audio_url': (
+                preview,
+                'previews',
+                f'{safe_base}_preview_30s.mp3',
             ),
         }
         if converted:
@@ -462,7 +555,7 @@ def upload_audio_variants(file_obj, filename_base, stage_callback=None):
                 f'{safe_base}_128.mp3',
             )
 
-        results = {'converted_audio_url': None}
+        results = {'converted_audio_url': None, 'preview_audio_url': None}
         errors = []
         with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
             futures = {
@@ -490,6 +583,7 @@ def upload_audio_variants(file_obj, filename_base, stage_callback=None):
         return {
             'audio_file': results['audio_file'],
             'converted_audio_url': results['converted_audio_url'],
+            'preview_audio_url': results['preview_audio_url'],
             'duration_seconds': duration,
             'original_format': audio_format,
             'source_bitrate_kbps': bitrate,
@@ -500,6 +594,8 @@ def upload_audio_variants(file_obj, filename_base, stage_callback=None):
     finally:
         if converted:
             converted.close()
+        if preview:
+            preview.close()
         if hasattr(file_obj, 'seek'):
             try:
                 file_obj.seek(0)
