@@ -632,7 +632,14 @@ class LoginPasswordView(AuthAPIView):
         if not password_ok:
             user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
             if user.failed_login_attempts >= 5:
-                user.locked_until = timezone.now() + timedelta(minutes=15)
+                lock_seconds = 15 * 60
+                user.locked_until = timezone.now() + timedelta(seconds=lock_seconds)
+                user.save(update_fields=['failed_login_attempts', 'locked_until'])
+                return auth_error(
+                    'ACCOUNT_LOCKED',
+                    status.HTTP_423_LOCKED,
+                    retry_after_seconds=lock_seconds,
+                )
             user.save(update_fields=['failed_login_attempts', 'locked_until'])
             return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
         # success

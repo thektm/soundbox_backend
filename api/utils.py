@@ -212,7 +212,7 @@ def sign_r2_urls_in_payload(value, expiration=3600, *, strict=False, refresh=Fal
     if signed:
         return signed
     if strict:
-        raise MediaPipelineError('A private media link could not be authorized.', 'r2_signing_failed', 503)
+        raise MediaPipelineError('ایجاد دسترسی امن به فایل رسانه‌ای انجام نشد. لطفاً دوباره تلاش کنید.', 'r2_signing_failed', 503)
     return value
 
 class MediaPipelineError(Exception):
@@ -232,7 +232,7 @@ def _r2_client():
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise MediaPipelineError(
-            f"R2 storage is not configured ({', '.join(missing)} missing).",
+            'سامانه ذخیره‌سازی فایل در سرور پیکربندی نشده است. لطفاً با پشتیبانی تماس بگیرید.',
             'r2_not_configured',
             503,
         )
@@ -308,7 +308,7 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None, bitrate_label=N
                 code = str(exc.response.get('Error', {}).get('Code', ''))
                 if code in {'404', 'NoSuchKey', 'NotFound'}:
                     break
-                raise MediaPipelineError('R2 could not verify the destination file.', 'r2_lookup_failed') from exc
+                raise MediaPipelineError('سرور نتوانست فایل بارگذاری‌شده را تأیید کند. لطفاً دوباره تلاش کنید.', 'r2_lookup_failed') from exc
 
     content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
     if hasattr(file_obj, 'seek'):
@@ -330,7 +330,7 @@ def upload_file_to_r2(file_obj, folder='', custom_filename=None, bitrate_label=N
         raise
     except Exception as exc:
         logger.exception('R2 upload failed for %s', key)
-        raise MediaPipelineError('R2 upload failed. Please retry the file.', 'r2_upload_failed') from exc
+        raise MediaPipelineError('بارگذاری فایل در فضای ذخیره‌سازی انجام نشد. لطفاً دوباره تلاش کنید.', 'r2_upload_failed') from exc
 
     cdn_base = getattr(settings, 'R2_CDN_BASE', 'https://cdn.sedabox.com').rstrip('/')
     return f'{cdn_base}/{quote(key, safe="/")}', original_ext.lstrip('.').lower()
@@ -367,7 +367,7 @@ def convert_to_128kbps(file_obj):
         )
         if process.returncode != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             logger.error('ffmpeg conversion failed: %s', process.stderr.decode(errors='ignore')[-1000:])
-            raise MediaPipelineError('The 128 kbps audio version could not be created.', 'audio_conversion_failed')
+            raise MediaPipelineError('ساخت نسخه استاندارد فایل صوتی انجام نشد. لطفاً فایل را بررسی و دوباره تلاش کنید.', 'audio_conversion_failed')
 
         result = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode='w+b')
         with open(output_path, 'rb') as converted:
@@ -375,9 +375,9 @@ def convert_to_128kbps(file_obj):
         result.seek(0)
         return result
     except subprocess.TimeoutExpired as exc:
-        raise MediaPipelineError('Audio processing timed out. Try a smaller or valid audio file.', 'audio_conversion_timeout', 504) from exc
+        raise MediaPipelineError('مهلت پردازش فایل صوتی تمام شد. فایل معتبر یا کم‌حجم‌تری انتخاب کنید و دوباره تلاش کنید.', 'audio_conversion_timeout', 504) from exc
     except FileNotFoundError as exc:
-        raise MediaPipelineError('Audio processing is unavailable because ffmpeg is not installed.', 'ffmpeg_missing', 503) from exc
+        raise MediaPipelineError('سرویس پردازش صوت در حال حاضر در دسترس نیست. لطفاً کمی بعد دوباره تلاش کنید.', 'ffmpeg_missing', 503) from exc
     finally:
         if hasattr(file_obj, 'seek'):
             try:
@@ -436,7 +436,7 @@ def upload_audio_variants(file_obj, filename_base, stage_callback=None):
     notify('analyzing')
     duration, bitrate, audio_format = get_audio_info(file_obj)
     if not duration or audio_format not in {'mp3', 'wav'}:
-        raise MediaPipelineError('The audio file is damaged or cannot be decoded.', 'invalid_audio', 400)
+        raise MediaPipelineError('فایل صوتی آسیب‌دیده است یا قابل پردازش نیست. فایل دیگری انتخاب کنید.', 'invalid_audio', 400)
 
     safe_base = make_safe_filename(filename_base) or 'track'
     uploaded = []

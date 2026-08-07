@@ -8045,7 +8045,7 @@ class ArtistSongsManagementView(APIView):
             existing = Song.objects.filter(pk=previous.get('song_id'), artist=artist).first()
             if existing:
                 return Response({
-                    'message': 'OK',
+                    'message': 'آهنگ بارگذاری‌شده قبلی با موفقیت بازیابی شد.',
                     'recovered': True,
                     'song': _apply_release_cover_fallback(
                         existing,
@@ -8215,7 +8215,7 @@ class ArtistSongsManagementView(APIView):
                 {'detail': 'فایل بارگذاری شد، اما ذخیره آهنگ انجام نشد.', 'code': 'song_save_failed'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        return Response({"message": "OK", "song": serializer.data}, status=status.HTTP_201_CREATED)
+        return Response({"message": "آهنگ با موفقیت ایجاد شد.", "song": serializer.data}, status=status.HTTP_201_CREATED)
 
     @extend_schema(
         summary="به‌روزرسانی کامل آهنگ",
@@ -8404,7 +8404,7 @@ class ArtistSongsManagementView(APIView):
             )
 
         _cleanup_unreferenced_song_media(old_urls)
-        return Response({"message": "OK", "song": serializer.data})
+        return Response({"message": "تغییرات آهنگ با موفقیت ذخیره شد.", "song": serializer.data})
 
     def delete(self, request, pk=None):
         """Delete a recording while retaining rows needed by releases and accounting."""
@@ -8438,7 +8438,7 @@ class ArtistSongsManagementView(APIView):
                 transaction.on_commit(lambda values=tuple(media_urls): _cleanup_unreferenced_song_media(values))
 
             payload = {
-                "message": "OK",
+                "message": "عملیات آهنگ با موفقیت انجام شد.",
                 "deletion": deletion,
                 "album_deleted": album_deleted,
                 "album_deletion": album_deletion,

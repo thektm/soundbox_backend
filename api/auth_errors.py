@@ -32,13 +32,13 @@ AUTH_ERROR_MESSAGES: dict[str, str] = {
     "VALIDATION_ERROR": "لطفاً اطلاعات مشخص‌شده را بررسی و اصلاح کنید.",
     "INVALID_PHONE": "شماره تلفن همراه معتبر وارد کنید.",
     "USER_EXISTS": "این شماره تلفن قبلاً ثبت شده است. برای ادامه وارد حساب خود شوید.",
-    "USER_BANNED": "این حساب کاربری مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.",
-    "RATE_LIMIT": "درخواست‌های زیادی ثبت شده است. کمی صبر کنید و دوباره تلاش کنید.",
+    "USER_BANNED": "حساب شما مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.",
+    "RATE_LIMIT": "تعداد درخواست‌ها بیش از حد مجاز است. کمی صبر کنید و دوباره تلاش کنید.",
     "SMS_FAILED": "ارسال پیامک کد تأیید انجام نشد. چند دقیقه دیگر دوباره تلاش کنید.",
     "OTP_NOT_FOUND": "کد تأیید فعال پیدا نشد. یک کد جدید درخواست کنید.",
     "OTP_EXCEEDED": "تعداد تلاش‌های ناموفق بیش از حد مجاز است. کد تأیید جدیدی درخواست کنید.",
-    "OTP_INVALID": "کد تأیید واردشده صحیح نیست.",
-    "AUTH_FAILED": "شماره تلفن یا رمز عبور هنرمند صحیح نیست.",
+    "OTP_INVALID": "کد تأیید واردشده صحیح نیست. دوباره بررسی کنید.",
+    "AUTH_FAILED": "شماره تلفن یا رمز عبور اشتباه است. لطفاً دوباره تلاش کنید.",
     "ACCOUNT_LOCKED": "به‌دلیل چند تلاش ناموفق، ورود موقتاً قفل شده است. کمی بعد دوباره تلاش کنید.",
     "PHONE_NOT_REGISTERED": "حسابی با این شماره تلفن پیدا نشد.",
     "TOKEN_INVALID": "نشست ورود معتبر نیست. دوباره وارد شوید.",
@@ -52,8 +52,8 @@ AUTH_ERROR_MESSAGES: dict[str, str] = {
     "ARTIST_AUTH_NOT_FOUND": "درخواست احراز هویت هنرمند پیدا نشد.",
     "ARTIST_ACCOUNT_NOT_FOUND": "برای این شماره تلفن حساب هنرمند فعالی پیدا نشد.",
     "ARTIST_RESET_TOKEN_INVALID": "نشست بازیابی رمز عبور معتبر نیست. دوباره کد بازیابی درخواست کنید.",
-    "ARTIST_RESET_TOKEN_EXPIRED": "مهلت نشست بازیابی رمز عبور تمام شده است. دوباره کد بازیابی درخواست کنید.",
-    "ARTIST_RESET_TOKEN_USED": "این نشست بازیابی قبلاً استفاده شده است. دوباره کد بازیابی درخواست کنید.",
+    "ARTIST_RESET_TOKEN_EXPIRED": "لینک بازنشانی رمز عبور منقضی شده است. دوباره درخواست بازنشانی بدهید.",
+    "ARTIST_RESET_TOKEN_USED": "این لینک بازنشانی قبلاً استفاده شده است. دوباره درخواست بازنشانی بدهید.",
     "BAD_REQUEST": "اطلاعات درخواست معتبر نیست.",
     "AUTHENTICATION_REQUIRED": "برای ادامه باید دوباره وارد حساب هنرمند شوید.",
     "PERMISSION_DENIED": "اجازه انجام این عملیات را ندارید.",
@@ -71,17 +71,43 @@ _VALIDATION_MESSAGES_FA = {
     "blank": "این فیلد نمی‌تواند خالی باشد.",
     "null": "این فیلد نمی‌تواند خالی باشد.",
     "invalid": "مقدار واردشده معتبر نیست.",
-    "invalid_phone": "شماره تلفن همراه معتبر وارد کنید.",
-    "invalid_otp_format": "کد تأیید چهاررقمی را کامل وارد کنید.",
+    "invalid_choice": "گزینه انتخاب‌شده معتبر نیست.",
+    "unique": "این مقدار قبلاً ثبت شده است.",
+    "does_not_exist": "اطلاعات مرتبط پیدا نشد.",
+    "incorrect_type": "نوع مقدار واردشده معتبر نیست.",
+    "min_value": "مقدار واردشده کمتر از حد مجاز است.",
+    "max_value": "مقدار واردشده بیشتر از حد مجاز است.",
     "min_length": "مقدار واردشده کوتاه‌تر از حد مجاز است.",
     "max_length": "مقدار واردشده طولانی‌تر از حد مجاز است.",
+    "invalid_phone": "شماره تلفن همراه معتبر وارد کنید.",
+    "invalid_otp_format": "کد تأیید چهاررقمی را کامل وارد کنید.",
+    "invalid_password": "رمز عبور واردشده صحیح نیست.",
     "password_unchanged": "رمز عبور جدید باید با رمز عبور فعلی متفاوت باشد.",
+    "invalid_image": "فایل تصویر معتبر نیست.",
+    "invalid_file": "فایل ارسال‌شده معتبر نیست.",
+    "empty": "فایل ارسال‌شده خالی است.",
 }
+
+
+def _contains_persian(value: str) -> bool:
+    return any("\u0600" <= char <= "\u06ff" for char in value)
+
 
 def _error_item(value: Any) -> dict[str, str]:
     code = str(getattr(value, "code", "invalid") or "invalid")
-    message = _VALIDATION_MESSAGES_FA.get(code, str(value))
-    return {"code": code, "message": message}
+    source = str(value or "").strip()
+
+    # A deliberately written Persian serializer/endpoint message is more
+    # precise than DRF's broad error code (often just ``invalid``), so keep it.
+    if source and _contains_persian(source):
+        return {"code": code, "message": source}
+
+    mapped = _VALIDATION_MESSAGES_FA.get(code)
+    if mapped:
+        return {"code": code, "message": mapped}
+
+    # Never leak an unexpected English DRF/server validation string.
+    return {"code": code, "message": "مقدار واردشده معتبر نیست."}
 
 
 def _normalize_field_errors(value: Any) -> Any:
@@ -90,6 +116,10 @@ def _normalize_field_errors(value: Any) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_normalize_field_errors(item) for item in value]
     return _error_item(value)
+
+
+def _fa_number(value: int) -> str:
+    return str(int(value)).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
 
 
 def auth_error(
@@ -102,9 +132,16 @@ def auth_error(
     meta: Mapping[str, Any] | None = None,
     request_id: str | None = None,
 ) -> Response:
+    resolved_message = message or AUTH_ERROR_MESSAGES.get(code, "انجام درخواست ممکن نشد. لطفاً دوباره تلاش کنید.")
+    if retry_after_seconds is not None:
+        wait = max(1, int(retry_after_seconds))
+        if code == "ACCOUNT_LOCKED":
+            resolved_message = f"به‌دلیل چند تلاش ناموفق، ورود موقتاً قفل شده است. {_fa_number(wait)} ثانیه دیگر دوباره تلاش کنید."
+        elif code == "RATE_LIMIT":
+            resolved_message = f"تعداد درخواست‌ها بیش از حد مجاز است. {_fa_number(wait)} ثانیه دیگر دوباره تلاش کنید."
     payload: dict[str, Any] = {
         "code": code,
-        "message": message or AUTH_ERROR_MESSAGES.get(code, "انجام درخواست ممکن نشد. لطفاً دوباره تلاش کنید."),
+        "message": resolved_message,
     }
     if fields:
         payload["fields"] = _normalize_field_errors(fields)

@@ -350,9 +350,14 @@ def validation_payload(release: ArtistRelease) -> dict:
             ).exclude(release=release).exists():
                 warning('rights', 'این کد ISRC در انتشار فعال دیگری استفاده شده است؛ یکسان بودن فایل ضبط‌شده را بررسی کنید.', song.id)
             seen_isrc.add(isrc)
+        rights_labels = {
+            'composer': 'آهنگساز',
+            'lyricist': 'ترانه‌سرا',
+            'publishing owner': 'مالک حقوق نشر',
+        }
         for item in missing:
-            if item in ('composer', 'lyricist', 'publishing owner'):
-                warning('rights', f'تکمیل اطلاعات {item} پیشنهاد می‌شود.', song.id)
+            if item in rights_labels:
+                warning('rights', f'تکمیل اطلاعات {rights_labels[item]} پیشنهاد می‌شود.', song.id)
                 rights_warnings += 1
 
     return {

@@ -969,7 +969,7 @@ class ArtistContributorListCreateView(APIView):
                 roles.append(role)
         invalid_roles = [role for role in roles if role not in allowed_roles]
         if invalid_roles:
-            return Response({'roles': [f'نقش‌های پشتیبانی‌نشده مشارکت‌کننده: {invalid_roles}']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'roles': ['یک یا چند نقش انتخاب‌شده برای مشارکت‌کننده پشتیبانی نمی‌شود.']}, status=status.HTTP_400_BAD_REQUEST)
         if len(roles) > 10:
             return Response({'roles': ['هر مشارکت‌کننده می‌تواند حداکثر ۱۰ نقش داشته باشد.']}, status=status.HTTP_400_BAD_REQUEST)
         contributor, created = ReleaseContributor.objects.get_or_create(
@@ -1073,7 +1073,7 @@ class AdminReleaseActionView(APIView):
             'take_down', 'reopen', 'return_to_review',
         }
         if action not in allowed:
-            return Response({'action': [f'یکی از گزینه‌های زیر را انتخاب کنید: {sorted(allowed)}']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'action': ['عملیات انتخاب‌شده معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
 
         transitions = {
             'request_changes': {ArtistRelease.STATUS_IN_REVIEW},
