@@ -510,7 +510,7 @@ class AuthRegisterView(AuthAPIView):
                         existing.save(update_fields=['artist_password'])
                     otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
                     if sent:
-                        return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+                        return Response({'status': 'ok', 'message': 'کد تأیید ارسال شد.'}, status=status.HTTP_200_OK)
                     return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
                 return auth_error('USER_EXISTS', status.HTTP_409_CONFLICT)
             # Redis performs the common cooldown check without touching PostgreSQL.
@@ -520,7 +520,7 @@ class AuthRegisterView(AuthAPIView):
             # send new OTP to existing unverified user
             otp_obj, sent = create_and_send_otp(existing, phone, OtpCode.PURPOSE_VERIFY)
             if sent:
-                return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+                return Response({'status': 'ok', 'message': 'کد تأیید ارسال شد.'}, status=status.HTTP_200_OK)
             return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
 
         retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_VERIFY)
@@ -539,7 +539,7 @@ class AuthRegisterView(AuthAPIView):
         # create OTP and attempt to send SMS
         otp_obj, sent = create_and_send_otp(user, phone, OtpCode.PURPOSE_VERIFY)
         if sent:
-            return Response({'status': 'ok', 'message': 'OTP sent'}, status=status.HTTP_200_OK)
+            return Response({'status': 'ok', 'message': 'کد تأیید ارسال شد.'}, status=status.HTTP_200_OK)
         # SMS failed: return error with details
         return auth_error('SMS_FAILED', status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -969,7 +969,7 @@ class ArtistPasswordResetView(AuthAPIView):
             if user.check_artist_password(new_password):
                 return validation_error({
                     'newPassword': [serializers.ErrorDetail(
-                        'The new password must be different from the current password.',
+                        'رمز عبور جدید باید با رمز عبور فعلی متفاوت باشد.',
                         code='password_unchanged',
                     )],
                 })
@@ -1067,7 +1067,7 @@ class PasswordResetView(AuthAPIView):
             # revoke refresh tokens
             RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
             return Response({'status': 'password_reset'})
-        return auth_error('VALIDATION_ERROR', status.HTTP_400_BAD_REQUEST, fields={'phone': ['This field is required.']})
+        return auth_error('VALIDATION_ERROR', status.HTTP_400_BAD_REQUEST, fields={'phone': ['این فیلد الزامی است.']})
 
 
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
@@ -1289,7 +1289,7 @@ class SessionRevokeOtherView(AuthAPIView):
                 status.HTTP_400_BAD_REQUEST,
                 fields={
                     'refreshToken': [serializers.ErrorDetail(
-                        'This field is required.', code='required'
+                        'این فیلد الزامی است.', code='required'
                     )]
                 },
             )
@@ -1348,11 +1348,11 @@ class ChangePasswordView(AuthAPIView):
         # Validate with the correct password type
         if artist_flag:
             if not user.check_artist_password(current_password):
-                return auth_error('INVALID_PASSWORD', status.HTTP_400_BAD_REQUEST, fields={'currentPassword': [serializers.ErrorDetail('Current password is incorrect.', code='invalid_password')]})
+                return auth_error('INVALID_PASSWORD', status.HTTP_400_BAD_REQUEST, fields={'currentPassword': [serializers.ErrorDetail('رمز عبور فعلی صحیح نیست.', code='invalid_password')]})
             user.set_artist_password(new_password)
         else:
             if not user.check_password(current_password):
-                return auth_error('INVALID_PASSWORD', status.HTTP_400_BAD_REQUEST, fields={'currentPassword': [serializers.ErrorDetail('Current password is incorrect.', code='invalid_password')]})
+                return auth_error('INVALID_PASSWORD', status.HTTP_400_BAD_REQUEST, fields={'currentPassword': [serializers.ErrorDetail('رمز عبور فعلی صحیح نیست.', code='invalid_password')]})
             user.set_password(new_password)
         user.save()
         
@@ -1369,5 +1369,5 @@ class ChangePasswordView(AuthAPIView):
             os_info=os_info
         ).update(revoked_at=timezone.now())
         
-        return Response({'status': 'ok', 'message': 'Password changed successfully'})
+        return Response({'status': 'ok', 'message': 'رمز عبور با موفقیت تغییر کرد.'})
 

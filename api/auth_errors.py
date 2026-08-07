@@ -1,7 +1,7 @@
 """Stable error responses for authentication and session endpoints.
 
 The client branches on ``error.code`` and never needs to parse human text.
-Messages remain English at source and are localized by LocalizedJSONRenderer.
+Authentication endpoints expose stable machine-readable codes with precise Persian messages.
 """
 from __future__ import annotations
 
@@ -29,47 +29,59 @@ import logging
 logger = logging.getLogger(__name__)
 
 AUTH_ERROR_MESSAGES: dict[str, str] = {
-    "VALIDATION_ERROR": "Please correct the highlighted fields.",
-    "INVALID_PHONE": "Enter a valid mobile number.",
-    "USER_EXISTS": "Phone already registered",
-    "USER_BANNED": "This account has been banned.",
-    "RATE_LIMIT": "Please wait before requesting another OTP",
-    "SMS_FAILED": "Failed to send OTP SMS",
-    "OTP_NOT_FOUND": "No valid OTP found",
-    "OTP_EXCEEDED": "OTP attempts exceeded",
-    "OTP_INVALID": "The provided OTP is invalid.",
-    "AUTH_FAILED": "Invalid credentials",
-    "ACCOUNT_LOCKED": "Account temporarily locked",
-    "PHONE_NOT_REGISTERED": "Phone not registered",
-    "TOKEN_INVALID": "Invalid refresh token",
-    "TOKEN_REVOKED": "Session has been revoked or expired",
-    "REFRESH_TOKEN_REQUIRED": "refreshToken is required to keep the current session",
-    "INVALID_PASSWORD": "Current password is incorrect",
-    "SESSION_NOT_FOUND": "Session not found",
-    "CURRENT_SESSION_INVALID": "The current session is invalid or has expired.",
-    "ARTIST_ONLY": "Only artists can access this endpoint",
-    "SUBMISSION_EXISTS": "Submission already exists. Use PATCH to update.",
-    "ARTIST_AUTH_NOT_FOUND": "Artist authentication submission not found",
-    "ARTIST_ACCOUNT_NOT_FOUND": "No artist account is registered for this phone number.",
-    "ARTIST_RESET_TOKEN_INVALID": "This password reset session is invalid. Request a new code.",
-    "ARTIST_RESET_TOKEN_EXPIRED": "This password reset session has expired. Request a new code.",
-    "ARTIST_RESET_TOKEN_USED": "This password reset session has already been used. Request a new code.",
-    "BAD_REQUEST": "The request is invalid.",
-    "AUTHENTICATION_REQUIRED": "Authentication is required.",
-    "PERMISSION_DENIED": "You do not have permission to perform this action.",
-    "NOT_FOUND": "The requested resource was not found.",
-    "SERVER_ERROR": "The server could not complete the request.",
-    "INVALID_JSON": "The request body is not valid JSON.",
-    "METHOD_NOT_ALLOWED": "This request method is not allowed.",
-    "UNSUPPORTED_MEDIA_TYPE": "The request content type is not supported.",
+    "VALIDATION_ERROR": "لطفاً اطلاعات مشخص‌شده را بررسی و اصلاح کنید.",
+    "INVALID_PHONE": "شماره تلفن همراه معتبر وارد کنید.",
+    "USER_EXISTS": "این شماره تلفن قبلاً ثبت شده است. برای ادامه وارد حساب خود شوید.",
+    "USER_BANNED": "این حساب کاربری مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.",
+    "RATE_LIMIT": "درخواست‌های زیادی ثبت شده است. کمی صبر کنید و دوباره تلاش کنید.",
+    "SMS_FAILED": "ارسال پیامک کد تأیید انجام نشد. چند دقیقه دیگر دوباره تلاش کنید.",
+    "OTP_NOT_FOUND": "کد تأیید فعال پیدا نشد. یک کد جدید درخواست کنید.",
+    "OTP_EXCEEDED": "تعداد تلاش‌های ناموفق بیش از حد مجاز است. کد تأیید جدیدی درخواست کنید.",
+    "OTP_INVALID": "کد تأیید واردشده صحیح نیست.",
+    "AUTH_FAILED": "شماره تلفن یا رمز عبور هنرمند صحیح نیست.",
+    "ACCOUNT_LOCKED": "به‌دلیل چند تلاش ناموفق، ورود موقتاً قفل شده است. کمی بعد دوباره تلاش کنید.",
+    "PHONE_NOT_REGISTERED": "حسابی با این شماره تلفن پیدا نشد.",
+    "TOKEN_INVALID": "نشست ورود معتبر نیست. دوباره وارد شوید.",
+    "TOKEN_REVOKED": "نشست شما منقضی یا لغو شده است. دوباره وارد شوید.",
+    "REFRESH_TOKEN_REQUIRED": "اطلاعات تمدید نشست ارسال نشده است. دوباره وارد شوید.",
+    "INVALID_PASSWORD": "رمز عبور فعلی صحیح نیست.",
+    "SESSION_NOT_FOUND": "نشست موردنظر پیدا نشد.",
+    "CURRENT_SESSION_INVALID": "نشست فعلی معتبر نیست یا منقضی شده است. دوباره وارد شوید.",
+    "ARTIST_ONLY": "این بخش فقط برای حساب هنرمند در دسترس است.",
+    "SUBMISSION_EXISTS": "درخواست احراز هویت هنرمند قبلاً ثبت شده است و باید همان درخواست را ویرایش کنید.",
+    "ARTIST_AUTH_NOT_FOUND": "درخواست احراز هویت هنرمند پیدا نشد.",
+    "ARTIST_ACCOUNT_NOT_FOUND": "برای این شماره تلفن حساب هنرمند فعالی پیدا نشد.",
+    "ARTIST_RESET_TOKEN_INVALID": "نشست بازیابی رمز عبور معتبر نیست. دوباره کد بازیابی درخواست کنید.",
+    "ARTIST_RESET_TOKEN_EXPIRED": "مهلت نشست بازیابی رمز عبور تمام شده است. دوباره کد بازیابی درخواست کنید.",
+    "ARTIST_RESET_TOKEN_USED": "این نشست بازیابی قبلاً استفاده شده است. دوباره کد بازیابی درخواست کنید.",
+    "BAD_REQUEST": "اطلاعات درخواست معتبر نیست.",
+    "AUTHENTICATION_REQUIRED": "برای ادامه باید دوباره وارد حساب هنرمند شوید.",
+    "PERMISSION_DENIED": "اجازه انجام این عملیات را ندارید.",
+    "NOT_FOUND": "اطلاعات درخواستی پیدا نشد.",
+    "SERVER_ERROR": "سرور نتوانست درخواست را کامل کند. کمی بعد دوباره تلاش کنید.",
+    "INVALID_JSON": "ساختار اطلاعات ارسالی معتبر نیست.",
+    "METHOD_NOT_ALLOWED": "این روش برای درخواست فعلی مجاز نیست.",
+    "UNSUPPORTED_MEDIA_TYPE": "نوع محتوای ارسالی پشتیبانی نمی‌شود.",
 }
 
 
+
+_VALIDATION_MESSAGES_FA = {
+    "required": "این فیلد الزامی است.",
+    "blank": "این فیلد نمی‌تواند خالی باشد.",
+    "null": "این فیلد نمی‌تواند خالی باشد.",
+    "invalid": "مقدار واردشده معتبر نیست.",
+    "invalid_phone": "شماره تلفن همراه معتبر وارد کنید.",
+    "invalid_otp_format": "کد تأیید چهاررقمی را کامل وارد کنید.",
+    "min_length": "مقدار واردشده کوتاه‌تر از حد مجاز است.",
+    "max_length": "مقدار واردشده طولانی‌تر از حد مجاز است.",
+    "password_unchanged": "رمز عبور جدید باید با رمز عبور فعلی متفاوت باشد.",
+}
+
 def _error_item(value: Any) -> dict[str, str]:
-    return {
-        "code": str(getattr(value, "code", "invalid") or "invalid"),
-        "message": str(value),
-    }
+    code = str(getattr(value, "code", "invalid") or "invalid")
+    message = _VALIDATION_MESSAGES_FA.get(code, str(value))
+    return {"code": code, "message": message}
 
 
 def _normalize_field_errors(value: Any) -> Any:
@@ -92,7 +104,7 @@ def auth_error(
 ) -> Response:
     payload: dict[str, Any] = {
         "code": code,
-        "message": message or AUTH_ERROR_MESSAGES.get(code, "The request could not be completed."),
+        "message": message or AUTH_ERROR_MESSAGES.get(code, "انجام درخواست ممکن نشد. لطفاً دوباره تلاش کنید."),
     }
     if fields:
         payload["fields"] = _normalize_field_errors(fields)

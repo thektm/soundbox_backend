@@ -948,7 +948,7 @@ class RegisterSerializer(LocalizedModelSerializer):
 
     def validate_phone_number(self, value):
         if User.objects.filter(phone_number=value).exists():
-            raise serializers.ValidationError('A user with that phone number already exists')
+            raise serializers.ValidationError('این شماره تلفن قبلاً ثبت شده است.')
         return value
 
     def create(self, validated_data):
@@ -987,8 +987,8 @@ class UploadSerializer(serializers.Serializer):
 
 
 # --- Auth related serializers ---
-_AUTH_PHONE_ERROR = "Enter a valid mobile number."
-_AUTH_OTP_ERROR = "Enter the 4-digit verification code."
+_AUTH_PHONE_ERROR = "شماره تلفن همراه معتبر وارد کنید."
+_AUTH_OTP_ERROR = "کد تأیید چهاررقمی را کامل وارد کنید."
 
 
 def _normalize_auth_phone(value):
@@ -1092,7 +1092,7 @@ class ChangePasswordSerializer(serializers.Serializer):
         if attrs.get('currentPassword') == attrs.get('newPassword'):
             raise serializers.ValidationError(
                 {'newPassword': serializers.ErrorDetail(
-                    'The new password must be different from the current password.',
+                    'رمز عبور جدید باید با رمز عبور فعلی متفاوت باشد.',
                     code='password_unchanged',
                 )}
             )
@@ -1248,14 +1248,14 @@ class ArtistAuthSerializer(LocalizedModelSerializer):
         artist_claimed = data.get('artist_claimed') or getattr(self.instance, 'artist_claimed', None)
         if auth_type == ArtistAuth.AUTH_EXISTING and not artist_claimed:
             raise serializers.ValidationError({
-                'artist_claimed': 'This field is required when auth_type is existing_artist.'
+                'artist_claimed': 'برای احراز هویت هنرمند موجود، انتخاب پروفایل هنرمند الزامی است.'
             })
 
         # Fresh onboarding must capture real values in both supported languages.
         if auth_type == ArtistAuth.AUTH_FRESH and self.instance is None:
             required = ('first_name_en', 'last_name_en', 'stage_name_en')
             missing = {
-                field: 'This English field is required for a fresh artist.'
+                field: 'وارد کردن این مقدار انگلیسی برای ثبت هنرمند جدید الزامی است.'
                 for field in required
                 if not str(data.get(field) or '').strip()
             }
@@ -1655,7 +1655,7 @@ class SongUploadSerializer(serializers.Serializer):
         valid_extensions = ['.mp3', '.wav']
         ext = value.name.lower()[value.name.rfind('.'):]
         if ext not in valid_extensions:
-            raise serializers.ValidationError(f"Only {', '.join(valid_extensions)} files are allowed")
+            raise serializers.ValidationError("فقط فایل‌های صوتی MP3 و WAV پشتیبانی می‌شوند.")
         return value
 
     def validate_featured_artists(self, value):
@@ -1673,7 +1673,7 @@ class SongUploadSerializer(serializers.Serializer):
     def validate_album_id(self, value):
         """Validate album exists if provided"""
         if value and not Album.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Album not found")
+            raise serializers.ValidationError("آلبوم موردنظر پیدا نشد.")
         return value
 
 

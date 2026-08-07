@@ -96,6 +96,25 @@ def _artist_display_name(artist: Artist | None, *, english: bool = False) -> str
     )
 
 
+def _song_display_label(song: Song, *, english: bool = False) -> str:
+    """Return a real song title with every credited feature in the required ft. form."""
+    if english:
+        title = _content_label(song.title_en, song.title, f"Song #{song.pk}")
+    else:
+        title = _content_label(song.title, song.title_en, f"آهنگ شماره {song.pk}")
+
+    names = []
+    seen = set()
+    for artist in song.featured_artists.all():
+        name = _artist_display_name(artist, english=english)
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return f"{title} (ft. {', '.join(names)})" if names else title
+
+
 def _run_safely(label, callback):
     try:
         callback()
@@ -278,8 +297,8 @@ def notify_song_like(sender, instance, created, **kwargs):
         if not like:
             return
         liker_name = _get_user_display_name(like.user)
-        song_title_fa = _content_label(like.song.title, like.song.title_en, f"آهنگ شماره {like.song_id}")
-        song_title_en = _content_label(like.song.title_en, like.song.title, f"Song #{like.song_id}")
+        song_title_fa = _song_display_label(like.song)
+        song_title_en = _song_display_label(like.song, english=True)
         contributors = [like.song.artist, *list(like.song.featured_artists.all())]
         delivered_user_ids = set()
         for artist in contributors:
@@ -367,8 +386,8 @@ def _deliver_song_release(song_id, followed_artist_ids=None):
     recipients = User.objects.filter(id__in=recipient_ids, is_active=True).select_related(
         "notification_setting"
     )
-    song_title_fa = _content_label(song.title, song.title_en, f"آهنگ شماره {song.pk}")
-    song_title_en = _content_label(song.title_en, song.title, f"Song #{song.pk}")
+    song_title_fa = _song_display_label(song)
+    song_title_en = _song_display_label(song, english=True)
     artist_name_fa = _artist_display_name(song.artist)
     artist_name_en = _artist_display_name(song.artist, english=True)
     for recipient in recipients.iterator(chunk_size=500):
@@ -745,10 +764,12 @@ def notify_deposit_status(sender, instance, created, **kwargs):
 
 
 def _deliver_song_owner_status(song_id, expected_status):
-    song = Song.objects.select_related("artist", "artist__user").filter(
-        pk=song_id,
-        status=expected_status,
-    ).first()
+    song = (
+        Song.objects.select_related("artist", "artist__user")
+        .prefetch_related("featured_artists")
+        .filter(pk=song_id, status=expected_status)
+        .first()
+    )
     if not song or not song.artist.user:
         return
     # Release-linked tracks are represented by one release-level notification;
@@ -756,8 +777,8 @@ def _deliver_song_owner_status(song_id, expected_status):
     if song.release_track_links.exists():
         return
 
-    title_fa = _content_label(song.title, song.title_en, f"آهنگ شماره {song.pk}")
-    title_en = _content_label(song.title_en, song.title, f"Song #{song.pk}")
+    title_fa = _song_display_label(song)
+    title_en = _song_display_label(song, english=True)
     if expected_status == Song.STATUS_APPROVED:
         text = f"آهنگ «{title_fa}» تأیید شد."
         text_en = f"Your song '{title_en}' was approved."

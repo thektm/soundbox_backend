@@ -244,41 +244,41 @@ def validation_payload(release: ArtistRelease) -> dict:
             item['track_id'] = track_id
         warnings.append(item)
 
-    if not str(release.title or '').strip() or release.title.strip().lower() == 'untitled release':
-        error('release', 'Enter the release title.')
+    if not str(release.title or '').strip() or release.title.strip().lower() == 'انتشار بدون عنوان':
+        error('release', 'عنوان انتشار را وارد کنید.')
     if release.release_type not in dict(ArtistRelease.TYPE_CHOICES):
-        error('release', 'Choose a valid release type.')
+        error('release', 'یک نوع انتشار معتبر انتخاب کنید.')
 
     count = len(tracks)
     if release.release_type == ArtistRelease.TYPE_SINGLE and count != 1:
-        error('tracklist', 'A single must contain exactly one track.')
+        error('tracklist', 'انتشار تک‌آهنگ باید دقیقاً یک ترک داشته باشد.')
     elif release.release_type == ArtistRelease.TYPE_EP and not (2 <= count <= 7):
-        error('tracklist', 'An EP must contain between 2 and 7 tracks.')
+        error('tracklist', 'مینی‌آلبوم باید بین ۲ تا ۷ ترک داشته باشد.')
     elif release.release_type in (ArtistRelease.TYPE_ALBUM, ArtistRelease.TYPE_COMPILATION) and count < 2:
-        error('tracklist', 'This release type must contain at least two tracks.')
+        error('tracklist', 'این نوع انتشار باید حداقل دو ترک داشته باشد.')
     if count > 100:
-        error('tracklist', 'A release cannot contain more than 100 tracks.')
+        error('tracklist', 'هر انتشار می‌تواند حداکثر ۱۰۰ ترک داشته باشد.')
 
     cover_url = str(metadata.get('cover_url') or '').strip()
     if not cover_url:
-        error('artwork', 'Upload square release artwork.')
+        error('artwork', 'یک کاور مربعی برای انتشار بارگذاری کنید.')
     release_date = parse_date(str(metadata.get('release_date') or ''))
     if not release_date:
-        error('release', 'Choose a valid release date.')
+        error('release', 'یک تاریخ انتشار معتبر انتخاب کنید.')
     original_date = parse_date(str(metadata.get('original_release_date') or '')) if metadata.get('original_release_date') else None
     if release.previously_released and not original_date:
-        error('release', 'Enter the original release date for previously released content.')
+        error('release', 'برای محتوای قبلاً منتشرشده، تاریخ انتشار اصلی را وارد کنید.')
     today = timezone.localdate()
     if release_date and not release.previously_released and release_date < today:
-        error('release', 'A new release cannot use a past release date.')
+        error('release', 'برای انتشار جدید نمی‌توان تاریخ گذشته انتخاب کرد.')
     # Allow a one-day calendar skew between the artist device and a UTC server.
     if original_date and original_date > today + timedelta(days=1):
-        error('release', 'The original release date cannot be in the future.')
+        error('release', 'تاریخ انتشار اصلی نمی‌تواند در آینده باشد.')
     if original_date and release_date and original_date > release_date:
-        error('release', 'The original release date cannot be after the planned release date.')
+        error('release', 'تاریخ انتشار اصلی نمی‌تواند بعد از تاریخ برنامه‌ریزی‌شده باشد.')
 
     if not shared.get('genre_ids'):
-        error('release', 'Choose at least one genre in the shared classification section.')
+        error('release', 'در بخش دسته‌بندی مشترک حداقل یک ژانر انتخاب کنید.')
     taxonomy_checks = (
         ('genre', Genre, shared.get('genre_ids') or []),
         ('subgenre', SubGenre, shared.get('sub_genre_ids') or []),
@@ -289,14 +289,14 @@ def validation_payload(release: ArtistRelease) -> dict:
         existing_ids = set(model.objects.filter(id__in=values).values_list('id', flat=True))
         missing_ids = [value for value in values if value not in existing_ids]
         if missing_ids:
-            error('release', f'Shared {label} IDs do not exist: {missing_ids}.')
+            error('release', f'شناسه‌های انتخاب‌شده برای {label} معتبر نیستند: {missing_ids}.')
 
     if not metadata.get('territories'):
-        error('release', 'Select at least one territory.')
+        error('release', 'حداقل یک قلمرو انتشار انتخاب کنید.')
     if not metadata.get('p_copyright'):
-        warning('rights', 'Add the sound recording (P-line) copyright.')
+        warning('rights', 'اطلاعات حق مالکیت ضبط (P-line) را وارد کنید.')
     if not metadata.get('c_copyright'):
-        warning('rights', 'Add the artwork/composition (C-line) copyright.')
+        warning('rights', 'اطلاعات حق مالکیت اثر و کاور (C-line) را وارد کنید.')
 
     complete_tracks = 0
     audio_passed = True
@@ -306,41 +306,41 @@ def validation_payload(release: ArtistRelease) -> dict:
     for link in tracks:
         song = link.song
         if song.status == Song.STATUS_DELETED:
-            error('tracks', 'Deleted recordings cannot be submitted or published.', song.id)
+            error('tracks', 'فایل‌های حذف‌شده قابل ارسال یا انتشار نیستند.', song.id)
         extras = normalize_track_extras(link.extras, link.position)
         completion, missing = _track_completion(song, extras)
         if completion >= 75:
             complete_tracks += 1
         if not song.audio_file:
             audio_passed = False
-            error('audio', 'Audio file is missing.', song.id)
+            error('audio', 'فایل صوتی موجود نیست.', song.id)
         if not str(song.title or '').strip():
-            error('tracks', 'Track title is required.', song.id)
+            error('tracks', 'وارد کردن عنوان ترک الزامی است.', song.id)
         if not song.language:
-            error('tracks', 'Track language is required.', song.id)
+            error('tracks', 'انتخاب زبان ترک الزامی است.', song.id)
         if not song.genres.exists():
-            error('tracks', 'Choose at least one shared genre for this release.', song.id)
+            error('tracks', 'برای این انتشار حداقل یک ژانر مشترک انتخاب کنید.', song.id)
         if not song.duration_seconds or song.duration_seconds <= 0:
-            warning('audio', 'Audio duration could not be verified.', song.id)
+            warning('audio', 'مدت فایل صوتی قابل تأیید نبود.', song.id)
         preview_start = max(0, int(extras.get('preview_start') or 0))
         if song.duration_seconds and preview_start >= song.duration_seconds:
-            error('audio', 'Preview start must be before the end of the track.', song.id)
+            error('audio', 'زمان شروع پیش‌نمایش باید پیش از پایان ترک باشد.', song.id)
         if song.original_format and str(song.original_format).lower() not in {'mp3', 'wav'}:
-            error('audio', 'Only MP3 and WAV source files are supported.', song.id)
+            error('audio', 'فقط فایل‌های منبع MP3 و WAV پشتیبانی می‌شوند.', song.id)
         version_key = str(extras.get('version') or '').strip().casefold()
         title_key = str(song.title or '').strip().casefold()
         title_version = (title_key, version_key)
         if title_key and title_version in seen_title_versions:
-            warning('tracks', 'Another track has the same title and version.', song.id)
+            warning('tracks', 'ترک دیگری با همین عنوان و نسخه وجود دارد.', song.id)
         seen_title_versions.add(title_version)
         isrc = str(extras.get('isrc') or '').replace('-', '').replace(' ', '').upper()
         if release.previously_released and not isrc:
-            error('rights', 'Previously released recordings require an ISRC.', song.id)
+            error('rights', 'برای فایل‌های قبلاً منتشرشده وارد کردن ISRC الزامی است.', song.id)
         if isrc:
             if not re.fullmatch(r'[A-Z]{2}[A-Z0-9]{3}[0-9]{7}', isrc):
-                error('rights', 'ISRC must follow the 12-character country/registrant/year/designation format.', song.id)
+                error('rights', 'کد ISRC باید مطابق ساختار ۱۲ کاراکتری کشور، ثبت‌کننده، سال و شناسه اثر باشد.', song.id)
             elif isrc in seen_isrc:
-                error('rights', 'The same ISRC cannot be used twice in one release.', song.id)
+                error('rights', 'یک کد ISRC را نمی‌توان دو بار در یک انتشار استفاده کرد.', song.id)
             elif ArtistReleaseTrack.objects.filter(
                 extras__isrc=isrc,
                 release__status__in=[
@@ -348,11 +348,11 @@ def validation_payload(release: ArtistRelease) -> dict:
                     ArtistRelease.STATUS_SCHEDULED, ArtistRelease.STATUS_LIVE,
                 ],
             ).exclude(release=release).exists():
-                warning('rights', 'This ISRC is already used by another active release; confirm that it is the same recording.', song.id)
+                warning('rights', 'این کد ISRC در انتشار فعال دیگری استفاده شده است؛ یکسان بودن فایل ضبط‌شده را بررسی کنید.', song.id)
             seen_isrc.add(isrc)
         for item in missing:
             if item in ('composer', 'lyricist', 'publishing owner'):
-                warning('rights', f'Consider completing {item}.', song.id)
+                warning('rights', f'تکمیل اطلاعات {item} پیشنهاد می‌شود.', song.id)
                 rights_warnings += 1
 
     return {
@@ -799,7 +799,7 @@ def mark_release_for_review(
     release.scheduled_at = None
     release.validation_snapshot = {}
     release.save(update_fields=['submitted_at', 'scheduled_at', 'validation_snapshot', 'updated_at'])
-    review_note = note or 'Artist changes require another review.'
+    review_note = note or 'تغییرات هنرمند نیازمند بررسی دوباره است.'
     if release.status != ArtistRelease.STATUS_IN_REVIEW:
         change_status(release, ArtistRelease.STATUS_IN_REVIEW, actor=actor, note=review_note)
     else:
@@ -815,13 +815,13 @@ def approve_release(release: ArtistRelease, *, actor=None, note: str = '') -> Ar
         release = materialize_release(release, publish=True)
         change_status(
             release, ArtistRelease.STATUS_LIVE, actor=actor,
-            note=note or 'Edited release approved and republished.',
+            note=note or 'انتشار ویرایش‌شده تأیید و دوباره منتشر شد.',
         )
     else:
         release = prepare_release(release, schedule=False)
         change_status(
             release, ArtistRelease.STATUS_APPROVED, actor=actor,
-            note=note or 'Release approved.',
+            note=note or 'انتشار تأیید شد.',
         )
     return release
 
@@ -831,11 +831,11 @@ def set_release_status_from_admin(
     target_status: str,
     *,
     actor=None,
-    note: str = 'Status changed in Django admin.',
+    note: str = 'وضعیت از پنل مدیریت تغییر کرد.',
 ) -> ArtistRelease:
     """Apply a manually selected admin status and synchronize every linked song."""
     if target_status not in dict(ArtistRelease.STATUS_CHOICES):
-        raise ValueError('Invalid release status.')
+        raise ValueError('وضعیت انتشار معتبر نیست.')
 
     # Admin moderation is authoritative for the entire release. Always repair
     # titles, metadata, and cover inheritance before changing lifecycle state.
@@ -847,8 +847,8 @@ def set_release_status_from_admin(
         release.validation_snapshot = validation
         release.save(update_fields=['validation_snapshot', 'updated_at'])
         if not validation['valid']:
-            messages = '; '.join(item.get('message', 'Invalid release') for item in validation.get('errors', [])[:5])
-            raise ValueError(messages or 'Release validation failed.')
+            messages = '; '.join(item.get('message', 'انتشار معتبر نیست') for item in validation.get('errors', [])[:5])
+            raise ValueError(messages or 'اعتبارسنجی انتشار انجام نشد.')
 
     if target_status == ArtistRelease.STATUS_DRAFT:
         if release.status == ArtistRelease.STATUS_LIVE:
@@ -873,7 +873,7 @@ def set_release_status_from_admin(
     elif target_status == ArtistRelease.STATUS_SCHEDULED:
         scheduled_at = scheduled_datetime(release)
         if not scheduled_at or scheduled_at <= timezone.now():
-            raise ValueError('Scheduled releases require a future release date.')
+            raise ValueError('انتشار زمان‌بندی‌شده باید تاریخ آینده داشته باشد.')
         release = prepare_release(release, schedule=True)
         change_status(release, target_status, actor=actor, note=note)
     elif target_status == ArtistRelease.STATUS_LIVE:
@@ -933,7 +933,7 @@ def publish_due_releases(limit=50) -> int:
                 if locked.status != ArtistRelease.STATUS_SCHEDULED or not locked.scheduled_at or locked.scheduled_at > now:
                     continue
                 materialize_release(locked, publish=True)
-                change_status(locked, ArtistRelease.STATUS_LIVE, note='Automatically published at the scheduled time.')
+                change_status(locked, ArtistRelease.STATUS_LIVE, note='انتشار در زمان تعیین‌شده به‌صورت خودکار منتشر شد.')
                 published += 1
         except ArtistRelease.DoesNotExist:
             continue

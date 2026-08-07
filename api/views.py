@@ -2428,12 +2428,12 @@ class ArtistSocialAccountsView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         social_accounts = ArtistSocialAccount.objects.filter(artist=artist)
         serializer = ArtistSocialAccountSerializer(social_accounts, many=True)
@@ -2448,12 +2448,12 @@ class ArtistSocialAccountsView(APIView):
     def post(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         serializer = ArtistSocialAccountSerializer(data=request.data)
         if serializer.is_valid():
@@ -2482,12 +2482,12 @@ class ArtistSocialAccountDetailView(APIView):
     def put(self, request, pk):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         social_account = self.get_object(pk, artist)
         if not social_account:
@@ -2507,12 +2507,12 @@ class ArtistSocialAccountDetailView(APIView):
     def delete(self, request, pk):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         social_account = self.get_object(pk, artist)
         if not social_account:
@@ -6801,7 +6801,7 @@ class RulesLatestView(APIView):
     def get(self, request):
         latest = Rules.objects.order_by('-created_at').first()
         if not latest:
-            return Response({"detail": "No rules found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "قانونی پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
         serializer = RulesSerializer(latest)
         return Response(serializer.data)
 
@@ -6850,12 +6850,12 @@ class ArtistHomeView(APIView):
         user = request.user
         # Check if user has artist role
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -6974,12 +6974,12 @@ class ArtistLiveListenersView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         return Response({
             "artist_id": artist.id,
@@ -7012,12 +7012,12 @@ class ArtistLiveListenersPollView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             artist = user.artist_profile
         except Artist.DoesNotExist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         def get_current_listeners():
             return set(ActivePlayback.objects.filter(
@@ -7054,18 +7054,18 @@ class ArtistAnalyticsView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
         artist = getattr(user, 'artist_profile', None)
         if not artist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         period = request.query_params.get('period', '30d').lower()
         chart_type = request.query_params.get('chart', '').lower()
         allowed_periods = {'today', '7d', '30d', '365d', 'all'}
         if period not in allowed_periods:
-            return Response({"error": "Invalid period. Use today, 7d, 30d, 365d, or all."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "بازه زمانی معتبر نیست. یکی از مقادیر امروز، ۷ روز، ۳۰ روز، ۳۶۵ روز یا همه را انتخاب کنید."}, status=status.HTTP_400_BAD_REQUEST)
         if chart_type and chart_type not in {'hourly', 'daily', 'monthly'}:
-            return Response({"error": "Invalid chart type. Use hourly, daily, or monthly."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "نوع نمودار معتبر نیست. یکی از حالت‌های ساعتی، روزانه یا ماهانه را انتخاب کنید."}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
         today_date = timezone.localdate(now)
@@ -7236,7 +7236,7 @@ class DepositRequestView(APIView):
     def get(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
         requests = DepositRequest.objects.filter(artist=artist)
         if pk is not None:
             item = get_object_or_404(requests, pk=pk)
@@ -7246,7 +7246,7 @@ class DepositRequestView(APIView):
     def post(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
         with transaction.atomic():
             Artist.objects.select_for_update().only('id').get(pk=artist.pk)
             active = DepositRequest.objects.select_for_update().filter(
@@ -7254,7 +7254,7 @@ class DepositRequestView(APIView):
                 status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED],
             )
             if active.exists():
-                return Response({"error": "You already have an active payout request."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "یک درخواست تسویه فعال دارید و تا تعیین وضعیت آن امکان ثبت درخواست جدید وجود ندارد."}, status=status.HTTP_400_BAD_REQUEST)
 
             plays = PlayCount.objects.filter(songs__artist=artist).distinct()
             total_credit = plays.aggregate(total=Coalesce(
@@ -7272,7 +7272,7 @@ class DepositRequestView(APIView):
                 amount_needed = (minimum_payout - available).quantize(PAYOUT_QUANTUM)
                 return Response(
                     {
-                        "error": "The available balance has not reached the minimum payout amount.",
+                        "error": "موجودی قابل تسویه هنوز به حداقل مبلغ تسویه نرسیده است.",
                         "code": "minimum_payout_not_reached",
                         "available_amount": _payout_string(available),
                         "minimum_payout_amount": _payout_string(minimum_payout),
@@ -7296,7 +7296,7 @@ class DepositRequestView(APIView):
             )
             song_allocations = _finance_allocate_across_songs(song_totals, already_reserved, available)
             if abs(sum(song_allocations.values(), Decimal('0')) - _finance_decimal(available)) > FINANCE_QUANTUM:
-                return Response({"error": "Could not allocate the payout across songs."}, status=status.HTTP_409_CONFLICT)
+                return Response({"error": "تقسیم مبلغ تسویه بین آهنگ‌ها انجام نشد. لطفاً دوباره تلاش کنید."}, status=status.HTTP_409_CONFLICT)
 
             summary = {
                 'total_plays': total_plays,
@@ -7316,13 +7316,13 @@ class DepositRequestView(APIView):
     def delete(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
         if pk is None:
-            return Response({"error": "Payout request id is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "شناسه درخواست تسویه الزامی است."}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             item = get_object_or_404(DepositRequest.objects.select_for_update(), pk=pk, artist=artist)
             if item.status != DepositRequest.STATUS_PENDING:
-                return Response({"error": "Only pending payout requests can be cancelled."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "فقط درخواست تسویه در وضعیت انتظار قابل لغو است."}, status=status.HTTP_400_BAD_REQUEST)
             item.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -7334,10 +7334,10 @@ class ArtistWalletView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
         artist = getattr(user, 'artist_profile', None)
         if not artist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         plays = PlayCount.objects.filter(songs__artist=artist).distinct()
         total_credit = plays.aggregate(total=Coalesce(
@@ -7393,10 +7393,10 @@ class ArtistFinanceView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
         artist = getattr(user, 'artist_profile', None)
         if not artist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         period = request.query_params.get('period', '30d').lower()
         today = timezone.localdate()
@@ -7451,7 +7451,7 @@ class ArtistFinanceView(APIView):
             previous_start, previous_end = start - timedelta(days=1), start
             group = 'daily'
         else:
-            return Response({"error": "Invalid period."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "بازه زمانی انتخاب‌شده معتبر نیست."}, status=status.HTTP_400_BAD_REQUEST)
 
         current = PlayCount.objects.filter(songs__artist=artist).distinct()
         if start:
@@ -7547,17 +7547,17 @@ class ArtistFinanceSongsView(APIView):
     def get(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
 
         artist = getattr(user, 'artist_profile', None)
         if not artist:
-            return Response({"error": "Artist profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد."}, status=status.HTTP_404_NOT_FOUND)
 
         sort = request.query_params.get('sort', 'available').lower()
         allowed_sorts = {'available', 'remaining', 'income', 'release_date'}
         if sort not in allowed_sorts:
             return Response(
-                {"error": "Invalid sort. Use available, remaining, income, or release_date."},
+                {"error": "نوع مرتب‌سازی معتبر نیست. یکی از موجودی قابل تسویه، مانده، درآمد یا تاریخ انتشار را انتخاب کنید."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -7692,7 +7692,7 @@ class ArtistSettingsView(APIView):
     def get(self, request):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
         return Response(ArtistSerializer(artist, context={'request': request}).data)
 
     def put(self, request):
@@ -7709,7 +7709,7 @@ class ArtistSettingsView(APIView):
             if not isinstance(social_map, dict):
                 raise ValueError
         except (ValueError, TypeError, json.JSONDecodeError):
-            return None, {'social_accounts': ['Invalid social accounts payload.']}
+            return None, {'social_accounts': ['ساختار اطلاعات شبکه‌های اجتماعی معتبر نیست.']}
 
         validator = URLValidator(schemes=['http', 'https'])
         normalized = {}
@@ -7722,7 +7722,7 @@ class ArtistSettingsView(APIView):
                 try:
                     validator(url)
                 except ValidationError:
-                    return None, {'social_accounts': [f'Invalid {slug} URL.']}
+                    return None, {'social_accounts': [f'پیوند واردشده برای {self.SOCIAL_NAMES.get(slug, slug)} معتبر نیست.']}
             normalized[slug] = url
         return normalized, None
 
@@ -7730,15 +7730,15 @@ class ArtistSettingsView(APIView):
         if not upload:
             return None
         if upload.size > max_size:
-            return {field: [f"File is too large. Maximum size is {max_size // (1024 * 1024)}MB."]}
+            return {field: [f"حجم فایل بیش از حد مجاز است. حداکثر حجم {max_size // (1024 * 1024)} مگابایت است."]}
         if getattr(upload, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
-            return {field: ["Only JPG, PNG, and WEBP images are supported."]}
+            return {field: ["فقط تصاویر JPG، PNG و WEBP پشتیبانی می‌شوند."]}
         return None
 
     def _update(self, request, partial=True):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         profile_data = {}
         for field in self.PROFILE_FIELDS:
@@ -7779,7 +7779,7 @@ class ArtistSettingsView(APIView):
                 uploaded_urls[field], _ = upload_file_to_r2(upload, folder=folder, custom_filename=None)
             except Exception:
                 return Response(
-                    {'error': f"{field.replace('_', ' ').title()} upload failed. Please try again."},
+                    {'error': 'بارگذاری تصویر پروفایل یا بنر انجام نشد. لطفاً دوباره تلاش کنید.'},
                     status=status.HTTP_502_BAD_GATEWAY,
                 )
 
@@ -7817,20 +7817,20 @@ class ArtistChangePasswordView(APIView):
     def post(self, request):
         user = request.user
         if User.ROLE_ARTIST not in user.roles:
-            return Response({"error": "User is not an artist"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "این حساب نقش هنرمند ندارد."}, status=status.HTTP_403_FORBIDDEN)
         current = str(request.data.get('current_password') or '')
         new = str(request.data.get('new_password') or '')
         if not current or not new:
-            return Response({"error": "Current password and new password are required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "وارد کردن رمز عبور فعلی و رمز عبور جدید الزامی است."}, status=status.HTTP_400_BAD_REQUEST)
         if not user.check_artist_password(current):
-            return Response({"error": "Current password is incorrect."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "رمز عبور فعلی صحیح نیست."}, status=status.HTTP_400_BAD_REQUEST)
         if len(new) < 8:
-            return Response({"error": "New password must be at least 8 characters long."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "رمز عبور جدید باید حداقل ۸ کاراکتر باشد."}, status=status.HTTP_400_BAD_REQUEST)
         if current == new:
-            return Response({"error": "New password must be different from the current password."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "رمز عبور جدید باید با رمز عبور فعلی متفاوت باشد."}, status=status.HTTP_400_BAD_REQUEST)
         user.set_artist_password(new)
         user.save(update_fields=['artist_password'])
-        return Response({"status": "password_changed", "message": "Password changed successfully."})
+        return Response({"status": "password_changed", "message": "رمز عبور با موفقیت تغییر کرد."})
 
 
 @extend_schema(tags=['Artist App Endpoints اندپوینت های اپلیکیشن هنرمند'])
@@ -7841,7 +7841,7 @@ class ArtistSongUploadStatusView(APIView):
     def get(self, request, upload_id):
         token = _artist_upload_id(upload_id)
         if not token:
-            return Response({'detail': 'Invalid upload identifier.', 'code': 'invalid_upload_id'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'شناسه بارگذاری معتبر نیست.', 'code': 'invalid_upload_id'}, status=status.HTTP_400_BAD_REQUEST)
 
         state = _get_artist_upload_state(request.user.id, token)
         if not state:
@@ -7853,7 +7853,7 @@ class ArtistSongUploadStatusView(APIView):
         try:
             artist = request.user.artist_profile
         except Artist.DoesNotExist:
-            return Response({'detail': 'Artist profile not found.', 'code': 'artist_not_found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'detail': 'پروفایل هنرمند پیدا نشد..', 'code': 'artist_not_found'}, status=status.HTTP_404_NOT_FOUND)
 
         song = Song.objects.filter(pk=state.get('song_id'), artist=artist).select_related(
             'artist', 'album', 'uploader'
@@ -7862,7 +7862,7 @@ class ArtistSongUploadStatusView(APIView):
             _artist_panel_release_links_prefetch(),
         ).first()
         if not song:
-            return Response({'state': 'failed', 'detail': 'The uploaded recording could not be found.', 'code': 'upload_result_missing'})
+            return Response({'state': 'failed', 'detail': 'فایل ضبط‌شده بارگذاری‌شده پیدا نشد.', 'code': 'upload_result_missing'})
 
         return Response({
             **state,
@@ -7902,7 +7902,7 @@ class ArtistSongsManagementView(APIView):
     def get(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         queryset = Song.objects.filter(artist=artist).select_related(
             'artist', 'album', 'uploader'
@@ -8033,12 +8033,12 @@ class ArtistSongsManagementView(APIView):
     def post(self, request):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         raw_upload_id = request.data.get('upload_id')
         upload_id = _artist_upload_id(raw_upload_id)
         if raw_upload_id and not upload_id:
-            return Response({'upload_id': ['Invalid upload identifier.']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'upload_id': ['شناسه بارگذاری معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
 
         previous = _get_artist_upload_state(request.user.id, upload_id)
         if previous and previous.get('state') == 'done':
@@ -8054,7 +8054,7 @@ class ArtistSongsManagementView(APIView):
                 })
         if previous and previous.get('state') == 'processing':
             return Response(
-                {'detail': 'This upload is already being processed.', 'code': 'upload_processing'},
+                {'detail': 'این بارگذاری در حال پردازش است. تا پایان پردازش صبر کنید.', 'code': 'upload_processing'},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -8062,19 +8062,19 @@ class ArtistSongsManagementView(APIView):
         cover_image = request.FILES.get('cover_image')
         title = str(request.data.get('title') or '').strip()
         if not title:
-            return Response({'title': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'title': ['این فیلد الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
         if not audio_file:
-            return Response({'audio_file': ['Audio file is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'audio_file': ['انتخاب فایل صوتی الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
         if audio_file.size > 500 * 1024 * 1024:
-            return Response({'audio_file': ['Audio file must be smaller than 500MB.']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'audio_file': ['حجم فایل صوتی باید کمتر از ۵۰۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
         extension = os.path.splitext(audio_file.name or '')[1].lower()
         if extension not in {'.mp3', '.wav'}:
-            return Response({'audio_file': ['Only MP3 and WAV audio files are supported.']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'audio_file': ['فقط فایل‌های صوتی MP3 و WAV پشتیبانی می‌شوند.']}, status=status.HTTP_400_BAD_REQUEST)
         if cover_image:
             if cover_image.size > 10 * 1024 * 1024:
-                return Response({'cover_image': ['Cover image must be smaller than 10MB.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['حجم تصویر کاور باید کمتر از ۱۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             if getattr(cover_image, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
-                return Response({'cover_image': ['Cover image must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['فرمت تصویر کاور باید JPG، PNG یا WEBP باشد.']}, status=status.HTTP_400_BAD_REQUEST)
 
         clean = {}
         scalar_fields = [
@@ -8131,22 +8131,22 @@ class ArtistSongsManagementView(APIView):
             upload_id,
             'processing',
             stage='analyzing',
-            message='The server is validating and processing the audio.',
+            message='سرور در حال اعتبارسنجی و پردازش فایل صوتی است.',
         )
 
         def report_stage(current_stage):
             messages = {
-                'analyzing': 'The server is validating the audio.',
-                'converting_128': 'The server is creating the 128 kbps version.',
-                'uploading_r2': 'The server is storing both audio qualities in R2.',
-                'saving': 'The server is saving the recording.',
+                'analyzing': 'سرور در حال اعتبارسنجی فایل صوتی است.',
+                'converting_128': 'سرور در حال ساخت نسخه ۱۲۸ کیلوبیت‌برثانیه است.',
+                'uploading_r2': 'سرور در حال ذخیره هر دو کیفیت فایل صوتی است.',
+                'saving': 'سرور در حال ذخیره اطلاعات ضبط است.',
             }
             _set_artist_upload_state(
                 request.user.id,
                 upload_id,
                 'processing',
                 stage=current_stage,
-                message=messages.get(current_stage, 'The server is processing the recording.'),
+                message=messages.get(current_stage, 'سرور در حال پردازش فایل ضبط‌شده است.'),
             )
 
         try:
@@ -8176,7 +8176,7 @@ class ArtistSongsManagementView(APIView):
                     request.user.id,
                     upload_id,
                     'failed',
-                    detail='The recording metadata could not be saved.',
+                    detail='ذخیره اطلاعات ضبط انجام نشد.',
                     code='song_validation_failed',
                 )
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -8187,7 +8187,7 @@ class ArtistSongsManagementView(APIView):
                 upload_id,
                 'done',
                 stage='done',
-                message='The recording was uploaded and processed successfully.',
+                message='فایل ضبط‌شده با موفقیت بارگذاری و پردازش شد.',
                 song_id=song.id,
             )
         except MediaPipelineError as exc:
@@ -8208,11 +8208,11 @@ class ArtistSongsManagementView(APIView):
                 request.user.id,
                 upload_id,
                 'failed',
-                detail='The song could not be saved after upload.',
+                detail='فایل بارگذاری شد، اما ذخیره آهنگ انجام نشد.',
                 code='song_save_failed',
             )
             return Response(
-                {'detail': 'The song could not be saved after upload.', 'code': 'song_save_failed'},
+                {'detail': 'فایل بارگذاری شد، اما ذخیره آهنگ انجام نشد.', 'code': 'song_save_failed'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         return Response({"message": "OK", "song": serializer.data}, status=status.HTTP_201_CREATED)
@@ -8236,12 +8236,12 @@ class ArtistSongsManagementView(APIView):
     def update(self, request, pk, partial=False):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         song = get_object_or_404(Song, pk=pk, artist=artist)
         if song.status == Song.STATUS_DELETED:
             return Response({
-                'detail': 'Deleted recordings are read-only so their stream and payment history stays intact.'
+                'detail': 'آهنگ‌های حذف‌شده فقط قابل مشاهده‌اند تا سابقه پخش و پرداخت آن‌ها محفوظ بماند.'
             }, status=status.HTTP_409_CONFLICT)
         linked_release_rows = list(
             song.release_track_links.select_related('release').order_by('release_id')
@@ -8253,7 +8253,7 @@ class ArtistSongsManagementView(APIView):
         confirmed_reapproval = str(request.data.get('confirm_re_review') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
         if requires_reapproval and not confirmed_reapproval:
             return Response({
-                'detail': 'Saving these changes will return the song and its release to pending review.',
+                'detail': 'ذخیره این تغییرات، آهنگ و انتشار مرتبط را دوباره به وضعیت انتظار بررسی برمی‌گرداند.',
                 'code': 'release_reapproval_required',
                 'release_ids': [str(link.release_id) for link in linked_release_rows],
             }, status=status.HTTP_409_CONFLICT)
@@ -8295,14 +8295,14 @@ class ArtistSongsManagementView(APIView):
         cover_image = request.FILES.get('cover_image')
         if audio_file:
             if audio_file.size > 500 * 1024 * 1024:
-                return Response({'audio_file': ['Audio file must be smaller than 500MB.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'audio_file': ['حجم فایل صوتی باید کمتر از ۵۰۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             if os.path.splitext(audio_file.name or '')[1].lower() not in {'.mp3', '.wav'}:
-                return Response({'audio_file': ['Only MP3 and WAV audio files are supported.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'audio_file': ['فقط فایل‌های صوتی MP3 و WAV پشتیبانی می‌شوند.']}, status=status.HTTP_400_BAD_REQUEST)
         if cover_image:
             if cover_image.size > 10 * 1024 * 1024:
-                return Response({'cover_image': ['Cover image must be smaller than 10MB.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['حجم تصویر کاور باید کمتر از ۱۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             if getattr(cover_image, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
-                return Response({'cover_image': ['Cover image must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['فرمت تصویر کاور باید JPG، PNG یا WEBP باشد.']}, status=status.HTTP_400_BAD_REQUEST)
 
         # Validate metadata and relation changes before uploading replacement files.
         save_as_draft = str(request.data.get('save_as_draft') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -8363,7 +8363,7 @@ class ArtistSongsManagementView(APIView):
                 if now_requires_reapproval and not confirmed_reapproval:
                     cleanup_r2_urls(new_urls)
                     return Response({
-                        'detail': 'The song or release status changed while editing. Confirm review again and retry.',
+                        'detail': 'وضعیت آهنگ یا انتشار هنگام ویرایش تغییر کرده است. تأیید ارسال دوباره برای بررسی را تکرار کنید.',
                         'code': 'release_reapproval_required',
                     }, status=status.HTTP_409_CONFLICT)
 
@@ -8378,7 +8378,7 @@ class ArtistSongsManagementView(APIView):
                     if linked_release.status not in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW}:
                         mark_release_for_review(
                             linked_release, actor=request.user, all_tracks=True,
-                            note='Artist edited release-owned song metadata; approval is required again.',
+                            note='هنرمند اطلاعات آهنگ وابسته به انتشار را ویرایش کرد؛ تأیید دوباره لازم است.',
                         )
                     elif linked_release.status == ArtistRelease.STATUS_IN_REVIEW:
                         Song.objects.filter(release_track_links__release=linked_release).exclude(
@@ -8399,7 +8399,7 @@ class ArtistSongsManagementView(APIView):
             cleanup_r2_urls(new_urls)
             logger.exception('Artist song update failed song=%s user=%s', song.pk, request.user.pk)
             return Response(
-                {'detail': 'The recording update failed and no replacement file was kept.', 'code': 'song_update_failed'},
+                {'detail': 'به‌روزرسانی فایل ضبط‌شده انجام نشد و فایل جایگزین ذخیره نشد.', 'code': 'song_update_failed'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -8410,7 +8410,7 @@ class ArtistSongsManagementView(APIView):
         """Delete a recording while retaining rows needed by releases and accounting."""
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         media_urls = []
         album_deleted = False
@@ -8476,7 +8476,7 @@ class ArtistAlbumsManagementView(APIView):
     def get(self, request, pk=None):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         songs_qs = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
             'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
@@ -8543,9 +8543,9 @@ class ArtistAlbumsManagementView(APIView):
     def post(self, request):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
         if not str(request.data.get('title') or '').strip():
-            return Response({'title': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'title': ['این فیلد الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
 
         # 1. Create Album. Only pass album fields to the album serializer;
         # nested song fields are processed separately below.
@@ -8566,7 +8566,7 @@ class ArtistAlbumsManagementView(APIView):
         unavailable_song_ids = [song_id for song_id in existing_song_ids if song_id not in available_song_ids]
         if unavailable_song_ids:
             return Response({
-                'existing_song_ids': [f"Songs are unavailable or do not belong to this artist: {unavailable_song_ids}"]
+                'existing_song_ids': [f"برخی آهنگ‌ها در دسترس نیستند یا متعلق به این هنرمند نیستند: {unavailable_song_ids}"]
             }, status=status.HTTP_400_BAD_REQUEST)
 
         # Map user-friendly field names to serializer write_only fields for album
@@ -8585,16 +8585,16 @@ class ArtistAlbumsManagementView(APIView):
         cover_url = ''
         if album_cover:
             if album_cover.size > 10 * 1024 * 1024:
-                return Response({'cover_image': ['Album cover must be smaller than 10MB.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['حجم کاور آلبوم باید کمتر از ۱۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             if getattr(album_cover, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
-                return Response({'cover_image': ['Album cover must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['فرمت کاور آلبوم باید JPG، PNG یا WEBP باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             safe_title = make_safe_filename(album_data.get('title_en') or album_data.get('title') or 'album')
             safe_artist = make_safe_filename(artist_filename_name(artist))
             cover_filename = f"{safe_artist} - {safe_title}_album_cover"
             try:
                 cover_url, _ = upload_file_to_r2(album_cover, folder='covers', custom_filename=cover_filename)
             except Exception:
-                return Response({'cover_image': ['Album cover upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
+                return Response({'cover_image': ['بارگذاری کاور آلبوم انجام نشد. لطفاً دوباره تلاش کنید.']}, status=status.HTTP_502_BAD_GATEWAY)
 
         save_kwargs = {'artist': artist}
         if cover_url:
@@ -8709,7 +8709,7 @@ class ArtistAlbumsManagementView(APIView):
             song_index += 1
 
         return Response({
-            "message": "Album created successfully",
+            "message": "آلبوم با موفقیت ایجاد شد.",
             "album": album_serializer.data,
             "new_songs": created_songs
         }, status=status.HTTP_201_CREATED)
@@ -8733,11 +8733,11 @@ class ArtistAlbumsManagementView(APIView):
     def update(self, request, pk, partial=False):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
         if _album_is_deleted(album):
-            return Response({'detail': 'Deleted albums are read-only so historical track and payment records remain stable.'}, status=status.HTTP_409_CONFLICT)
+            return Response({'detail': 'آلبوم‌های حذف‌شده فقط قابل مشاهده‌اند تا سوابق ترک‌ها و پرداخت‌ها محفوظ بماند.'}, status=status.HTTP_409_CONFLICT)
 
         album_data = {
             field: request.data.get(field)
@@ -8760,7 +8760,7 @@ class ArtistAlbumsManagementView(APIView):
             unavailable_song_ids = [song_id for song_id in replace_song_ids if song_id not in allowed_song_ids]
             if unavailable_song_ids:
                 return Response({
-                    'existing_song_ids': [f"Songs are unavailable or do not belong to this artist: {unavailable_song_ids}"]
+                    'existing_song_ids': [f"برخی آهنگ‌ها در دسترس نیستند یا متعلق به این هنرمند نیستند: {unavailable_song_ids}"]
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         # Map user-friendly field names to serializer write_only fields for album
@@ -8779,9 +8779,9 @@ class ArtistAlbumsManagementView(APIView):
         cover_url = ''
         if album_cover:
             if album_cover.size > 10 * 1024 * 1024:
-                return Response({'cover_image': ['Album cover must be smaller than 10MB.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['حجم کاور آلبوم باید کمتر از ۱۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             if getattr(album_cover, 'content_type', '') not in {'image/jpeg', 'image/png', 'image/webp'}:
-                return Response({'cover_image': ['Album cover must be JPG, PNG, or WEBP.']}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'cover_image': ['فرمت کاور آلبوم باید JPG، PNG یا WEBP باشد.']}, status=status.HTTP_400_BAD_REQUEST)
             safe_title = make_safe_filename(
                 album_data.get('title_en') or album.title_en or album_data.get('title') or album.title
             )
@@ -8790,7 +8790,7 @@ class ArtistAlbumsManagementView(APIView):
             try:
                 cover_url, _ = upload_file_to_r2(album_cover, folder='covers', custom_filename=cover_filename)
             except Exception:
-                return Response({'cover_image': ['Album cover upload failed. Please try again.']}, status=status.HTTP_502_BAD_GATEWAY)
+                return Response({'cover_image': ['بارگذاری کاور آلبوم انجام نشد. لطفاً دوباره تلاش کنید.']}, status=status.HTTP_502_BAD_GATEWAY)
 
         with transaction.atomic():
             serializer.save(**({'cover_image': cover_url} if cover_url else {}))
@@ -8823,7 +8823,7 @@ class ArtistAlbumsManagementView(APIView):
             context={'request': request},
         ).data
         return Response({
-            "message": "Album updated successfully",
+            "message": "آلبوم با موفقیت به‌روزرسانی شد.",
             "album": response_data
         })
 
@@ -8835,7 +8835,7 @@ class ArtistAlbumsManagementView(APIView):
     def delete(self, request, pk):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         media_urls = []
         soft_count = 0
@@ -8866,7 +8866,7 @@ class ArtistAlbumsManagementView(APIView):
             if album.songs.exists():
                 album.refresh_from_db()
                 payload = {
-                    'message': 'Album disabled; released recordings and accounting history were preserved.',
+                    'message': 'آلبوم غیرفعال شد و فایل‌های منتشرشده و سوابق مالی آن محفوظ ماند.',
                     'deletion': 'soft',
                     'soft_deleted_tracks': soft_count,
                     'hard_deleted_tracks': hard_count,
@@ -8884,7 +8884,7 @@ class ArtistAlbumsManagementView(APIView):
                     media_urls.append(album.cover_image)
                 album.delete()
                 payload = {
-                    'message': 'Album and its disposable recordings were permanently deleted.',
+                    'message': 'آلبوم و فایل‌های قابل حذف آن برای همیشه پاک شدند.',
                     'deletion': 'hard',
                     'soft_deleted_tracks': soft_count,
                     'hard_deleted_tracks': hard_count,
@@ -8924,16 +8924,16 @@ class ArtistAlbumSongsView(APIView):
     def post(self, request, pk):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         album = get_object_or_404(Album, pk=pk, artist=artist)
         if _album_is_deleted(album):
-            return Response({'detail': 'Deleted albums cannot accept new recordings.'}, status=status.HTTP_409_CONFLICT)
+            return Response({'detail': 'امکان افزودن آهنگ جدید به آلبوم حذف‌شده وجود ندارد.'}, status=status.HTTP_409_CONFLICT)
 
         raw = request.data.get('song_ids') or request.data.get('song_id') or request.data.getlist('song_ids')
         song_ids = _normalize_id_list(raw)
         if not song_ids:
-            return Response({'error': 'song_ids is required (list of integers)'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'فهرست شناسه آهنگ‌ها الزامی است و باید شامل عددهای صحیح باشد.'}, status=status.HTTP_400_BAD_REQUEST)
 
         qs = Song.objects.filter(
             Q(album__isnull=True) | Q(album=album),
@@ -8963,12 +8963,12 @@ class ArtistAlbumSongsView(APIView):
     def delete(self, request, pk):
         artist = self.get_artist(request.user)
         if not artist:
-            return Response({"error": "Artist profile not found or user is not an artist"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "پروفایل هنرمند پیدا نشد یا این حساب نقش هنرمند ندارد."}, status=status.HTTP_404_NOT_FOUND)
 
         raw = request.data.get('song_ids') or request.data.get('song_id') or request.data.getlist('song_ids')
         song_ids = _normalize_id_list(raw)
         if not song_ids:
-            return Response({'error': 'song_ids is required (list of integers)'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'فهرست شناسه آهنگ‌ها الزامی است و باید شامل عددهای صحیح باشد.'}, status=status.HTTP_400_BAD_REQUEST)
 
         media_urls = []
         with transaction.atomic():
@@ -9040,11 +9040,11 @@ class NotificationRoleMixin:
         role = normalize_notification_role(request.query_params.get('role'))
         if not role:
             raise serializers.ValidationError({
-                'role': "A valid notification role is required: 'audience' or 'artist'."
+                'role': "نقش معتبر اپلیکیشن الزامی است؛ مخاطب یا هنرمند را مشخص کنید."
             })
         if role not in (request.user.roles or []):
             raise PermissionDenied(
-                f"This account does not have access to {role} notifications."
+                f"این حساب به اعلان‌های نقش {'هنرمند' if role == User.ROLE_ARTIST else 'مخاطب'} دسترسی ندارد."
             )
         return role
 
@@ -9125,7 +9125,7 @@ class NotificationMarkReadView(NotificationRoleMixin, APIView):
                     lambda user_id=user.pk, recipient_role=role, notification_id=notification.pk:
                     publish_notification_read(user_id, recipient_role, notification_id)
                 )
-            return Response({"message": "Notification marked as read"})
+            return Response({"message": "اعلان خوانده شد."})
 
         with transaction.atomic():
             User.objects.select_for_update().only("id").get(pk=user.pk)
@@ -9139,7 +9139,7 @@ class NotificationMarkReadView(NotificationRoleMixin, APIView):
                 publish_all_notifications_read(user_id, recipient_role, through)
             )
         return Response({
-            "message": "All notifications marked as read",
+            "message": "همه اعلان‌ها خوانده شدند.",
             "read_through_id": read_through_id,
         })
 
