@@ -12,7 +12,7 @@ from .models import (
     StreamAccess, PlayCount, UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
     ActivePlayback, DepositRequest, Report, Notification, AudioAd, ArtistSocialAccount, SocialPlatform, DownloadHistory,
-    InitialCheck, UserImageProfile
+    InitialCheck, UserImageProfile, SupportTicket, SongPromotion
 )
 from .models import BannerAd, BannerAdServeCounter
 from .localization import generated_term_en, get_request_language
@@ -67,6 +67,7 @@ from .serializers import (
     DownloadHistorySerializer,
     InitialCheckSerializer,
     UserImageProfileSerializer,
+    SupportTicketSerializer,
 )
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.exceptions import PermissionDenied
@@ -5479,6 +5480,73 @@ def _song_recommendation_candidate_ids(request, pool_limit=240):
     return recommendation_type, ranked_ids
 
 
+
+def _song_promotion_cache_signature():
+    """Cache signature that changes exactly when scheduled promotion phases change."""
+    now = timezone.now()
+    ttl = max(30, int(getattr(settings, 'CACHE_TTL_HOME', 90)))
+    recent_cutoff = now - timedelta(seconds=ttl + 10)
+    rows = SongPromotion.objects.filter(
+        is_active=True, ends_at__gte=recent_cutoff
+    ).order_by('id').values(
+        'id', 'song_id', 'aggression', 'starts_at', 'ends_at', 'updated_at'
+    )
+    signature = []
+    for row in rows:
+        if row['starts_at'] > now:
+            phase = 'upcoming'
+        elif row['ends_at'] > now:
+            phase = 'running'
+        else:
+            phase = 'ended'
+        signature.append((
+            int(row['id']), int(row['song_id']), int(row['aggression']), phase,
+            row['starts_at'].isoformat(), row['ends_at'].isoformat(), row['updated_at'].isoformat(),
+        ))
+    return tuple(signature)
+
+
+def _merge_active_song_promotions(songs, limit):
+    """Blend active admin promotions into the existing recommendation order.
+
+    Aggression maps to a deterministic target position. A value of 100 always
+    pins the promoted song to index zero for the lifetime of the promotion.
+    Overlapping promotions for one song collapse to the strongest active boost.
+    """
+    limit = max(1, int(limit or 1))
+    now = timezone.now()
+    active = list(
+        SongPromotion.objects.filter(
+            is_active=True, starts_at__lte=now, ends_at__gt=now,
+            song__status=Song.STATUS_PUBLISHED,
+        )
+        .select_related('song', 'song__artist', 'song__album')
+        .prefetch_related('song__genres', 'song__moods', 'song__tags', 'song__featured_artists')
+        .order_by('-aggression', '-updated_at', '-id')
+    )
+    if not active:
+        return list(songs)[:limit]
+
+    strongest = {}
+    for promotion in active:
+        strongest.setdefault(promotion.song_id, promotion)
+    promotions = list(strongest.values())
+    promoted_ids = set(strongest)
+    merged = [song for song in songs if song.id not in promoted_ids]
+
+    # Insert weaker boosts first so the strongest/newest boost is applied last and
+    # therefore remains ahead when target positions overlap (100 always stays first).
+    for promotion in reversed(promotions):
+        aggression = max(1, min(100, int(promotion.aggression)))
+        if aggression == 100:
+            target = 0
+        else:
+            target = round(((100 - aggression) / 99) * max(0, limit - 1))
+        target = max(0, min(int(target), len(merged), limit - 1))
+        merged.insert(target, promotion.song)
+
+    return merged[:limit]
+
 def _song_recommendations(request, limit=12, *, remember=True, scope='today-picks'):
     recommendation_type, ranked_ids = _song_recommendation_candidate_ids(
         request, max(120, int(limit) * 12)
@@ -5507,6 +5575,7 @@ def _song_recommendations(request, limit=12, *, remember=True, scope='today-pick
             .order_by('-plays', '-release_date', '-created_at')[:limit - len(songs)]
         )
         songs.extend(fallback)
+    songs = _merge_active_song_promotions(songs, limit)
     hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
 
     return recommendation_type, songs, len(ranked_ids) > len(songs)
@@ -5677,7 +5746,8 @@ class HomeSummaryView(APIView):
             'rec': 'sr_page', 'latest': 'lr_page', 'artists': 'pa_page', 'albums': 'pal_page',
             'playlists': 'pr_page', 'discoveries': 'ds_page',
         }.items()}
-        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, 'v14')
+        promotion_signature = _song_promotion_cache_signature() if not user.is_authenticated else ()
+        cache_key = stable_cache_key('home-summary', get_request_language(request), audience, version, pages, promotion_signature, 'v15')
         cached, claimed = cache_get_or_claim(cache_key) if not user.is_authenticated else (None, False)
         if cached is not None:
             return Response(cached)
@@ -9166,6 +9236,34 @@ class NotificationMarkReadView(NotificationRoleMixin, APIView):
         })
 
 
+@extend_schema(tags=['Artist Support Endpoints اندپوینت های پشتیبانی هنرمند'])
+class ArtistSupportTicketView(APIView):
+    """Artist-only support inbox and ticket submission endpoint."""
+    permission_classes = [IsAuthenticated]
+
+    def _require_artist(self, request):
+        roles = request.user.roles if isinstance(request.user.roles, list) else []
+        if User.ROLE_ARTIST not in roles:
+            raise PermissionDenied('این بخش فقط برای حساب هنرمند در دسترس است.')
+
+    def get(self, request):
+        self._require_artist(request)
+        queryset = SupportTicket.objects.filter(user=request.user).order_by('-created_at', '-id')
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = SupportTicketSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        self._require_artist(request)
+        serializer = SupportTicketSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        ticket = serializer.save(user=request.user)
+        return Response(
+            SupportTicketSerializer(ticket, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
 @extend_schema(
     summary="Get premium plan price",
     description="Returns the current Premium plan price and currency for audience clients (GET only).",
@@ -9224,7 +9322,7 @@ class PremiumPlanActivateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user, expiry = activate_one_month_premium_locked(
+        user, expiry, payment_transaction = activate_one_month_premium_locked(
             request.user.pk, gateway=gateway
         )
         payload = UserSerializer(user, context={'request': request}).data
@@ -9233,6 +9331,7 @@ class PremiumPlanActivateView(APIView):
                 'message': 'Premium activated successfully.',
                 'plan': user.plan,
                 'premium_expires_at': expiry.isoformat(),
+                'transaction_id': payment_transaction.transaction_id,
                 'user': payload,
             },
             status=status.HTTP_200_OK,

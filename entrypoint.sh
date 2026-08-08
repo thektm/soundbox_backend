@@ -92,6 +92,7 @@ PY
 
 
 [ "${ENSURE_SEARCH_INDEXES_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_search_indexes || true
+[ "${ENSURE_ADMIN_PANEL_SCHEMA_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_admin_panel_schema || true
 
 # Backfill guest previews for already-published songs that were uploaded before
 # preview generation became part of the artist upload pipeline.

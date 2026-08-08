@@ -8,13 +8,16 @@ checkout does not require a schema migration or alter unrelated tables.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Optional
+import uuid
 
 from django.db import transaction
 from django.utils import timezone
+from django.conf import settings
 from django.utils.dateparse import parse_datetime
 
-from .models import User
+from .models import User, PaymentTransaction, PlayConfiguration
 
 PREMIUM_EXPIRY_KEY = "premium_expires_at"
 PREMIUM_ACTIVATED_KEY = "premium_activated_at"
@@ -107,10 +110,29 @@ def activate_one_month_premium(user: User, *, gateway: str = "zarinpal") -> date
     return expiry
 
 
-def activate_one_month_premium_locked(user_id: int, *, gateway: str = "zarinpal") -> tuple[User, datetime]:
-    """Serialize repeated checkout completions for the same account."""
+def activate_one_month_premium_locked(
+    user_id: int, *, gateway: str = "zarinpal"
+) -> tuple[User, datetime, PaymentTransaction]:
+    """Record a successful mock checkout and activate Premium atomically.
+
+    The transaction row intentionally mirrors the row a future verified
+    Zarinpal callback should create. Replacing the mock payment step later can
+    therefore preserve the admin finance/reporting contract.
+    """
 
     with transaction.atomic():
         user = User.objects.select_for_update().get(pk=user_id)
+        config = PlayConfiguration.objects.order_by('-updated_at', '-pk').first()
+        fallback_price = Decimal(str(getattr(settings, 'PREMIUM_PLAN_PRICE', 0) or 0))
+        amount = config.premium_plan_price if config is not None else fallback_price
+        payment = PaymentTransaction.objects.create(
+            user=user,
+            transaction_id=f"mock-{gateway}-{uuid.uuid4().hex}",
+            amount=amount,
+            status=PaymentTransaction.STATUS_SUCCESS,
+            payment_method=gateway,
+            description='خرید اشتراک پریمیوم ۳۰ روزه',
+            description_en='30-day Premium subscription purchase',
+        )
         expiry = activate_one_month_premium(user, gateway=gateway)
-    return user, expiry
+    return user, expiry, payment

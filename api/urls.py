@@ -104,6 +104,7 @@ from .views import (
     ReportCreateView,
     NotificationListView,
     NotificationMarkReadView,
+    ArtistSupportTicketView,
 )
 from .admin_views import (
     AdminUserListView,
@@ -138,6 +139,12 @@ from .admin_views import (
     AdminPlaylistDetailView,
     AdminEmployeeListView,
     AdminEmployeeDetailView,
+    AdminDepositRequestDetailView,
+    AdminSystemStatusView,
+    AdminSupportTicketListView,
+    AdminSupportTicketDetailView,
+    AdminSongPromotionListView,
+    AdminSongPromotionDetailView,
 )
 from .release_views import (
     ArtistReleaseListCreateView, ArtistReleaseDetailView, ArtistReleaseTracksView,
@@ -287,6 +294,7 @@ urlpatterns = [
     path('artist/albums/<int:pk>/', ArtistAlbumsManagementView.as_view(), name='artist_albums_detail'),
     path('artist/albums/<int:pk>/songs/', ArtistAlbumSongsView.as_view(), name='artist_album_songs'),
     path('artist/deposit-request/', DepositRequestView.as_view(), name='artist_deposit_request'),
+    path('artist/support/tickets/', ArtistSupportTicketView.as_view(), name='artist_support_tickets'),
     path('artist/deposit-request/<int:pk>/', DepositRequestView.as_view(), name='artist_deposit_request_detail'),
     path('artist/wallet/', ArtistWalletView.as_view(), name='artist_wallet'),
     path('artist/finance/', ArtistFinanceView.as_view(), name='artist_finance'),
@@ -347,6 +355,12 @@ urlpatterns = [
     path('admin/finance/', AdminFinanceSummaryView.as_view(), name='admin_finance_summary'),
     path('admin/finance/transactions/', AdminPaymentTransactionListView.as_view(), name='admin_payment_transaction_list'),
     path('admin/finance/deposits/', AdminDepositRequestListView.as_view(), name='admin_deposit_request_list'),
+    path('admin/finance/deposits/<int:pk>/', AdminDepositRequestDetailView.as_view(), name='admin_deposit_request_detail'),
+    path('admin/system-status/', AdminSystemStatusView.as_view(), name='admin_system_status'),
+    path('admin/support/tickets/', AdminSupportTicketListView.as_view(), name='admin_support_ticket_list'),
+    path('admin/support/tickets/<int:pk>/', AdminSupportTicketDetailView.as_view(), name='admin_support_ticket_detail'),
+    path('admin/promotions/', AdminSongPromotionListView.as_view(), name='admin_song_promotion_list'),
+    path('admin/promotions/<int:pk>/', AdminSongPromotionDetailView.as_view(), name='admin_song_promotion_detail'),
     path('admin/sections/', AdminSearchSectionListView.as_view(), name='admin_search_section_list'),
     path('admin/sections/<int:pk>/', AdminSearchSectionDetailView.as_view(), name='admin_search_section_detail'),
     path('admin/event-playlist/', AdminEventPlaylistListView.as_view(), name='admin_event_playlist_list'),

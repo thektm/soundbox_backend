@@ -4,7 +4,7 @@ from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
     NotificationSetting, Follow, SongLike, AlbumLike, PlaylistLike, Rules, PlayConfiguration,
-    DepositRequest, Report, Notification, AudioAd, UserHistory, DownloadHistory, InitialCheck, UserImageProfile
+    DepositRequest, Report, Notification, AudioAd, UserHistory, DownloadHistory, InitialCheck, UserImageProfile, SupportTicket
 )
 
 from .models import BannerAd
@@ -2378,6 +2378,32 @@ class DepositRequestSerializer(LocalizedModelSerializer):
             'transaction_id', 'submission_date', 'status_change_date', 'summary'
         ]
         read_only_fields = ['id', 'artist_id', 'status', 'submission_date', 'status_change_date', 'summary']
+
+
+class SupportTicketSerializer(LocalizedModelSerializer):
+    """Artist-facing support ticket serializer. Admin-only fields are read-only."""
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            'id', 'subject', 'message', 'status', 'admin_response',
+            'responded_at', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'status', 'admin_response', 'responded_at', 'created_at', 'updated_at',
+        ]
+
+    def validate_subject(self, value):
+        value = str(value or '').strip()
+        if len(value) < 3:
+            raise serializers.ValidationError('موضوع تیکت باید حداقل ۳ نویسه باشد.')
+        return value
+
+    def validate_message(self, value):
+        value = str(value or '').strip()
+        if len(value) < 5:
+            raise serializers.ValidationError('متن تیکت باید حداقل ۵ نویسه باشد.')
+        return value
 
 
 class ReportSerializer(LocalizedModelSerializer):

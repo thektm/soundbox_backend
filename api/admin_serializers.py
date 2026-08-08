@@ -4,7 +4,7 @@ from rest_framework import serializers
 from .models import (
     User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, 
     Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, 
-    DepositRequest, SearchSection, EventPlaylist, Playlist
+    DepositRequest, SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
 from django.contrib.auth import get_user_model
 
@@ -39,11 +39,11 @@ class AdminUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'phone_number', 'first_name', 'last_name', 'email',
-            'roles', 'is_active', 'is_staff', 'is_verified', 'date_joined',
+            'id', 'phone_number', 'unique_id', 'first_name', 'last_name', 'email',
+            'roles', 'is_active', 'is_banned', 'is_staff', 'is_verified', 'date_joined',
             'plan', 'stream_quality', 'last_login_at', 'failed_login_attempts', 'locked_until'
         ]
-        read_only_fields = ['id', 'date_joined', 'last_login_at']
+        read_only_fields = ['id', 'unique_id', 'date_joined', 'last_login_at']
 
 class AdminEmployeeSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
@@ -77,12 +77,13 @@ class AdminArtistSerializer(RequireEnglishTranslationSerializerMixin, serializer
     translation_pairs = (('name', 'name_en'), ('artistic_name', 'artistic_name_en'), ('city', 'city_en'), ('address', 'address_en'), ('bio', 'bio_en'))
     has_user = serializers.SerializerMethodField()
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
 
     class Meta:
         model = Artist
         fields = [
             'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'email', 'city', 'city_en', 'date_of_birth',
-            'address', 'address_en', 'id_number', 'user', 'user_phone', 'bio', 'bio_en', 'profile_image',
+            'address', 'address_en', 'id_number', 'user', 'user_phone', 'user_is_banned', 'bio', 'bio_en', 'profile_image',
             'banner_image', 'verified', 'created_at', 'has_user'
         ]
         read_only_fields = ['id', 'created_at']
@@ -169,6 +170,7 @@ class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.
 
 class AdminReportSerializer(serializers.ModelSerializer):
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
     song_title = serializers.CharField(source='song.title', read_only=True, allow_null=True)
     artist_name = serializers.CharField(source='artist.name', read_only=True, allow_null=True)
     reported_user_phone = serializers.CharField(source='reported_user.phone_number', read_only=True, allow_null=True)
@@ -250,29 +252,38 @@ class AdminAudioAdSerializer(RequireEnglishTranslationSerializerMixin, serialize
 class AdminPaymentTransactionSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('description', 'description_en'),)
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
+    user_plan = serializers.CharField(source='user.plan', read_only=True)
 
     class Meta:
         model = PaymentTransaction
-        fields = ['id', 'user', 'user_phone', 'transaction_id', 'amount', 'status', 'payment_method', 'description', 'description_en', 'created_at']
+        fields = ['id', 'user', 'user_phone', 'user_plan', 'transaction_id', 'amount', 'status', 'payment_method', 'description', 'description_en', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
 class AdminDepositRequestSerializer(serializers.ModelSerializer):
     artist_name = serializers.CharField(source='artist.name', read_only=True)
+    artist_phone = serializers.CharField(source='artist.user.phone_number', read_only=True, allow_null=True)
 
     class Meta:
         model = DepositRequest
-        fields = ['id', 'artist', 'artist_name', 'amount', 'status', 'transaction_id', 'submission_date', 'status_change_date', 'summary']
+        fields = ['id', 'artist', 'artist_name', 'artist_phone', 'amount', 'status', 'transaction_id', 'submission_date', 'status_change_date', 'summary']
         read_only_fields = ['id', 'submission_date', 'status_change_date']
 
 
 class AdminPlaylistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
+    likes_count = serializers.IntegerField(source='liked_by.count', read_only=True)
+    saves_count = serializers.IntegerField(source='saved_by.count', read_only=True)
     
     class Meta:
         model = Playlist
-        fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'cover_image_upload', 'created_by', 'created_at']
+        fields = [
+            'id', 'title', 'title_en', 'description', 'description_en', 'cover_image',
+            'cover_image_upload', 'created_by', 'songs', 'genres', 'moods', 'tags',
+            'likes_count', 'saves_count', 'created_at'
+        ]
         read_only_fields = ['id', 'cover_image', 'created_at']
 
 
@@ -298,3 +309,57 @@ class AdminEventPlaylistSerializer(RequireEnglishTranslationSerializerMixin, ser
         fields = ['id', 'title', 'title_en', 'time_of_day', 'cover_image', 'cover_image_upload', 'playlists', 'created_at', 'updated_at']
         read_only_fields = ['id', 'cover_image', 'created_at', 'updated_at']
 
+
+
+class AdminSupportTicketSerializer(serializers.ModelSerializer):
+    user_phone = serializers.CharField(source='user.phone_number', read_only=True)
+    user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
+    artist_name = serializers.SerializerMethodField()
+    responded_by_phone = serializers.CharField(source='responded_by.phone_number', read_only=True, allow_null=True)
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            'id', 'user', 'user_phone', 'artist_name', 'subject', 'message', 'status',
+            'admin_response', 'responded_by', 'responded_by_phone', 'responded_at',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'user', 'responded_by', 'responded_at', 'created_at', 'updated_at'
+        ]
+
+    def get_artist_name(self, obj):
+        artist = getattr(obj.user, 'artist_profile', None)
+        return (artist.artistic_name or artist.name) if artist else ''
+
+
+class AdminSongPromotionSerializer(serializers.ModelSerializer):
+    song_title = serializers.CharField(source='song.title', read_only=True)
+    artist_name = serializers.CharField(source='song.artist.name', read_only=True)
+    cover_image = serializers.CharField(source='song.cover_image', read_only=True)
+    is_running = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SongPromotion
+        fields = [
+            'id', 'song', 'song_title', 'artist_name', 'cover_image', 'aggression',
+            'starts_at', 'ends_at', 'is_active', 'is_running', 'created_by',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_by', 'created_at', 'updated_at', 'is_running']
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        starts_at = attrs.get('starts_at', getattr(self.instance, 'starts_at', None))
+        ends_at = attrs.get('ends_at', getattr(self.instance, 'ends_at', None))
+        song = attrs.get('song', getattr(self.instance, 'song', None))
+        if starts_at and ends_at and ends_at <= starts_at:
+            raise serializers.ValidationError({'ends_at': 'زمان پایان باید بعد از زمان شروع باشد.'})
+        if song and song.status != Song.STATUS_PUBLISHED:
+            raise serializers.ValidationError({'song': 'فقط آهنگ منتشرشده قابل پروموت است.'})
+        return attrs
+
+    def get_is_running(self, obj):
+        from django.utils import timezone
+        now = timezone.now()
+        return bool(obj.is_active and obj.starts_at <= now < obj.ends_at)

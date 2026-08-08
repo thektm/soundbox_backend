@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 from .models import (
     User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, 
     PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest,
-    SearchSection, EventPlaylist, Playlist
+    SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
 from .models import PlayCount
 from django.utils import timezone
@@ -20,11 +20,13 @@ from .admin_serializers import (
     AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer,
     AdminPaymentTransactionSerializer, AdminDepositRequestSerializer,
     AdminSearchSectionSerializer, AdminEventPlaylistSerializer, AdminPlaylistSerializer,
-    AdminEmployeeSerializer
+    AdminEmployeeSerializer, AdminSupportTicketSerializer, AdminSongPromotionSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url
 import os
+import requests
+from django.conf import settings
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -35,24 +37,33 @@ class AdminPagination(PageNumberPagination):
 class AdminUserListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="لیست کاربران",
-        description="دریافت لیست تمامی کاربران (شنوندگان) با قابلیت صفحه‌بندی. به صورت پیش‌فرض بر اساس تاریخ عضویت مرتب شده‌اند.",
-        responses={200: AdminUserSerializer(many=True)}
-    )
     def get(self, request):
-        # Default: audience only, sorted by join date latest first
-        users = User.objects.filter(roles__contains=User.ROLE_AUDIENCE).order_by('-date_joined')
-        
-        # Optional filtering by role if needed in future
-        role = request.query_params.get('role')
-        if role:
-            users = User.objects.filter(roles__contains=role).order_by('-date_joined')
+        role = str(request.query_params.get('role') or User.ROLE_AUDIENCE).strip()
+        queryset = User.objects.filter(roles__contains=role)
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(phone_number__icontains=query) | Q(unique_id__icontains=query)
+                | Q(first_name__icontains=query) | Q(last_name__icontains=query)
+                | Q(email__icontains=query)
+            )
+        state = str(request.query_params.get('state') or '').strip()
+        if state == 'active':
+            queryset = queryset.filter(is_active=True, is_banned=False)
+        elif state == 'banned':
+            queryset = queryset.filter(is_banned=True)
+        plan = str(request.query_params.get('plan') or '').strip()
+        if plan in {User.PLAN_FREE, User.PLAN_PREMIUM}:
+            queryset = queryset.filter(plan=plan)
+        sort = str(request.query_params.get('sort') or 'time').strip()
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+        field = {'time': 'date_joined', 'name': 'first_name'}.get(sort, 'date_joined')
+        queryset = queryset.order_by(field if direction == 'asc' else f'-{field}', '-id')
 
         paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(users, request)
-        serializer = AdminUserSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(AdminUserSerializer(page, many=True).data)
+
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserDetailView(APIView):
@@ -109,61 +120,52 @@ class AdminUserDetailView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserBanView(APIView):
-    """Ban a user and delete their artist profile and content."""
+    """Soft, reversible account blocking. User content is never deleted here."""
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="مسدود کردن کاربر",
-        description="مسدود کردن کاربر و حذف پروفایل هنرمند و تمامی محتواهای مرتبط (آهنگ‌ها و آلبوم‌ها).",
-        request=inline_serializer(
-            name='AdminUserBanRequest',
-            fields={'user_id': serializers.IntegerField()}
-        ),
-        responses={
-            200: inline_serializer(
-                name='AdminUserBanResponse',
-                fields={'message': serializers.CharField()}
-            )
-        }
-    )
     def post(self, request):
         user_id = request.data.get('user_id')
-        if not user_id:
-            return Response({"error": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
-        
+        banned = request.data.get('banned', True)
+        if user_id in (None, ''):
+            return Response({'detail': 'شناسه کاربر الزامی است.'}, status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(banned, str):
+            banned = banned.strip().lower() in {'1', 'true', 'yes', 'on'}
         user = get_object_or_404(User, pk=user_id)
-        
-        # 1. Mark as banned and inactive
-        user.is_banned = True
-        user.is_active = False
-        user.save()
-        
-        # 2. Delete artist profile if exists
-        if hasattr(user, 'artist_profile'):
-            artist = user.artist_profile
-            # This will cascade delete songs and albums
-            artist.delete()
-            
-        # 3. Delete user's playlists
-        user.user_playlists.all().delete()
-        
-        return Response({"message": f"User {user.phone_number} has been banned and their content deleted."})
+        if user.pk == request.user.pk:
+            return Response({'detail': 'امکان مسدود کردن حساب مدیر فعلی وجود ندارد.'}, status=status.HTTP_400_BAD_REQUEST)
+        if user.is_staff:
+            return Response({'detail': 'حساب مدیر از این بخش قابل مسدودسازی نیست.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.is_banned = bool(banned)
+        user.is_active = not bool(banned)
+        user.save(update_fields=['is_banned', 'is_active'])
+        return Response({
+            'message': 'کاربر با موفقیت مسدود شد.' if banned else 'مسدودی کاربر با موفقیت برداشته شد.',
+            'user': AdminUserSerializer(user).data,
+        })
+
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="لیست هنرمندان",
-        description="دریافت لیست تمامی هنرمندان تایید شده در سیستم.",
-        responses={200: AdminArtistSerializer(many=True)}
-    )
     def get(self, request):
-        artists = Artist.objects.all().order_by('-created_at')
+        queryset = Artist.objects.select_related('user').all()
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(name__icontains=query) | Q(artistic_name__icontains=query)
+                | Q(name_en__icontains=query) | Q(artistic_name_en__icontains=query)
+                | Q(user__phone_number__icontains=query) | Q(email__icontains=query)
+            )
+        verified = request.query_params.get('verified')
+        if verified in {'true', 'false'}:
+            queryset = queryset.filter(verified=verified == 'true')
+        queryset = queryset.order_by('-created_at', '-id')
         paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(artists, request)
-        serializer = AdminArtistSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(AdminArtistSerializer(page, many=True).data)
+
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistDetailView(APIView):
@@ -215,6 +217,26 @@ class AdminArtistDetailView(APIView):
     )
     def delete(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
+        # Artist deletion is intentionally guarded because several legacy relations
+        # cascade from Artist (catalog and financial audit data). Blocking the linked
+        # account is the safe reversible action for established artists.
+        blockers = []
+        if artist.songs.exists():
+            blockers.append('آهنگ')
+        if artist.albums.exists():
+            blockers.append('آلبوم')
+        if artist.deposit_requests.exists():
+            blockers.append('سوابق تسویه')
+        if artist.release_workspaces.exists():
+            blockers.append('انتشار')
+        if blockers:
+            return Response(
+                {
+                    'detail': 'حذف دائمی این هنرمند به دلیل وجود اطلاعات وابسته مجاز نیست. برای توقف دسترسی، حساب مرتبط را مسدود کنید.',
+                    'dependencies': blockers,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         artist.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -293,110 +315,146 @@ class AdminPendingArtistDetailView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminHomeSummaryView(APIView):
-    """Return overall stream + pay summary for the admin home/dashboard."""
+    """Structured product dashboard: audience, artists, streams and money."""
     permission_classes = [permissions.IsAdminUser]
 
-    def _sum_pay(self, qs):
-        val = qs.aggregate(total=Sum('pay'))['total']
-        if val is None:
-            return 0.0
-        if isinstance(val, Decimal):
-            return float(val)
-        return float(val)
+    @staticmethod
+    def _decimal_total(queryset, field='amount'):
+        value = queryset.aggregate(total=Sum(field))['total'] or Decimal('0')
+        return float(value)
 
-    @extend_schema(
-        summary="خلاصه وضعیت داشبورد ادمین",
-        description="دریافت آمار کلی پخش‌ها، پرداخت‌ها، تعداد کاربران و هنرمندان برای داشبورد مدیریت.",
-        responses={
-            200: inline_serializer(
-                name='AdminDashboardResponse',
-                fields={
-                    'total': serializers.IntegerField(),
-                    'last_30_days': serializers.IntegerField(),
-                    'last_7_days': serializers.IntegerField(),
-                    'last_24_hours': serializers.IntegerField(),
-                    'total_pay': serializers.FloatField(),
-                    'pay_last_30_days': serializers.FloatField(),
-                    'pay_last_7_days': serializers.FloatField(),
-                    'pay_last_24_hours': serializers.FloatField(),
-                    'audience_count': serializers.IntegerField(),
-                    'artist_profiles_count': serializers.IntegerField(),
-                }
-            )
-        }
-    )
     def get(self, request):
         now = timezone.now()
         last_24 = now - timedelta(days=1)
         last_7 = now - timedelta(days=7)
         last_30 = now - timedelta(days=30)
 
-        total = PlayCount.objects.count()
-        last_30_count = PlayCount.objects.filter(created_at__gte=last_30).count()
-        last_7_count = PlayCount.objects.filter(created_at__gte=last_7).count()
-        last_24_count = PlayCount.objects.filter(created_at__gte=last_24).count()
+        streams = PlayCount.objects.all()
+        artist_earned_total = self._decimal_total(streams, 'pay')
+        successful_payments = PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_SUCCESS)
+        revenue_total = self._decimal_total(successful_payments)
+        paid_payouts = DepositRequest.objects.filter(status=DepositRequest.STATUS_DONE)
+        pending_payouts = DepositRequest.objects.filter(status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED])
+        paid_payout_total = self._decimal_total(paid_payouts)
+        pending_payout_total = self._decimal_total(pending_payouts)
 
-        total_pay = self._sum_pay(PlayCount.objects.all())
-        pay_last_30 = self._sum_pay(PlayCount.objects.filter(created_at__gte=last_30))
-        pay_last_7 = self._sum_pay(PlayCount.objects.filter(created_at__gte=last_7))
-        pay_last_24 = self._sum_pay(PlayCount.objects.filter(created_at__gte=last_24))
-
-        # Audience users: users who have the audience role
-        try:
-            audience_count = User.objects.filter(roles__contains=User.ROLE_AUDIENCE).count()
-        except Exception:
-            # Fallback for databases/ORM that don't support JSON contains lookups
-            audience_count = User.objects.filter(roles__icontains=User.ROLE_AUDIENCE).count()
-
-        # Artist profiles count
-        artist_profiles_count = Artist.objects.count()
+        audience = User.objects.filter(roles__contains=User.ROLE_AUDIENCE)
+        premium = audience.filter(plan=User.PLAN_PREMIUM, is_banned=False)
+        artists = Artist.objects.all()
+        top_artists = list(
+            artists.annotate(
+                total_streams=Count('songs__play_counts'),
+                earned=Sum('songs__play_counts__pay'),
+            ).order_by('-total_streams', '-created_at')[:6]
+        )
+        top_artist_payload = [{
+            'id': artist.id,
+            'name': artist.artistic_name or artist.name,
+            'profile_image': artist.profile_image,
+            'verified': artist.verified,
+            'streams': int(getattr(artist, 'total_streams', 0) or 0),
+            'earned': float(getattr(artist, 'earned', 0) or 0),
+        } for artist in top_artists]
 
         return Response({
-            'total': total,
-            'last_30_days': last_30_count,
-            'last_7_days': last_7_count,
-            'last_24_hours': last_24_count,
-            'total_pay': total_pay,
-            'pay_last_30_days': pay_last_30,
-            'pay_last_7_days': pay_last_7,
-            'pay_last_24_hours': pay_last_24,
-            'audience_count': audience_count,
-            'artist_profiles_count': artist_profiles_count,
+            'total': streams.count(),
+            'last_30_days': streams.filter(created_at__gte=last_30).count(),
+            'last_7_days': streams.filter(created_at__gte=last_7).count(),
+            'last_24_hours': streams.filter(created_at__gte=last_24).count(),
+            'total_pay': artist_earned_total,
+            'pay_last_30_days': self._decimal_total(streams.filter(created_at__gte=last_30), 'pay'),
+            'pay_last_7_days': self._decimal_total(streams.filter(created_at__gte=last_7), 'pay'),
+            'pay_last_24_hours': self._decimal_total(streams.filter(created_at__gte=last_24), 'pay'),
+            'audience_count': audience.count(),
+            'artist_profiles_count': artists.count(),
+            'users': {
+                'total': audience.count(),
+                'active': audience.filter(is_active=True, is_banned=False).count(),
+                'banned': audience.filter(is_banned=True).count(),
+                'premium': premium.count(),
+                'free': audience.filter(plan=User.PLAN_FREE).count(),
+                'new_30_days': audience.filter(date_joined__gte=last_30).count(),
+            },
+            'artists': {
+                'total': artists.count(),
+                'verified': artists.filter(verified=True).count(),
+                'pending_verification': ArtistAuth.objects.exclude(
+                    status__in=[ArtistAuth.STATUS_ACCEPTED, ArtistAuth.STATUS_REJECTED]
+                ).count(),
+                'successful': artists.filter(verified=True, songs__status=Song.STATUS_PUBLISHED).distinct().count(),
+                'top': top_artist_payload,
+            },
+            'streams': {
+                'total': streams.count(),
+                'last_24_hours': streams.filter(created_at__gte=last_24).count(),
+                'last_7_days': streams.filter(created_at__gte=last_7).count(),
+                'last_30_days': streams.filter(created_at__gte=last_30).count(),
+                'artist_earned_total': artist_earned_total,
+            },
+            'money': {
+                'platform_revenue': revenue_total,
+                'revenue_30_days': self._decimal_total(successful_payments.filter(created_at__gte=last_30)),
+                'successful_payments_count': successful_payments.count(),
+                'pending_payments_count': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_PENDING).count(),
+                'failed_payments_count': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_FAILED).count(),
+                'artist_earned_total': artist_earned_total,
+                'artist_paid_total': paid_payout_total,
+                'artist_pending_payout_total': pending_payout_total,
+                'artist_pending_payout_count': pending_payouts.count(),
+                'gross_after_paid_payouts': revenue_total - paid_payout_total,
+            },
+            'recent_transactions': AdminPaymentTransactionSerializer(
+                PaymentTransaction.objects.select_related('user').all()[:5], many=True
+            ).data,
+            'recent_payouts': AdminDepositRequestSerializer(
+                DepositRequest.objects.select_related('artist', 'artist__user').all()[:5], many=True
+            ).data,
         })
+
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserSearchView(APIView):
-    """Search/list users, artists or pending artist submissions for admin."""
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="جستجوی کاربران و هنرمندان",
-        description="جستجو و لیست کردن کاربران، هنرمندان یا درخواست‌های در انتظار تایید بر اساس پارامتر type.",
-        parameters=[
-            OpenApiParameter("type", OpenApiTypes.STR, description="نوع جستجو: audience, artist, pend_artist", default="audience")
-        ],
-        responses={200: AdminUserSerializer(many=True)}
-    )
     def get(self, request):
-        typ = request.query_params.get('type', 'audience')
+        typ = str(request.query_params.get('type') or 'audience').strip()
+        query = str(request.query_params.get('q') or '').strip()
         paginator = AdminPagination()
-
         if typ == 'audience':
-            qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE).order_by('-date_joined')
+            qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE)
+            if query:
+                qs = qs.filter(
+                    Q(phone_number__icontains=query) | Q(unique_id__icontains=query)
+                    | Q(first_name__icontains=query) | Q(last_name__icontains=query)
+                    | Q(email__icontains=query)
+                )
+            qs = qs.order_by('-date_joined')
             serializer_cls = AdminUserSerializer
         elif typ == 'artist':
-            qs = Artist.objects.all().order_by('-created_at')
+            qs = Artist.objects.select_related('user').all()
+            if query:
+                qs = qs.filter(
+                    Q(name__icontains=query) | Q(artistic_name__icontains=query)
+                    | Q(user__phone_number__icontains=query) | Q(email__icontains=query)
+                )
+            qs = qs.order_by('-created_at')
             serializer_cls = AdminArtistSerializer
         elif typ == 'pend_artist':
-            qs = ArtistAuth.objects.exclude(status__in=[ArtistAuth.STATUS_ACCEPTED, ArtistAuth.STATUS_REJECTED]).order_by('-created_at')
+            qs = ArtistAuth.objects.exclude(status__in=[ArtistAuth.STATUS_ACCEPTED, ArtistAuth.STATUS_REJECTED])
+            if query:
+                qs = qs.filter(
+                    Q(stage_name__icontains=query) | Q(first_name__icontains=query)
+                    | Q(last_name__icontains=query) | Q(phone_number__icontains=query)
+                    | Q(national_id__icontains=query)
+                )
+            qs = qs.order_by('-created_at')
             serializer_cls = AdminArtistAuthSerializer
         else:
-            return Response({'error': 'Invalid type parameter. Use audience|artist|pend_artist'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'نوع جستجو معتبر نیست.'}, status=status.HTTP_400_BAD_REQUEST)
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response(serializer_cls(page, many=True).data)
 
-        result_page = paginator.paginate_queryset(qs, request)
-        serializer = serializer_cls(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -414,13 +472,24 @@ class AdminSongListView(APIView):
         responses={200: AdminSongSerializer(many=True)}
     )
     def get(self, request):
-        status_filter = request.query_params.get('status', Song.STATUS_PUBLISHED)
-        songs = Song.objects.filter(status=status_filter).order_by('-created_at')
-        
+        status_filter = str(request.query_params.get('status') or Song.STATUS_PUBLISHED).strip()
+        songs = Song.objects.select_related('artist', 'album').prefetch_related('featured_artists').all()
+        if status_filter != 'all':
+            songs = songs.filter(status=status_filter)
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            songs = songs.filter(
+                Q(title__icontains=query) | Q(title_en__icontains=query)
+                | Q(artist__name__icontains=query) | Q(artist__artistic_name__icontains=query)
+            )
+        sort = str(request.query_params.get('sort') or 'time').strip()
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+        field = {'time': 'created_at', 'plays': 'plays', 'release': 'release_date'}.get(sort, 'created_at')
+        songs = songs.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(songs, request)
-        serializer = AdminSongSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        page = paginator.paginate_queryset(songs, request)
+        return paginator.get_paginated_response(AdminSongSerializer(page, many=True).data)
+
 
     @extend_schema(
         summary="آپلود آهنگ جدید توسط ادمین",
@@ -1021,17 +1090,22 @@ class AdminAlbumListView(APIView):
         responses={200: AdminAlbumSerializer(many=True)}
     )
     def get(self, request):
-        # Filter out albums that are effectively singles
-        # We'll filter albums that have more than 1 song OR have 1 song that is NOT a single.
         qs = Album.objects.annotate(song_count=Count('songs')).filter(song_count__gt=0)
-        
-        # Exclude albums where song_count == 1 AND the song is_single=True
         qs = qs.exclude(song_count=1, songs__is_single=True)
-        
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            qs = qs.filter(
+                Q(title__icontains=query) | Q(title_en__icontains=query)
+                | Q(artist__name__icontains=query) | Q(artist__artistic_name__icontains=query)
+            )
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+        sort = str(request.query_params.get('sort') or 'time').strip()
+        field = {'time': 'created_at', 'release': 'release_date', 'songs': 'song_count'}.get(sort, 'created_at')
+        qs = qs.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(qs, request)
-        serializer = AdminAlbumSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response(AdminAlbumSerializer(page, many=True).data)
+
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -1134,154 +1208,130 @@ class AdminAlbumSongActionView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminFinanceSummaryView(APIView):
-    """Summary of payments and deposit requests."""
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="خلاصه وضعیت مالی",
-        description="دریافت آمار پرداخت‌ها و درخواست‌های تسویه حساب در بازه‌های زمانی مختلف.",
-        parameters=[
-            OpenApiParameter("start", OpenApiTypes.STR, description="تاریخ شروع (YYYY-MM-DD)"),
-            OpenApiParameter("end", OpenApiTypes.STR, description="تاریخ پایان (YYYY-MM-DD)")
-        ],
-        responses={
-            200: inline_serializer(
-                name='AdminFinanceSummaryResponse',
-                fields={
-                    'today': inline_serializer(
-                        name='FinanceStats',
-                        fields={
-                            'total_payments': serializers.FloatField(),
-                            'total_deposits': serializers.FloatField(),
-                            'count_payments': serializers.IntegerField(),
-                            'count_deposits': serializers.IntegerField(),
-                        }
-                    ),
-                    'last_7_days': serializers.DictField(),
-                    'last_30_days': serializers.DictField(),
-                    'all_time': serializers.DictField(),
-                    'custom_period': serializers.DictField(required=False),
-                    'custom_period_error': serializers.CharField(required=False),
-                }
-            )
-        }
-    )
+    @staticmethod
+    def _total(qs, field='amount'):
+        return float(qs.aggregate(total=Sum(field))['total'] or 0)
+
     def get(self, request):
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        last_7_days = now - timedelta(days=7)
-        last_30_days = now - timedelta(days=30)
+        last_7 = now - timedelta(days=7)
+        last_30 = now - timedelta(days=30)
 
-        # Custom period
-        start_param = request.query_params.get('start')
-        end_param = request.query_params.get('end')
-        
-        def get_stats(start_date, end_date=None):
-            q_pay = Q(created_at__gte=start_date, status=PaymentTransaction.STATUS_SUCCESS)
-            q_dep = Q(submission_date__gte=start_date, status__in=[DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE])
-            
+        def period(start_date, end_date=None):
+            payments = PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_SUCCESS, created_at__gte=start_date)
+            payouts_done = DepositRequest.objects.filter(status=DepositRequest.STATUS_DONE, submission_date__gte=start_date)
+            payouts_open = DepositRequest.objects.filter(
+                status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED], submission_date__gte=start_date
+            )
             if end_date:
-                q_pay &= Q(created_at__lte=end_date)
-                q_dep &= Q(submission_date__lte=end_date)
-            
-            total_payments = PaymentTransaction.objects.filter(q_pay).aggregate(total=Sum('amount'))['total'] or 0
-            total_deposits = DepositRequest.objects.filter(q_dep).aggregate(total=Sum('amount'))['total'] or 0
-            
+                payments = payments.filter(created_at__lte=end_date)
+                payouts_done = payouts_done.filter(submission_date__lte=end_date)
+                payouts_open = payouts_open.filter(submission_date__lte=end_date)
             return {
-                'total_payments': total_payments,
-                'total_deposits': total_deposits,
-                'count_payments': PaymentTransaction.objects.filter(q_pay).count(),
-                'count_deposits': DepositRequest.objects.filter(q_dep).count(),
+                'revenue': self._total(payments),
+                'successful_payment_count': payments.count(),
+                'paid_to_artists': self._total(payouts_done),
+                'paid_to_artists_count': payouts_done.count(),
+                'pending_artist_payouts': self._total(payouts_open),
+                'pending_artist_payout_count': payouts_open.count(),
+                'total_payments': self._total(payments),
+                'total_deposits': self._total(payouts_done),
+                'count_payments': payments.count(),
+                'count_deposits': payouts_done.count(),
             }
 
-        summary = {
-            'today': get_stats(today_start),
-            'last_7_days': get_stats(last_7_days),
-            'last_30_days': get_stats(last_30_days),
-            'all_time': get_stats(timezone.make_aware(timezone.datetime(2000, 1, 1))),
+        all_start = timezone.make_aware(timezone.datetime(2000, 1, 1))
+        result = {
+            'today': period(today_start),
+            'last_7_days': period(last_7),
+            'last_30_days': period(last_30),
+            'all_time': period(all_start),
+            'payment_status': {
+                'pending': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_PENDING).count(),
+                'success': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_SUCCESS).count(),
+                'failed': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_FAILED).count(),
+            },
+            'payout_status': {
+                value: DepositRequest.objects.filter(status=value).count()
+                for value in [DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_REJECTED, DepositRequest.STATUS_DONE]
+            },
         }
-
+        start_param = request.query_params.get('start')
+        end_param = request.query_params.get('end')
         if start_param and end_param:
             try:
-                # Handle both YYYY-MM-DD and ISO format
-                if len(start_param) == 10:
-                    start_dt = timezone.make_aware(timezone.datetime.strptime(start_param, '%Y-%m-%d'))
-                else:
-                    start_dt = timezone.make_aware(timezone.datetime.fromisoformat(start_param))
-                
+                start_dt = timezone.datetime.fromisoformat(start_param)
+                end_dt = timezone.datetime.fromisoformat(end_param)
+                if timezone.is_naive(start_dt):
+                    start_dt = timezone.make_aware(start_dt)
+                if timezone.is_naive(end_dt):
+                    end_dt = timezone.make_aware(end_dt)
                 if len(end_param) == 10:
-                    end_dt = timezone.make_aware(timezone.datetime.strptime(end_param, '%Y-%m-%d'))
                     end_dt = end_dt.replace(hour=23, minute=59, second=59)
-                else:
-                    end_dt = timezone.make_aware(timezone.datetime.fromisoformat(end_param))
-                    
-                summary['custom_period'] = get_stats(start_dt, end_dt)
-            except (ValueError, TypeError):
-                summary['custom_period_error'] = "Invalid date format. Use YYYY-MM-DD or ISO format."
+                result['custom_period'] = period(start_dt, end_dt)
+            except (TypeError, ValueError):
+                result['custom_period_error'] = 'فرمت تاریخ معتبر نیست.'
+        return Response(result)
 
-        return Response(summary)
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPaymentTransactionListView(APIView):
-    """List payment transactions with filtering."""
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="لیست تراکنش‌های پرداخت",
-        description="دریافت لیست تمامی تراکنش‌های پرداخت با قابلیت فیلتر بر اساس وضعیت.",
-        parameters=[
-            OpenApiParameter("status", OpenApiTypes.STR, description="وضعیت تراکنش")
-        ],
-        responses={200: AdminPaymentTransactionSerializer(many=True)}
-    )
     def get(self, request):
-        queryset = PaymentTransaction.objects.all().order_by('-created_at')
-        
-        status_filter = request.query_params.get('status')
+        queryset = PaymentTransaction.objects.select_related('user').all()
+        status_filter = str(request.query_params.get('status') or '').strip()
         if status_filter:
             queryset = queryset.filter(status=status_filter)
-            
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(transaction_id__icontains=query) | Q(user__phone_number__icontains=query)
+                | Q(description__icontains=query)
+            )
+        sort = str(request.query_params.get('sort') or 'time').strip()
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+        field = 'amount' if sort == 'amount' else 'created_at'
+        queryset = queryset.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(queryset, request)
-        serializer = AdminPaymentTransactionSerializer(result_page, many=True)
-        
-        response = paginator.get_paginated_response(serializer.data)
-        # Add extra info to the response data
-        response.data['total_amount'] = queryset.aggregate(total=Sum('amount'))['total'] or 0
+        page = paginator.paginate_queryset(queryset, request)
+        response = paginator.get_paginated_response(AdminPaymentTransactionSerializer(page, many=True).data)
+        response.data['total_amount'] = float(queryset.aggregate(total=Sum('amount'))['total'] or 0)
         response.data['total_count'] = queryset.count()
         return response
+
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminDepositRequestListView(APIView):
-    """List deposit requests with filtering."""
     permission_classes = [permissions.IsAdminUser]
 
-    @extend_schema(
-        summary="لیست درخواست‌های تسویه",
-        description="دریافت لیست تمامی درخواست‌های تسویه حساب هنرمندان با قابلیت فیلتر بر اساس وضعیت.",
-        parameters=[
-            OpenApiParameter("status", OpenApiTypes.STR, description="وضعیت درخواست")
-        ],
-        responses={200: AdminDepositRequestSerializer(many=True)}
-    )
     def get(self, request):
-        queryset = DepositRequest.objects.all().order_by('-submission_date')
-        
-        status_filter = request.query_params.get('status')
+        queryset = DepositRequest.objects.select_related('artist', 'artist__user').all()
+        status_filter = str(request.query_params.get('status') or '').strip()
         if status_filter:
             queryset = queryset.filter(status=status_filter)
-            
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(transaction_id__icontains=query) | Q(artist__name__icontains=query)
+                | Q(artist__artistic_name__icontains=query) | Q(artist__user__phone_number__icontains=query)
+            )
+        sort = str(request.query_params.get('sort') or 'time').strip()
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+        field = 'amount' if sort == 'amount' else 'submission_date'
+        queryset = queryset.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(queryset, request)
-        serializer = AdminDepositRequestSerializer(result_page, many=True)
-        
-        response = paginator.get_paginated_response(serializer.data)
-        # Add extra info to the response data
-        response.data['total_amount'] = queryset.aggregate(total=Sum('amount'))['total'] or 0
+        page = paginator.paginate_queryset(queryset, request)
+        response = paginator.get_paginated_response(AdminDepositRequestSerializer(page, many=True).data)
+        response.data['total_amount'] = float(queryset.aggregate(total=Sum('amount'))['total'] or 0)
         response.data['total_count'] = queryset.count()
         return response
+
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -1648,3 +1698,171 @@ class AdminEmployeeDetailView(APIView):
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminDepositRequestDetailView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def patch(self, request, pk):
+        deposit = get_object_or_404(DepositRequest.objects.select_related('artist'), pk=pk)
+        new_status = str(request.data.get('status') or deposit.status).strip()
+        valid_statuses = {value for value, _ in DepositRequest.STATUS_CHOICES}
+        if new_status not in valid_statuses:
+            return Response({'detail': 'وضعیت تسویه معتبر نیست.'}, status=status.HTTP_400_BAD_REQUEST)
+        transaction_id = request.data.get('transaction_id', deposit.transaction_id)
+        allowed_transitions = {
+            DepositRequest.STATUS_PENDING: {DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_REJECTED},
+            DepositRequest.STATUS_APPROVED: {DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_DONE, DepositRequest.STATUS_REJECTED},
+            DepositRequest.STATUS_REJECTED: {DepositRequest.STATUS_REJECTED, DepositRequest.STATUS_PENDING},
+            DepositRequest.STATUS_DONE: {DepositRequest.STATUS_DONE},
+        }
+        if new_status not in allowed_transitions.get(deposit.status, {deposit.status}):
+            return Response(
+                {'detail': 'تغییر وضعیت تسویه از وضعیت فعلی به وضعیت انتخاب‌شده مجاز نیست.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if new_status == DepositRequest.STATUS_DONE and not str(transaction_id or '').strip():
+            return Response({'detail': 'برای ثبت تسویه انجام‌شده، شماره تراکنش الزامی است.'}, status=status.HTTP_400_BAD_REQUEST)
+        changed = []
+        if new_status != deposit.status:
+            deposit.status = new_status
+            deposit.status_change_date = timezone.now()
+            changed.extend(['status', 'status_change_date'])
+        if transaction_id != deposit.transaction_id:
+            deposit.transaction_id = str(transaction_id or '').strip() or None
+            changed.append('transaction_id')
+        if changed:
+            deposit.save(update_fields=changed)
+        return Response(AdminDepositRequestSerializer(deposit).data)
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminSystemStatusView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        probe_url = (
+            Song.objects.exclude(cover_image='').values_list('cover_image', flat=True).first()
+            or Song.objects.exclude(audio_file='').values_list('audio_file', flat=True).first()
+            or BannerAd.objects.exclude(image='').values_list('image', flat=True).first()
+            or Artist.objects.exclude(profile_image='').values_list('profile_image', flat=True).first()
+        )
+        r2_ok = False
+        latency_ms = None
+        detail = 'لینک قابل بررسی در فضای ذخیره‌سازی پیدا نشد.'
+        if probe_url:
+            import time
+            start = time.perf_counter()
+            try:
+                check_url = generate_signed_r2_url(probe_url, expiration=60) or probe_url
+                response = requests.head(check_url, timeout=(1.5, 3), allow_redirects=True)
+                if response.status_code == 405:
+                    response = requests.get(check_url, timeout=(1.5, 3), stream=True, allow_redirects=True)
+                r2_ok = 200 <= response.status_code < 400
+                detail = 'فضای ذخیره‌سازی در دسترس است.' if r2_ok else 'پاسخ معتبر از فضای ذخیره‌سازی دریافت نشد.'
+            except requests.RequestException:
+                detail = 'ارتباط با فضای ذخیره‌سازی برقرار نشد.'
+            latency_ms = round((time.perf_counter() - start) * 1000)
+        return Response({
+            'api': {'ok': True, 'label': 'سرور API', 'detail': 'API در دسترس است.'},
+            'r2': {'ok': r2_ok, 'label': 'فضای R2', 'detail': detail, 'latency_ms': latency_ms},
+            'checked_at': timezone.now().isoformat(),
+        })
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminSupportTicketListView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        queryset = SupportTicket.objects.select_related('user', 'responded_by', 'user__artist_profile').all()
+        status_filter = str(request.query_params.get('status') or '').strip()
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(subject__icontains=query) | Q(message__icontains=query)
+                | Q(user__phone_number__icontains=query) | Q(user__artist_profile__name__icontains=query)
+                | Q(user__artist_profile__artistic_name__icontains=query)
+            )
+        queryset = queryset.order_by('-created_at', '-id')
+        paginator = AdminPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(AdminSupportTicketSerializer(page, many=True).data)
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminSupportTicketDetailView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, pk):
+        ticket = get_object_or_404(SupportTicket.objects.select_related('user', 'responded_by'), pk=pk)
+        return Response(AdminSupportTicketSerializer(ticket).data)
+
+    def patch(self, request, pk):
+        ticket = get_object_or_404(SupportTicket, pk=pk)
+        serializer = AdminSupportTicketSerializer(ticket, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        response_changed = 'admin_response' in serializer.validated_data
+        ticket = serializer.save()
+        if response_changed and ticket.admin_response.strip():
+            ticket.responded_by = request.user
+            ticket.responded_at = timezone.now()
+            if 'status' not in serializer.validated_data and ticket.status != SupportTicket.STATUS_CLOSED:
+                ticket.status = SupportTicket.STATUS_ANSWERED
+            ticket.save(update_fields=['responded_by', 'responded_at', 'status', 'updated_at'])
+        return Response(AdminSupportTicketSerializer(ticket).data)
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminSongPromotionListView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        now = timezone.now()
+        queryset = SongPromotion.objects.select_related('song', 'song__artist', 'created_by').all()
+        state = str(request.query_params.get('state') or '').strip()
+        if state == 'running':
+            queryset = queryset.filter(is_active=True, starts_at__lte=now, ends_at__gt=now)
+        elif state == 'upcoming':
+            queryset = queryset.filter(is_active=True, starts_at__gt=now)
+        elif state == 'ended':
+            queryset = queryset.filter(ends_at__lte=now)
+        elif state == 'disabled':
+            queryset = queryset.filter(is_active=False)
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(song__title__icontains=query) | Q(song__artist__name__icontains=query)
+                | Q(song__artist__artistic_name__icontains=query)
+            )
+        paginator = AdminPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(AdminSongPromotionSerializer(page, many=True).data)
+
+    def post(self, request):
+        serializer = AdminSongPromotionSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        promotion = serializer.save(created_by=request.user)
+        return Response(AdminSongPromotionSerializer(promotion).data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminSongPromotionDetailView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def patch(self, request, pk):
+        promotion = get_object_or_404(SongPromotion, pk=pk)
+        serializer = AdminSongPromotionSerializer(promotion, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(AdminSongPromotionSerializer(serializer.save()).data)
+
+    def delete(self, request, pk):
+        promotion = get_object_or_404(SongPromotion, pk=pk)
+        promotion.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

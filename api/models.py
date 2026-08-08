@@ -1196,6 +1196,70 @@ class PaymentTransaction(models.Model):
         return f"Transaction {self.transaction_id} - {self.user.phone_number} ({self.amount})"
 
 
+class SupportTicket(models.Model):
+    """Artist-to-admin support ticket. Audience users continue to use reports."""
+
+    STATUS_OPEN = 'open'
+    STATUS_IN_PROGRESS = 'in_progress'
+    STATUS_ANSWERED = 'answered'
+    STATUS_CLOSED = 'closed'
+    STATUS_CHOICES = [
+        (STATUS_OPEN, 'Open'),
+        (STATUS_IN_PROGRESS, 'In progress'),
+        (STATUS_ANSWERED, 'Answered'),
+        (STATUS_CLOSED, 'Closed'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='support_tickets')
+    subject = models.CharField(max_length=240)
+    message = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    admin_response = models.TextField(blank=True, default='')
+    responded_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='support_ticket_responses'
+    )
+    responded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f"SupportTicket({self.user_id}, {self.subject}, {self.status})"
+
+
+class SongPromotion(models.Model):
+    """Time-bounded admin boost for the existing home song recommendation list."""
+
+    song = models.ForeignKey('Song', on_delete=models.CASCADE, related_name='admin_promotions')
+    aggression = models.PositiveSmallIntegerField(
+        default=50,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text='1-100. 100 pins the song to the first recommendation position while active.',
+    )
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='created_song_promotions'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-starts_at', '-id']
+        indexes = [
+            models.Index(fields=['is_active', 'starts_at', 'ends_at']),
+            models.Index(fields=['song', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"SongPromotion({self.song_id}, {self.aggression}, {self.starts_at} -> {self.ends_at})"
+
+
 class BannerAd(models.Model):
     """Banner advertisements for the app."""
     title = models.CharField(max_length=255)
