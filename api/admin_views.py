@@ -12,7 +12,7 @@ from .models import (
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Sum, Count, Q
+from django.db.models import Sum, Count, Q, Case, When, Value, IntegerField, F
 from decimal import Decimal
 from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
@@ -23,10 +23,8 @@ from .admin_serializers import (
     AdminEmployeeSerializer, AdminSupportTicketSerializer, AdminSongPromotionSerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
-from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url
+from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage
 import os
-import requests
-from django.conf import settings
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -39,7 +37,7 @@ class AdminUserListView(APIView):
 
     def get(self, request):
         role = str(request.query_params.get('role') or User.ROLE_AUDIENCE).strip()
-        queryset = User.objects.filter(roles__contains=role)
+        queryset = User.objects.filter(roles__contains=role).select_related('artist_profile')
         query = str(request.query_params.get('q') or '').strip()
         if query:
             queryset = queryset.filter(
@@ -75,7 +73,7 @@ class AdminUserDetailView(APIView):
         responses={200: AdminUserSerializer}
     )
     def get(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
+        user = get_object_or_404(User.objects.select_related('artist_profile'), pk=pk)
         serializer = AdminUserSerializer(user)
         return Response(serializer.data)
 
@@ -350,7 +348,7 @@ class AdminHomeSummaryView(APIView):
         top_artist_payload = [{
             'id': artist.id,
             'name': artist.artistic_name or artist.name,
-            'profile_image': artist.profile_image,
+            'profile_image': generate_signed_r2_url(artist.profile_image) or artist.profile_image,
             'verified': artist.verified,
             'streams': int(getattr(artist, 'total_streams', 0) or 0),
             'earned': float(getattr(artist, 'earned', 0) or 0),
@@ -473,7 +471,30 @@ class AdminSongListView(APIView):
     )
     def get(self, request):
         status_filter = str(request.query_params.get('status') or Song.STATUS_PUBLISHED).strip()
-        songs = Song.objects.select_related('artist', 'album').prefetch_related('featured_artists').all()
+        audio_fields = AdminSongSerializer.AUDIO_CLASSIFICATION_FIELDS
+        audio_score = Value(0, output_field=IntegerField())
+        for field_name in audio_fields:
+            audio_score = audio_score + Case(
+                When(**{f'{field_name}__isnull': False}, then=Value(1)),
+                default=Value(0), output_field=IntegerField(),
+            )
+        songs = (
+            Song.objects.select_related('artist', 'album')
+            .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
+            .annotate(
+                likes_count=Count('liked_by', distinct=True),
+                genre_count=Count('genres', distinct=True),
+                mood_count=Count('moods', distinct=True),
+                audio_meta_count=audio_score,
+            )
+            .annotate(
+                metadata_sort_score=(
+                    Case(When(genre_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
+                    + Case(When(mood_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
+                    + F('audio_meta_count')
+                )
+            )
+        )
         if status_filter != 'all':
             songs = songs.filter(status=status_filter)
         query = str(request.query_params.get('q') or '').strip()
@@ -484,7 +505,7 @@ class AdminSongListView(APIView):
             )
         sort = str(request.query_params.get('sort') or 'time').strip()
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
-        field = {'time': 'created_at', 'plays': 'plays', 'release': 'release_date'}.get(sort, 'created_at')
+        field = {'time': 'created_at', 'plays': 'plays', 'likes': 'likes_count', 'meta': 'metadata_sort_score', 'release': 'release_date'}.get(sort, 'created_at')
         songs = songs.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
         page = paginator.paginate_queryset(songs, request)
@@ -625,7 +646,12 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def get(self, request, pk):
-        song = get_object_or_404(Song, pk=pk)
+        song = get_object_or_404(
+            Song.objects.select_related('artist', 'album')
+            .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
+            .annotate(likes_count=Count('liked_by', distinct=True)),
+            pk=pk,
+        )
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
 
@@ -1279,6 +1305,62 @@ class AdminFinanceSummaryView(APIView):
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminArtistEarningsListView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        queryset = Artist.objects.select_related('user').annotate(
+            stream_count=Count('songs__play_counts', distinct=True),
+            earned_total=Sum('songs__play_counts__pay'),
+        )
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(name__icontains=query) | Q(artistic_name__icontains=query)
+                | Q(user__phone_number__icontains=query)
+            )
+        sort = str(request.query_params.get('sort') or 'earned').strip()
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+        field = 'stream_count' if sort == 'streams' else 'earned_total'
+        queryset = queryset.order_by(field if direction == 'asc' else f'-{field}', '-id')
+
+        paginator = AdminPagination()
+        page = list(paginator.paginate_queryset(queryset, request))
+        artist_ids = [artist.id for artist in page]
+        payout_totals = {}
+        if artist_ids:
+            for row in (
+                DepositRequest.objects.filter(artist_id__in=artist_ids)
+                .values('artist_id', 'status')
+                .annotate(total=Sum('amount'))
+            ):
+                payout_totals[(row['artist_id'], row['status'])] = row['total'] or Decimal('0')
+
+        rows = []
+        for artist in page:
+            earned = artist.earned_total or Decimal('0')
+            paid = payout_totals.get((artist.id, DepositRequest.STATUS_DONE), Decimal('0'))
+            pending = (
+                payout_totals.get((artist.id, DepositRequest.STATUS_PENDING), Decimal('0'))
+                + payout_totals.get((artist.id, DepositRequest.STATUS_APPROVED), Decimal('0'))
+            )
+            rows.append({
+                'artist_id': artist.id,
+                'artist_name': artist.artistic_name or artist.name,
+                'artist_phone': artist.user.phone_number if artist.user else None,
+                'verified': artist.verified,
+                'stream_count': int(artist.stream_count or 0),
+                'earned_total': float(earned),
+                'paid_total': float(paid),
+                'pending_total': float(pending),
+                'remaining_total': float(max(Decimal('0'), earned - paid - pending)),
+            })
+        response = paginator.get_paginated_response(rows)
+        response.data['total_amount'] = float(PlayCount.objects.filter(songs__artist_id__in=queryset.values('id')).distinct().aggregate(total=Sum('pay'))['total'] or 0)
+        return response
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPaymentTransactionListView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
@@ -1314,7 +1396,10 @@ class AdminDepositRequestListView(APIView):
         queryset = DepositRequest.objects.select_related('artist', 'artist__user').all()
         status_filter = str(request.query_params.get('status') or '').strip()
         if status_filter:
-            queryset = queryset.filter(status=status_filter)
+            statuses = [item for item in status_filter.split(',') if item]
+            if status_filter == 'open':
+                statuses = [DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED]
+            queryset = queryset.filter(status__in=statuses)
         query = str(request.query_params.get('q') or '').strip()
         if query:
             queryset = queryset.filter(
@@ -1742,28 +1827,17 @@ class AdminSystemStatusView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        probe_url = (
-            Song.objects.exclude(cover_image='').values_list('cover_image', flat=True).first()
-            or Song.objects.exclude(audio_file='').values_list('audio_file', flat=True).first()
-            or BannerAd.objects.exclude(image='').values_list('image', flat=True).first()
-            or Artist.objects.exclude(profile_image='').values_list('profile_image', flat=True).first()
-        )
+        import time
         r2_ok = False
-        latency_ms = None
-        detail = 'لینک قابل بررسی در فضای ذخیره‌سازی پیدا نشد.'
-        if probe_url:
-            import time
-            start = time.perf_counter()
-            try:
-                check_url = generate_signed_r2_url(probe_url, expiration=60) or probe_url
-                response = requests.head(check_url, timeout=(1.5, 3), allow_redirects=True)
-                if response.status_code == 405:
-                    response = requests.get(check_url, timeout=(1.5, 3), stream=True, allow_redirects=True)
-                r2_ok = 200 <= response.status_code < 400
-                detail = 'فضای ذخیره‌سازی در دسترس است.' if r2_ok else 'پاسخ معتبر از فضای ذخیره‌سازی دریافت نشد.'
-            except requests.RequestException:
-                detail = 'ارتباط با فضای ذخیره‌سازی برقرار نشد.'
-            latency_ms = round((time.perf_counter() - start) * 1000)
+        start = time.perf_counter()
+        detail = 'ارتباط احراز‌شده با فضای ذخیره‌سازی برقرار نشد.'
+        try:
+            check_r2_storage()
+            r2_ok = True
+            detail = 'فضای ذخیره‌سازی خصوصی R2 در دسترس است.'
+        except Exception:
+            pass
+        latency_ms = round((time.perf_counter() - start) * 1000)
         return Response({
             'api': {'ok': True, 'label': 'سرور API', 'detail': 'API در دسترس است.'},
             'r2': {'ok': r2_ok, 'label': 'فضای R2', 'detail': detail, 'latency_ms': latency_ms},

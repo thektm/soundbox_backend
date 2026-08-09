@@ -254,6 +254,12 @@ def _r2_client():
     return boto3.client(**kwargs)
 
 
+def check_r2_storage():
+    """Verify authenticated access to the private R2 bucket without public HTTP access."""
+    _r2_client().list_objects_v2(Bucket=settings.R2_BUCKET_NAME, MaxKeys=1)
+    return True
+
+
 def _r2_key(value):
     return r2_object_key(value)
 

@@ -122,11 +122,7 @@ def provision_artist_profile(auth_id: int) -> Artist | None:
         if User.ROLE_ARTIST not in roles:
             roles.append(User.ROLE_ARTIST)
         user.roles = roles
-        user.first_name = auth.first_name
-        user.last_name = auth.last_name
-        if auth.email:
-            user.email = auth.email
-        user.save(update_fields=["roles", "first_name", "last_name", "email"])
+        user.save(update_fields=["roles"])
 
         if auth.artist_claimed_id != profile.pk:
             ArtistAuth.objects.filter(pk=auth.pk).update(artist_claimed=profile)

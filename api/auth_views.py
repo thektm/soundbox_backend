@@ -261,6 +261,9 @@ def consume_otp(user: User, purpose: str, raw_code: str, *, max_attempts: int = 
             OtpCode.objects.filter(pk=otp_obj.pk).update(attempts=F('attempts') + 1)
             return 'invalid'
         OtpCode.objects.filter(pk=otp_obj.pk).update(consumed=True)
+        if purpose in {OtpCode.PURPOSE_VERIFY, OtpCode.PURPOSE_LOGIN} and not user.is_verified:
+            User.objects.filter(pk=user.pk).update(is_verified=True)
+            user.is_verified = True
         redis_delete(cache_key)
         return 'ok'
 
@@ -765,6 +768,8 @@ class ArtistAuthView(AuthAPIView):
     def post(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
             return auth_error('ARTIST_ONLY', status.HTTP_403_FORBIDDEN)
+        if not request.user.is_verified:
+            return auth_error('ACCOUNT_NOT_VERIFIED', status.HTTP_403_FORBIDDEN)
         # create or replace submission for this user
         if hasattr(request.user, 'artist_auth'):
             return auth_error('SUBMISSION_EXISTS', status.HTTP_409_CONFLICT)
@@ -783,6 +788,8 @@ class ArtistAuthView(AuthAPIView):
     def patch(self, request):
         if User.ROLE_ARTIST not in (request.user.roles or []):
             return auth_error('ARTIST_ONLY', status.HTTP_403_FORBIDDEN)
+        if not request.user.is_verified:
+            return auth_error('ACCOUNT_NOT_VERIFIED', status.HTTP_403_FORBIDDEN)
         try:
             auth = request.user.artist_auth
         except ObjectDoesNotExist:

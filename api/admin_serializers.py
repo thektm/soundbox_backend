@@ -7,8 +7,16 @@ from .models import (
     DepositRequest, SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
 from django.contrib.auth import get_user_model
+from .utils import sign_r2_urls_in_payload
 
 User = get_user_model()
+
+class AdminSignedMediaSerializerMixin:
+    """Sign private R2 media recursively in admin API responses."""
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        return sign_r2_urls_in_payload(data, refresh=True)
 
 
 class RequireEnglishTranslationSerializerMixin:
@@ -36,12 +44,23 @@ class RequireEnglishTranslationSerializerMixin:
         return attrs
 
 class AdminUserSerializer(serializers.ModelSerializer):
+    has_artist_profile = serializers.SerializerMethodField()
+    artist_verified = serializers.SerializerMethodField()
+
+    def get_has_artist_profile(self, obj):
+        return hasattr(obj, 'artist_profile')
+
+    def get_artist_verified(self, obj):
+        profile = getattr(obj, 'artist_profile', None)
+        return profile.verified if profile is not None else None
+
     class Meta:
         model = User
         fields = [
             'id', 'phone_number', 'unique_id', 'first_name', 'last_name', 'email',
             'roles', 'is_active', 'is_banned', 'is_staff', 'is_verified', 'date_joined',
-            'plan', 'stream_quality', 'last_login_at', 'failed_login_attempts', 'locked_until'
+            'plan', 'stream_quality', 'last_login_at', 'failed_login_attempts', 'locked_until',
+            'has_artist_profile', 'artist_verified'
         ]
         read_only_fields = ['id', 'unique_id', 'date_joined', 'last_login_at']
 
@@ -73,7 +92,7 @@ class AdminEmployeeSerializer(serializers.ModelSerializer):
             user.save()
         return user
 
-class AdminArtistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminArtistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('name', 'name_en'), ('artistic_name', 'artistic_name_en'), ('city', 'city_en'), ('address', 'address_en'), ('bio', 'bio_en'))
     has_user = serializers.SerializerMethodField()
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
@@ -91,7 +110,7 @@ class AdminArtistSerializer(RequireEnglishTranslationSerializerMixin, serializer
     def get_has_user(self, obj):
         return obj.user is not None
 
-class AdminArtistAuthSerializer(serializers.ModelSerializer):
+class AdminArtistAuthSerializer(AdminSignedMediaSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = ArtistAuth
         fields = [
@@ -122,7 +141,7 @@ class AdminArtistAuthSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({'user': 'This user is linked to another artist profile.'})
         return attrs
 
-class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminSongSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'), ('description', 'description_en'), ('lyrics', 'lyrics_en'), ('label', 'label_en'), ('credits', 'credits_en'))
     # We use FileField for uploads, but the model stores URLField
     audio_file_upload = serializers.FileField(write_only=True, required=False)
@@ -131,6 +150,16 @@ class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.
     # Display fields
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    likes_count = serializers.SerializerMethodField()
+    metadata_completion = serializers.SerializerMethodField()
+    genre_names = serializers.SerializerMethodField()
+    sub_genre_names = serializers.SerializerMethodField()
+    mood_names = serializers.SerializerMethodField()
+
+    AUDIO_CLASSIFICATION_FIELDS = (
+        'tempo', 'energy', 'danceability', 'valence', 'acousticness',
+        'instrumentalness', 'speechiness',
+    )
 
     # Relationship details
     featured_artists = serializers.SerializerMethodField()
@@ -145,6 +174,30 @@ class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.
     def get_featured_artists(self, obj):
         return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
 
+    def get_likes_count(self, obj):
+        annotated = getattr(obj, 'likes_count', None)
+        return int(annotated if annotated is not None else obj.liked_by.count())
+
+    @staticmethod
+    def _names(manager):
+        return [item.name for item in manager.all()]
+
+    def get_genre_names(self, obj):
+        return self._names(obj.genres)
+
+    def get_sub_genre_names(self, obj):
+        return self._names(obj.sub_genres)
+
+    def get_mood_names(self, obj):
+        return self._names(obj.moods)
+
+    def get_metadata_completion(self, obj):
+        genre_ready = bool(self.get_genre_names(obj))
+        mood_ready = bool(self.get_mood_names(obj))
+        audio_ready = sum(getattr(obj, field, None) is not None for field in self.AUDIO_CLASSIFICATION_FIELDS)
+        score = (int(genre_ready) + int(mood_ready) + audio_ready / len(self.AUDIO_CLASSIFICATION_FIELDS)) / 3
+        return int(round(score * 100))
+
     # JSON fields as ListFields for better form-data handling
     producers = serializers.ListField(child=serializers.CharField(), required=False)
     producers_en = serializers.ListField(child=serializers.CharField(), required=False)
@@ -158,8 +211,8 @@ class AdminSongSerializer(RequireEnglishTranslationSerializerMixin, serializers.
         fields = [
             'id', 'title', 'title_en', 'artist', 'artist_name', 'featured_artists', 'featured_artist_ids', 'album', 'album_title',
             'is_single', 'album_disc_number', 'album_track_number', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
-            'duration_seconds', 'plays', 'status', 'release_date', 'language',
-            'genres', 'sub_genres', 'moods', 'tags', 'description', 'description_en', 'lyrics', 'lyrics_en',
+            'duration_seconds', 'plays', 'likes_count', 'metadata_completion', 'status', 'release_date', 'language',
+            'genres', 'sub_genres', 'moods', 'tags', 'genre_names', 'sub_genre_names', 'mood_names', 'description', 'description_en', 'lyrics', 'lyrics_en',
             'tempo', 'energy', 'danceability', 'valence', 'acousticness',
             'instrumentalness', 'live_performed', 'speechiness', 'label', 'label_en',
             'producers', 'producers_en', 'composers', 'composers_en', 'lyricists', 'lyricists_en', 'credits', 'credits_en', 'uploader',
@@ -184,7 +237,7 @@ class AdminReportSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'song', 'artist', 'reported_user', 'created_at', 'updated_at']
 
 
-class AdminAlbumSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminAlbumSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     songs = AdminSongSerializer(many=True, read_only=True)
@@ -223,7 +276,7 @@ class AdminPlayConfigurationSerializer(serializers.ModelSerializer):
         read_only_fields = ['updated_at']
 
 
-class AdminBannerAdSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminBannerAdSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'),)
     image_upload = serializers.ImageField(write_only=True, required=False)
 
@@ -233,7 +286,7 @@ class AdminBannerAdSerializer(RequireEnglishTranslationSerializerMixin, serializ
         read_only_fields = ['id', 'image', 'created_at', 'updated_at']
 
 
-class AdminAudioAdSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminAudioAdSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'),)
     audio_upload = serializers.FileField(write_only=True, required=False)
     image_cover_upload = serializers.ImageField(write_only=True, required=False)
@@ -271,7 +324,7 @@ class AdminDepositRequestSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'submission_date', 'status_change_date']
 
 
-class AdminPlaylistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
     likes_count = serializers.IntegerField(source='liked_by.count', read_only=True)
@@ -287,7 +340,7 @@ class AdminPlaylistSerializer(RequireEnglishTranslationSerializerMixin, serializ
         read_only_fields = ['id', 'cover_image', 'created_at']
 
 
-class AdminSearchSectionSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminSearchSectionSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'),)
     icon_logo_upload = serializers.ImageField(write_only=True, required=False)
     
@@ -300,7 +353,7 @@ class AdminSearchSectionSerializer(RequireEnglishTranslationSerializerMixin, ser
         read_only_fields = ['id', 'icon_logo', 'created_at', 'updated_at']
 
 
-class AdminEventPlaylistSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
+class AdminEventPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'),)
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
     
@@ -333,7 +386,7 @@ class AdminSupportTicketSerializer(serializers.ModelSerializer):
         return (artist.artistic_name or artist.name) if artist else ''
 
 
-class AdminSongPromotionSerializer(serializers.ModelSerializer):
+class AdminSongPromotionSerializer(AdminSignedMediaSerializerMixin, serializers.ModelSerializer):
     song_title = serializers.CharField(source='song.title', read_only=True)
     artist_name = serializers.CharField(source='song.artist.name', read_only=True)
     cover_image = serializers.CharField(source='song.cover_image', read_only=True)
