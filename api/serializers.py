@@ -2114,10 +2114,25 @@ class SearchResultSerializer(serializers.Serializer):
         return {}
 
 
+def _ordered_event_playlists(event):
+    """Return event playlists in the explicit order persisted by the M2M rows."""
+    through = EventPlaylist.playlists.through
+    ordered_ids = list(
+        through.objects.filter(eventplaylist_id=event.pk)
+        .order_by('pk')
+        .values_list('playlist_id', flat=True)
+    )
+    playlist_map = {playlist.id: playlist for playlist in event.playlists.all()}
+    return [playlist_map[playlist_id] for playlist_id in ordered_ids if playlist_id in playlist_map]
+
+
 class EventPlaylistSerializer(LocalizedModelSerializer):
     """Serializer for EventPlaylist model"""
     # use compact playlist serializer that omits slug fields on nested genres/moods/tags
-    playlists = PlaylistForEventSerializer(many=True, read_only=True)
+    playlists = serializers.SerializerMethodField()
+
+    def get_playlists(self, obj):
+        return PlaylistForEventSerializer(_ordered_event_playlists(obj), many=True, context=self.context).data
     generated_by = serializers.ReadOnlyField(default='admin')
     creator_unique_id = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='event-playlist')
@@ -2184,7 +2199,10 @@ class PlaylistCoverSerializer(LocalizedModelSerializer):
 
 class EventPlaylistListSerializer(LocalizedModelSerializer):
     """Serializer for listing EventPlaylists with lightweight playlist covers."""
-    playlists = PlaylistCoverSerializer(many=True, read_only=True)
+    playlists = serializers.SerializerMethodField()
+
+    def get_playlists(self, obj):
+        return PlaylistCoverSerializer(_ordered_event_playlists(obj), many=True, context=self.context).data
     generated_by = serializers.ReadOnlyField(default='admin')
     creator_unique_id = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='event-playlist')
@@ -2225,7 +2243,10 @@ class PlaylistDetailForEventSerializer(LocalizedModelSerializer):
 
 class EventPlaylistDetailSerializer(LocalizedModelSerializer):
     """Detailed EventPlaylist serializer returning playlists with summarized songs."""
-    playlists = PlaylistDetailForEventSerializer(many=True, read_only=True)
+    playlists = serializers.SerializerMethodField()
+
+    def get_playlists(self, obj):
+        return PlaylistDetailForEventSerializer(_ordered_event_playlists(obj), many=True, context=self.context).data
     generated_by = serializers.ReadOnlyField(default='admin')
     creator_unique_id = serializers.SerializerMethodField()
     type = serializers.ReadOnlyField(default='event-playlist')

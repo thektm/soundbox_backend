@@ -7,6 +7,7 @@ from .models import (
     DepositRequest, SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from .utils import sign_r2_urls_in_payload
 
 User = get_user_model()
@@ -465,11 +466,73 @@ class AdminSearchSectionSerializer(AdminSignedMediaSerializerMixin, RequireEngli
 class AdminEventPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'),)
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
-    
+    playlist_details = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _ordered_playlists(obj):
+        through = EventPlaylist.playlists.through
+        ordered_ids = list(
+            through.objects.filter(eventplaylist_id=obj.pk)
+            .order_by('pk')
+            .values_list('playlist_id', flat=True)
+        )
+        playlist_map = {playlist.id: playlist for playlist in obj.playlists.all()}
+        return [playlist_map[playlist_id] for playlist_id in ordered_ids if playlist_id in playlist_map]
+
+    @staticmethod
+    def _set_playlist_order(instance, playlists):
+        through = EventPlaylist.playlists.through
+        through.objects.filter(eventplaylist_id=instance.pk).delete()
+        for playlist in playlists:
+            through.objects.create(eventplaylist_id=instance.pk, playlist_id=playlist.pk)
+
+    def get_playlist_details(self, obj):
+        return AdminPlaylistSerializer(self._ordered_playlists(obj), many=True).data
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None and 'playlists' not in attrs:
+            raise serializers.ValidationError({'playlists': 'Exactly 3 playlists are required.'})
+        if 'playlists' in attrs:
+            playlist_ids = [playlist.pk for playlist in attrs['playlists']]
+            if len(playlist_ids) != 3 or len(set(playlist_ids)) != 3:
+                raise serializers.ValidationError({'playlists': 'Exactly 3 distinct playlists are required.'})
+        time_of_day = attrs.get('time_of_day', getattr(self.instance, 'time_of_day', None))
+        if self.instance is None and time_of_day and EventPlaylist.objects.filter(time_of_day=time_of_day).exists():
+            raise serializers.ValidationError({'time_of_day': 'A configuration for this time of day already exists.'})
+        if self.instance is not None and 'time_of_day' in attrs and attrs['time_of_day'] != self.instance.time_of_day:
+            if EventPlaylist.objects.filter(time_of_day=attrs['time_of_day']).exclude(pk=self.instance.pk).exists():
+                raise serializers.ValidationError({'time_of_day': 'A configuration for this time of day already exists.'})
+        return attrs
+
+    def create(self, validated_data):
+        playlists = list(validated_data.pop('playlists', []))
+        with transaction.atomic():
+            instance = super().create(validated_data)
+            self._set_playlist_order(instance, playlists)
+        return instance
+
+    def update(self, instance, validated_data):
+        has_playlists = 'playlists' in validated_data
+        playlists = list(validated_data.pop('playlists', [])) if has_playlists else []
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if has_playlists:
+                self._set_playlist_order(instance, playlists)
+        return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['playlists'] = [playlist.id for playlist in self._ordered_playlists(instance)]
+        return data
+
     class Meta:
         model = EventPlaylist
-        fields = ['id', 'title', 'title_en', 'time_of_day', 'cover_image', 'cover_image_upload', 'playlists', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'cover_image', 'created_at', 'updated_at']
+        fields = [
+            'id', 'title', 'title_en', 'time_of_day', 'cover_image', 'cover_image_upload',
+            'playlists', 'playlist_details', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'cover_image', 'playlist_details', 'created_at', 'updated_at']
 
 
 
