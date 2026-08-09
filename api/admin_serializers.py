@@ -329,12 +329,54 @@ class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTra
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
     likes_count = serializers.IntegerField(source='liked_by.count', read_only=True)
     saves_count = serializers.IntegerField(source='saved_by.count', read_only=True)
+    songs = serializers.SerializerMethodField()
+    song_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Song.objects.filter(status=Song.STATUS_PUBLISHED),
+        many=True,
+        source='songs',
+        write_only=True,
+        required=False,
+    )
+    song_details = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _ordered_songs(obj):
+        cache_name = '_admin_ordered_songs_cache'
+        cached = getattr(obj, cache_name, None)
+        if cached is not None:
+            return cached
+        through = Playlist.songs.through
+        ordered_ids = list(
+            through.objects.filter(playlist_id=obj.pk)
+            .order_by('pk')
+            .values_list('song_id', flat=True)
+        )
+        if not ordered_ids:
+            ordered = []
+        else:
+            songs = {
+                song.id: song
+                for song in obj.songs.select_related('artist', 'album').prefetch_related(
+                    'featured_artists', 'genres', 'sub_genres', 'moods'
+                )
+            }
+            ordered = [songs[song_id] for song_id in ordered_ids if song_id in songs]
+        setattr(obj, cache_name, ordered)
+        return ordered
+
+    def get_songs(self, obj):
+        return [song.id for song in self._ordered_songs(obj)]
+
+    def get_song_details(self, obj):
+        if not self.context.get('include_song_details'):
+            return []
+        return AdminSongSerializer(self._ordered_songs(obj), many=True).data
     
     class Meta:
         model = Playlist
         fields = [
             'id', 'title', 'title_en', 'description', 'description_en', 'cover_image',
-            'cover_image_upload', 'created_by', 'songs', 'genres', 'moods', 'tags',
+            'cover_image_upload', 'created_by', 'songs', 'song_ids', 'song_details', 'genres', 'moods', 'tags',
             'likes_count', 'saves_count', 'created_at'
         ]
         read_only_fields = ['id', 'cover_image', 'created_at']
@@ -343,12 +385,79 @@ class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTra
 class AdminSearchSectionSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'),)
     icon_logo_upload = serializers.ImageField(write_only=True, required=False)
+    item_count = serializers.SerializerMethodField()
+    item_details = serializers.SerializerMethodField()
+    item_ids = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    def _manager(self, obj):
+        return {'song': obj.songs, 'album': obj.albums, 'playlist': obj.playlists}.get(obj.type)
+
+    def get_item_count(self, obj):
+        manager = self._manager(obj)
+        return manager.count() if manager is not None else 0
+
+    def get_item_details(self, obj):
+        manager = self._manager(obj)
+        if manager is None:
+            return []
+        if obj.type == SearchSection.TYPE_SONG:
+            return [
+                {'id': item.id, 'title': item.title, 'subtitle': item.artist.name, 'image': item.cover_image}
+                for item in manager.select_related('artist').all()
+            ]
+        if obj.type == SearchSection.TYPE_ALBUM:
+            return [
+                {'id': item.id, 'title': item.title, 'subtitle': item.artist.name, 'image': item.cover_image}
+                for item in manager.select_related('artist').all()
+            ]
+        return [
+            {'id': item.id, 'title': item.title, 'subtitle': '', 'image': item.cover_image}
+            for item in manager.all()
+        ]
+
+    @staticmethod
+    def _parse_item_ids(value):
+        result = []
+        seen = set()
+        for raw in str(value or '').split(','):
+            try:
+                item_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if item_id > 0 and item_id not in seen:
+                seen.add(item_id)
+                result.append(item_id)
+        return result
+
+    def _set_items(self, instance, raw_ids):
+        ids = self._parse_item_ids(raw_ids)
+        instance.songs.clear(); instance.albums.clear(); instance.playlists.clear()
+        if instance.type == SearchSection.TYPE_SONG:
+            instance.songs.set(Song.objects.filter(id__in=ids, status=Song.STATUS_PUBLISHED))
+        elif instance.type == SearchSection.TYPE_ALBUM:
+            instance.albums.set(Album.objects.filter(id__in=ids))
+        elif instance.type == SearchSection.TYPE_PLAYLIST:
+            instance.playlists.set(Playlist.objects.filter(id__in=ids))
+
+    def create(self, validated_data):
+        raw_ids = validated_data.pop('item_ids', None)
+        instance = super().create(validated_data)
+        if raw_ids is not None:
+            self._set_items(instance, raw_ids)
+        return instance
+
+    def update(self, instance, validated_data):
+        raw_ids = validated_data.pop('item_ids', None)
+        instance = super().update(instance, validated_data)
+        if raw_ids is not None:
+            self._set_items(instance, raw_ids)
+        return instance
     
     class Meta:
         model = SearchSection
         fields = [
             'id', 'type', 'title', 'title_en', 'icon_logo', 'icon_logo_upload', 'item_size',
-            'songs', 'albums', 'playlists', 'created_at', 'updated_at'
+            'songs', 'albums', 'playlists', 'item_ids', 'item_count', 'item_details', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'icon_logo', 'created_at', 'updated_at']
 

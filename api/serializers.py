@@ -1678,11 +1678,25 @@ class SongUploadSerializer(serializers.Serializer):
 
 
 
+def _ordered_playlist_songs(playlist):
+    """Return official playlist songs in the order persisted by the M2M rows."""
+    through = Playlist.songs.through
+    ordered_ids = list(
+        through.objects.filter(playlist_id=playlist.pk)
+        .order_by('pk')
+        .values_list('song_id', flat=True)
+    )
+    if not ordered_ids:
+        return []
+    song_map = {song.id: song for song in playlist.songs.all()}
+    return [song_map[song_id] for song_id in ordered_ids if song_id in song_map]
+
+
 class PlaylistSerializer(LocalizedModelSerializer):
     genres = GenreSerializer(many=True, read_only=True)
     moods = MoodSerializer(many=True, read_only=True)
     tags = TagSerializer(many=True, read_only=True)
-    songs = SongSummarySerializer(many=True, read_only=True)
+    songs = serializers.SerializerMethodField()
     genre_ids = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False)
     mood_ids = serializers.PrimaryKeyRelatedField(queryset=Mood.objects.all(), many=True, source='moods', required=False)
     tag_ids = serializers.PrimaryKeyRelatedField(queryset=Tag.objects.all(), many=True, source='tags', required=False)
@@ -1704,6 +1718,8 @@ class PlaylistSerializer(LocalizedModelSerializer):
         user=User.objects.filter(first_name='SedaBox |', last_name='صداباکس').only('unique_id').first()
         return user.unique_id if user else None
     def get_likes_count(self, obj): return int(_metric(obj,'_likes_count',lambda: PlaylistLike.objects.filter(playlist=obj).count()))
+    def get_songs(self, obj):
+        return SongSummarySerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
     def get_is_liked(self, obj):
         request=self.context.get('request')
         return bool(_metric(obj,'_is_liked',lambda: request and request.user.is_authenticated and PlaylistLike.objects.filter(user=request.user,playlist=obj).exists()))
@@ -1716,7 +1732,7 @@ class PlaylistForEventSerializer(LocalizedModelSerializer):
     genres = SlimGenreSerializer(many=True, read_only=True)
     moods = SlimMoodSerializer(many=True, read_only=True)
     tags = SlimTagSerializer(many=True, read_only=True)
-    songs = SongSerializer(many=True, read_only=True)
+    songs = serializers.SerializerMethodField()
 
     class Meta:
         model = Playlist
@@ -1730,6 +1746,9 @@ class PlaylistForEventSerializer(LocalizedModelSerializer):
         from .models import User
         sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
         return sedabox_user.unique_id if sedabox_user else None
+
+    def get_songs(self, obj):
+        return SongSerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
 
 
 class SongStreamSerializer(LocalizedModelSerializer):
@@ -2186,7 +2205,7 @@ class PlaylistDetailForEventSerializer(LocalizedModelSerializer):
     genres = SlimGenreSerializer(many=True, read_only=True)
     moods = SlimMoodSerializer(many=True, read_only=True)
     tags = SlimTagSerializer(many=True, read_only=True)
-    songs = SongSummarySerializer(many=True, read_only=True)
+    songs = serializers.SerializerMethodField()
     generated_by = serializers.CharField(source='created_by', read_only=True)
     creator_unique_id = serializers.SerializerMethodField()
 
@@ -2194,6 +2213,9 @@ class PlaylistDetailForEventSerializer(LocalizedModelSerializer):
         from .models import User
         sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
         return sedabox_user.unique_id if sedabox_user else None
+
+    def get_songs(self, obj):
+        return SongSummarySerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
 
     class Meta:
         model = Playlist

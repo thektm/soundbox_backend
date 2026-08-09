@@ -12,6 +12,7 @@ from .models import (
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
+from django.db import transaction
 from django.db.models import Sum, Count, Q, Case, When, Value, IntegerField, F
 from decimal import Decimal
 from .admin_serializers import (
@@ -30,6 +31,129 @@ class AdminPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+
+def _int_list(value):
+    """Normalize repeated/CSV/JSON id inputs into a de-duplicated integer list."""
+    if value is None:
+        return []
+    raw = value if isinstance(value, (list, tuple)) else str(value).split(',')
+    result = []
+    seen = set()
+    for item in raw:
+        try:
+            item_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in seen:
+            seen.add(item_id)
+            result.append(item_id)
+    return result
+
+
+def _playlist_builder_queryset(params):
+    """One source of truth for playlist discovery and smart-fill ranking."""
+    source = str(params.get('source') or 'trend7').strip()
+    recent_days = 7 if source == 'trend7' else 30
+    since = timezone.now() - timedelta(days=recent_days)
+    audio_score = Value(0, output_field=IntegerField())
+    for field_name in AdminSongSerializer.AUDIO_CLASSIFICATION_FIELDS:
+        audio_score = audio_score + Case(
+            When(**{f'{field_name}__isnull': False}, then=Value(1)),
+            default=Value(0), output_field=IntegerField(),
+        )
+
+    songs = (
+        Song.objects.filter(status=Song.STATUS_PUBLISHED)
+        .select_related('artist', 'album')
+        .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
+        .annotate(
+            likes_count=Count('liked_by', distinct=True),
+            recent_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=since), distinct=True),
+            genre_count=Count('genres', distinct=True),
+            mood_count=Count('moods', distinct=True),
+            audio_meta_count=audio_score,
+        )
+        .annotate(
+            metadata_sort_score=(
+                Case(When(genre_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
+                + Case(When(mood_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
+                + F('audio_meta_count')
+            )
+        )
+    )
+
+    query = str(params.get('q') or '').strip()
+    if query:
+        songs = songs.filter(
+            Q(title__icontains=query) | Q(title_en__icontains=query)
+            | Q(artist__name__icontains=query) | Q(artist__name_en__icontains=query)
+            | Q(artist__artistic_name__icontains=query) | Q(artist__artistic_name_en__icontains=query)
+        )
+
+    genre_ids = _int_list(params.get('genres'))
+    mood_ids = _int_list(params.get('moods'))
+    exclude_ids = _int_list(params.get('exclude'))
+    if genre_ids:
+        songs = songs.filter(genres__id__in=genre_ids)
+    if mood_ids:
+        songs = songs.filter(moods__id__in=mood_ids)
+    if exclude_ids:
+        songs = songs.exclude(id__in=exclude_ids)
+
+    try:
+        min_meta = max(0, min(100, int(params.get('min_meta') or 0)))
+    except (TypeError, ValueError):
+        min_meta = 0
+    if min_meta:
+        minimum_score = (min_meta * 21 + 99) // 100
+        songs = songs.filter(metadata_sort_score__gte=minimum_score)
+
+    ordering = {
+        'trend7': ('-recent_plays', '-likes_count', '-plays', '-id'),
+        'trend30': ('-recent_plays', '-likes_count', '-plays', '-id'),
+        'plays': ('-plays', '-likes_count', '-id'),
+        'likes': ('-likes_count', '-plays', '-id'),
+        'newest': ('-created_at', '-id'),
+        'metadata': ('-metadata_sort_score', '-plays', '-likes_count', '-id'),
+    }.get(source, ('-recent_plays', '-likes_count', '-plays', '-id'))
+    return songs.distinct().order_by(*ordering), source
+
+
+def _playlist_builder_song_data(songs):
+    rows = list(AdminSongSerializer(songs, many=True).data)
+    for row, song in zip(rows, songs):
+        row['recent_plays'] = int(getattr(song, 'recent_plays', 0) or 0)
+    return rows
+
+
+def _playlist_builder_facets():
+    genres = Genre.objects.annotate(
+        song_count=Count('songs', filter=Q(songs__status=Song.STATUS_PUBLISHED), distinct=True)
+    ).filter(song_count__gt=0).order_by('-song_count', 'name')
+    moods = Mood.objects.annotate(
+        song_count=Count('songs', filter=Q(songs__status=Song.STATUS_PUBLISHED), distinct=True)
+    ).filter(song_count__gt=0).order_by('-song_count', 'name')
+    return {
+        'genres': [{'id': item.id, 'name': item.name, 'name_en': item.name_en, 'count': item.song_count} for item in genres],
+        'moods': [{'id': item.id, 'name': item.name, 'name_en': item.name_en, 'count': item.song_count} for item in moods],
+    }
+
+
+def _set_playlist_song_order(playlist, songs):
+    """Persist official playlist order using the existing implicit M2M row order."""
+    through = Playlist.songs.through
+    unique_songs = []
+    seen = set()
+    for song in songs:
+        if song.pk not in seen:
+            seen.add(song.pk)
+            unique_songs.append(song)
+    through.objects.filter(playlist_id=playlist.pk).delete()
+    # Explicit inserts make the implicit through-row PK a deterministic order key.
+    # Playlist edits are infrequent and capped, so correctness is preferred here.
+    for song in unique_songs:
+        through.objects.create(playlist_id=playlist.pk, song_id=song.pk)
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserListView(APIView):
@@ -1123,7 +1247,8 @@ class AdminAlbumListView(APIView):
         if query:
             qs = qs.filter(
                 Q(title__icontains=query) | Q(title_en__icontains=query)
-                | Q(artist__name__icontains=query) | Q(artist__artistic_name__icontains=query)
+                | Q(artist__name__icontains=query) | Q(artist__name_en__icontains=query)
+                | Q(artist__artistic_name__icontains=query) | Q(artist__artistic_name_en__icontains=query)
             )
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
         sort = str(request.query_params.get('sort') or 'time').strip()
@@ -1433,6 +1558,9 @@ class AdminSearchSectionListView(APIView):
     )
     def get(self, request):
         sections = SearchSection.objects.all().order_by('-created_at')
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            sections = sections.filter(Q(title__icontains=query) | Q(title_en__icontains=query))
         paginator = AdminPagination()
         result_page = paginator.paginate_queryset(sections, request)
         serializer = AdminSearchSectionSerializer(result_page, many=True)
@@ -1598,6 +1726,77 @@ class AdminEventPlaylistDetailView(APIView):
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminPlaylistBuilderView(APIView):
+    """Fast song discovery + deterministic smart fill for official playlists."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        songs, source = _playlist_builder_queryset(request.query_params)
+        paginator = AdminPagination()
+        page = paginator.paginate_queryset(songs, request)
+        response = paginator.get_paginated_response(_playlist_builder_song_data(page))
+        response.data['source'] = source
+        response.data['facets'] = _playlist_builder_facets()
+        return response
+
+    def post(self, request):
+        mode = str(request.data.get('mode') or 'append').strip()
+        if mode not in {'append', 'fill_to', 'replace'}:
+            return Response({'detail': 'حالت تکمیل پلی‌لیست معتبر نیست.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            requested_count = max(1, min(500, int(request.data.get('count') or 1)))
+            max_per_artist = max(0, min(100, int(request.data.get('max_per_artist') or 0)))
+        except (TypeError, ValueError):
+            return Response({'detail': 'تعداد واردشده معتبر نیست.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing_ids = _int_list(request.data.get('existing_ids'))
+        if mode == 'append':
+            needed = requested_count
+            base_count = len(existing_ids)
+            exclude_ids = existing_ids
+        elif mode == 'fill_to':
+            needed = max(0, requested_count - len(existing_ids))
+            base_count = len(existing_ids)
+            exclude_ids = existing_ids
+        else:
+            needed = requested_count
+            base_count = 0
+            exclude_ids = []
+
+        params = request.data.copy()
+        params['exclude'] = exclude_ids
+        candidates, source = _playlist_builder_queryset(params)
+        selected = []
+        artist_counts = {}
+        if max_per_artist and mode != 'replace' and existing_ids:
+            artist_counts = {
+                row['artist_id']: row['song_count']
+                for row in Song.objects.filter(id__in=existing_ids)
+                .values('artist_id')
+                .annotate(song_count=Count('id'))
+            }
+        if needed:
+            for song in candidates.iterator(chunk_size=200):
+                if max_per_artist and artist_counts.get(song.artist_id, 0) >= max_per_artist:
+                    continue
+                selected.append(song)
+                artist_counts[song.artist_id] = artist_counts.get(song.artist_id, 0) + 1
+                if len(selected) >= needed:
+                    break
+
+        shortfall = max(0, needed - len(selected))
+        return Response({
+            'mode': mode,
+            'source': source,
+            'requested_count': requested_count,
+            'add_count': len(selected),
+            'final_count': base_count + len(selected),
+            'shortfall': shortfall,
+            'songs': _playlist_builder_song_data(selected),
+        })
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPlaylistListView(APIView):
     """List and create playlists for admin."""
     permission_classes = [permissions.IsAdminUser]
@@ -1610,6 +1809,9 @@ class AdminPlaylistListView(APIView):
     )
     def get(self, request):
         playlists = Playlist.objects.all().order_by('-created_at')
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            playlists = playlists.filter(Q(title__icontains=query) | Q(title_en__icontains=query))
         paginator = AdminPagination()
         result_page = paginator.paginate_queryset(playlists, request)
         serializer = AdminPlaylistSerializer(result_page, many=True)
@@ -1631,8 +1833,15 @@ class AdminPlaylistListView(APIView):
 
         serializer = AdminPlaylistSerializer(data=data)
         if serializer.is_valid():
-            serializer.save(created_by=Playlist.CREATED_BY_ADMIN)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            ordered_songs = serializer.validated_data.get('songs', [])
+            with transaction.atomic():
+                playlist = serializer.save(created_by=Playlist.CREATED_BY_ADMIN)
+                if 'songs' in serializer.validated_data:
+                    _set_playlist_song_order(playlist, ordered_songs)
+            return Response(
+                AdminPlaylistSerializer(playlist, context={'include_song_details': True}).data,
+                status=status.HTTP_201_CREATED,
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -1649,7 +1858,7 @@ class AdminPlaylistDetailView(APIView):
     )
     def get(self, request, pk):
         playlist = get_object_or_404(Playlist, pk=pk)
-        serializer = AdminPlaylistSerializer(playlist)
+        serializer = AdminPlaylistSerializer(playlist, context={'include_song_details': True})
         return Response(serializer.data)
 
     @extend_schema(
@@ -1669,8 +1878,13 @@ class AdminPlaylistDetailView(APIView):
 
         serializer = AdminPlaylistSerializer(playlist, data=data, partial=True)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
+            has_song_update = 'songs' in serializer.validated_data
+            ordered_songs = serializer.validated_data.get('songs', [])
+            with transaction.atomic():
+                playlist = serializer.save()
+                if has_song_update:
+                    _set_playlist_song_order(playlist, ordered_songs)
+            return Response(AdminPlaylistSerializer(playlist, context={'include_song_details': True}).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
