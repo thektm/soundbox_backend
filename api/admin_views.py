@@ -501,7 +501,8 @@ class AdminSongListView(APIView):
         if query:
             songs = songs.filter(
                 Q(title__icontains=query) | Q(title_en__icontains=query)
-                | Q(artist__name__icontains=query) | Q(artist__artistic_name__icontains=query)
+                | Q(artist__name__icontains=query) | Q(artist__name_en__icontains=query)
+                | Q(artist__artistic_name__icontains=query) | Q(artist__artistic_name_en__icontains=query)
             )
         sort = str(request.query_params.get('sort') or 'time').strip()
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
@@ -1910,8 +1911,9 @@ class AdminSongPromotionListView(APIView):
         query = str(request.query_params.get('q') or '').strip()
         if query:
             queryset = queryset.filter(
-                Q(song__title__icontains=query) | Q(song__artist__name__icontains=query)
-                | Q(song__artist__artistic_name__icontains=query)
+                Q(song__title__icontains=query) | Q(song__title_en__icontains=query)
+                | Q(song__artist__name__icontains=query) | Q(song__artist__name_en__icontains=query)
+                | Q(song__artist__artistic_name__icontains=query) | Q(song__artist__artistic_name_en__icontains=query)
             )
         paginator = AdminPagination()
         page = paginator.paginate_queryset(queryset, request)
