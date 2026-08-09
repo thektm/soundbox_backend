@@ -231,7 +231,7 @@ class AdminReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = Report
         fields = [
-            'id', 'user', 'user_phone', 'song', 'song_title', 'artist', 'artist_name', 'reported_user', 'reported_user_phone',
+            'id', 'user', 'user_phone', 'user_is_banned', 'song', 'song_title', 'artist', 'artist_name', 'reported_user', 'reported_user_phone',
             'text', 'has_reviewed', 'reviewed_at', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'song', 'artist', 'reported_user', 'created_at', 'updated_at']

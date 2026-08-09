@@ -997,7 +997,7 @@ class AdminReleaseListView(APIView):
 
     def get(self, request):
         publish_due_releases()
-        queryset = release_queryset().all()
+        queryset = release_queryset().exclude(status=ArtistRelease.STATUS_DRAFT)
         query = str(request.query_params.get('q') or '').strip()
         status_filter = str(request.query_params.get('status') or '').strip()
         artist_id = request.query_params.get('artist_id')
@@ -1023,12 +1023,12 @@ class AdminReleaseDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request, pk):
-        release = get_object_or_404(release_queryset(), pk=pk)
+        release = get_object_or_404(release_queryset().exclude(status=ArtistRelease.STATUS_DRAFT), pk=pk)
         return Response(serialize_release(release, request, include_history=True))
 
     def patch(self, request, pk):
         with transaction.atomic():
-            release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            release = get_object_or_404(ArtistRelease.objects.select_for_update().exclude(status=ArtistRelease.STATUS_DRAFT), pk=pk)
             changed_fields = []
             if 'admin_note' in request.data:
                 release.admin_note = str(request.data.get('admin_note') or '')
@@ -1087,7 +1087,7 @@ class AdminReleaseActionView(APIView):
         }
 
         with transaction.atomic():
-            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk)
+            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().exclude(status=ArtistRelease.STATUS_DRAFT).only('pk'), pk=pk)
             release = release_queryset().get(pk=locked_release.pk)
             if release.status not in transitions[action]:
                 return Response({
@@ -1145,5 +1145,7 @@ class AdminReleaseActionView(APIView):
                 release.save(update_fields=['submitted_at', 'updated_at'])
                 change_status(release, ArtistRelease.STATUS_IN_REVIEW, actor=request.user, note=note or 'انتشار دوباره به صف بررسی برگشت.')
 
+        if release.status == ArtistRelease.STATUS_DRAFT:
+            return Response({'id': str(release.pk), 'removed_from_admin_queue': True})
         return Response(serialize_release(release_queryset().get(pk=release.pk), request, include_history=True))
 
