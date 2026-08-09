@@ -25,6 +25,7 @@ from .admin_serializers import (
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage
+from .song_play_metrics import apply_annotated_song_play_counts, hydrate_song_play_counts
 import os
 
 class AdminPagination(PageNumberPagination):
@@ -37,11 +38,7 @@ def _admin_song_detail_queryset():
     return (
         Song.objects.select_related('artist', 'album')
         .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
-        .annotate(
-            likes_count=Count('liked_by', distinct=True),
-            tracked_plays=Count('play_counts', distinct=True),
-        )
-        .annotate(total_plays=F('plays') + F('tracked_plays'))
+        .annotate(likes_count=Count('liked_by', distinct=True))
     )
 
 
@@ -135,8 +132,10 @@ def _playlist_builder_queryset(params):
 
 
 def _playlist_builder_song_data(songs):
-    rows = list(AdminSongSerializer(songs, many=True).data)
-    for row, song in zip(rows, songs):
+    items = list(songs)
+    apply_annotated_song_play_counts(items)
+    rows = list(AdminSongSerializer(items, many=True).data)
+    for row, song in zip(rows, items):
         row['recent_plays'] = int(getattr(song, 'recent_plays', 0) or 0)
     return rows
 
@@ -609,32 +608,45 @@ class AdminSongListView(APIView):
     )
     def get(self, request):
         status_filter = str(request.query_params.get('status') or Song.STATUS_PUBLISHED).strip()
-        audio_fields = AdminSongSerializer.AUDIO_CLASSIFICATION_FIELDS
-        audio_score = Value(0, output_field=IntegerField())
-        for field_name in audio_fields:
-            audio_score = audio_score + Case(
-                When(**{f'{field_name}__isnull': False}, then=Value(1)),
-                default=Value(0), output_field=IntegerField(),
-            )
+        sort = str(request.query_params.get('sort') or 'time').strip()
+        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
+
         songs = (
             Song.objects.select_related('artist', 'album')
             .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
-            .annotate(
-                likes_count=Count('liked_by', distinct=True),
-                tracked_plays=Count('play_counts', distinct=True),
-                genre_count=Count('genres', distinct=True),
-                mood_count=Count('moods', distinct=True),
-                audio_meta_count=audio_score,
+            .annotate(likes_count=Count('liked_by', distinct=True))
+        )
+
+        # The large play relation is deliberately absent from ordinary list SQL.
+        # Only explicit play sorting needs a DB aggregate because Redis must not
+        # become the authority for ordering.
+        if sort == 'plays':
+            songs = (
+                songs.annotate(tracked_plays=Count('play_counts', distinct=True))
+                .annotate(total_plays=F('plays') + F('tracked_plays'))
             )
-            .annotate(
-                total_plays=F('plays') + F('tracked_plays'),
-                metadata_sort_score=(
-                    Case(When(genre_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
-                    + Case(When(mood_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
-                    + F('audio_meta_count')
+        elif sort == 'meta':
+            audio_score = Value(0, output_field=IntegerField())
+            for field_name in AdminSongSerializer.AUDIO_CLASSIFICATION_FIELDS:
+                audio_score = audio_score + Case(
+                    When(**{f'{field_name}__isnull': False}, then=Value(1)),
+                    default=Value(0), output_field=IntegerField(),
+                )
+            songs = (
+                songs.annotate(
+                    genre_count=Count('genres', distinct=True),
+                    mood_count=Count('moods', distinct=True),
+                    audio_meta_count=audio_score,
+                )
+                .annotate(
+                    metadata_sort_score=(
+                        Case(When(genre_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
+                        + Case(When(mood_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
+                        + F('audio_meta_count')
+                    )
                 )
             )
-        )
+
         if status_filter != 'all':
             songs = songs.filter(status=status_filter)
         query = str(request.query_params.get('q') or '').strip()
@@ -644,12 +656,18 @@ class AdminSongListView(APIView):
                 | Q(artist__name__icontains=query) | Q(artist__name_en__icontains=query)
                 | Q(artist__artistic_name__icontains=query) | Q(artist__artistic_name_en__icontains=query)
             )
-        sort = str(request.query_params.get('sort') or 'time').strip()
-        direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
-        field = {'time': 'created_at', 'plays': 'total_plays', 'likes': 'likes_count', 'meta': 'metadata_sort_score', 'release': 'release_date'}.get(sort, 'created_at')
+
+        field = {
+            'time': 'created_at', 'plays': 'total_plays', 'likes': 'likes_count',
+            'meta': 'metadata_sort_score', 'release': 'release_date',
+        }.get(sort, 'created_at')
         songs = songs.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
-        page = paginator.paginate_queryset(songs, request)
+        page = list(paginator.paginate_queryset(songs, request))
+        if sort == 'plays':
+            apply_annotated_song_play_counts(page)
+        else:
+            hydrate_song_play_counts(page)
         return paginator.get_paginated_response(AdminSongSerializer(page, many=True).data)
 
 
@@ -788,6 +806,7 @@ class AdminSongDetailView(APIView):
     )
     def get(self, request, pk):
         song = get_object_or_404(_admin_song_detail_queryset(), pk=pk)
+        hydrate_song_play_counts([song])
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
 
@@ -915,6 +934,7 @@ class AdminSongDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             updated_song = get_object_or_404(_admin_song_detail_queryset(), pk=song.pk)
+            hydrate_song_play_counts([updated_song])
             return Response(AdminSongSerializer(updated_song).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

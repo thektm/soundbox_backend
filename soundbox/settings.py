@@ -139,6 +139,7 @@ CACHE_TTL_SEARCH = int(os.environ.get('CACHE_TTL_SEARCH', '45'))
 CACHE_TTL_USER_SEARCH = int(os.environ.get('CACHE_TTL_USER_SEARCH', '15'))
 CACHE_TTL_DISCOVERY = int(os.environ.get('CACHE_TTL_DISCOVERY', '300'))
 CACHE_TTL_SIMILAR = int(os.environ.get('CACHE_TTL_SIMILAR', '90'))
+SONG_PLAY_COUNT_CACHE_TTL = int(os.environ.get('SONG_PLAY_COUNT_CACHE_TTL', '21600'))
 
 # Redis-backed recommendation freshness and safe generated-row housekeeping.
 GENERATED_PLAYLIST_MAINTENANCE_ENABLED = os.environ.get('GENERATED_PLAYLIST_MAINTENANCE_ENABLED', 'true').lower() in ('1', 'true', 'yes', 'on')

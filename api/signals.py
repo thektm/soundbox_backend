@@ -40,6 +40,10 @@ from .notification_service import (
     send_user_notification,
 )
 from .realtime_notifications import schedule_notification_publish
+from .song_play_metrics import (
+    invalidate_song_play_count_cache,
+    record_committed_song_play,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -806,6 +810,40 @@ def notify_song_owner_status(sender, instance, created, **kwargs):
         f"song-owner-status:{song_id}:{expected_status}",
         lambda: _deliver_song_owner_status(song_id, expected_status),
     )
+
+
+
+# Keep the Redis mirror of Song.play_counts coherent with committed DB writes.
+@receiver(
+    m2m_changed,
+    sender=Song.play_counts.through,
+    dispatch_uid="api.metrics.song-play-counts",
+)
+def sync_song_play_count_cache(sender, instance, action, reverse, pk_set, **kwargs):
+    if action == "post_add" and pk_set:
+        if reverse:
+            play_count_id = int(instance.pk)
+            song_ids = tuple(int(song_id) for song_id in pk_set)
+            transaction.on_commit(
+                lambda: [record_committed_song_play(song_id, play_count_id) for song_id in song_ids]
+            )
+        else:
+            song_id = int(instance.pk)
+            play_count_ids = tuple(int(play_count_id) for play_count_id in pk_set)
+            transaction.on_commit(
+                lambda: [record_committed_song_play(song_id, play_count_id) for play_count_id in play_count_ids]
+            )
+        return
+
+    if action in {"post_remove", "post_clear"}:
+        transaction.on_commit(invalidate_song_play_count_cache)
+
+
+@receiver(post_delete, sender=PlayCount, dispatch_uid="api.metrics.song-play-counts.delete")
+def invalidate_song_play_count_cache_on_delete(sender, instance, **kwargs):
+    # PlayCount deletions are rare accounting/admin operations. Rotate the
+    # namespace rather than trying to infer which cached song relation changed.
+    transaction.on_commit(invalidate_song_play_count_cache)
 
 
 # Keep cached similarity rankings fresh without caching response payloads.

@@ -3919,42 +3919,48 @@ class PlayCountView(APIView):
             return Response({'error': 'unique_otplay_id, city, and country are required'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            stream_access = StreamAccess.objects.get(unique_otplay_id=unique_otplay_id, user=request.user)
-            if stream_access.one_time_used:
-                return Response({'error': 'This play ID has already been used'}, status=status.HTTP_400_BAD_REQUEST)
-
-            song = stream_access.song
-            ip = get_client_ip(request)
-
-            # Get latest configuration
-            config = PlayConfiguration.objects.last()
-            pay_value = Decimal('0.00000000')
-            if config:
-                if request.user.plan == User.PLAN_PREMIUM:
-                    pay_value = config.premium_play_worth
-                else:
-                    pay_value = config.free_play_worth
-            pay_value = _finance_decimal(pay_value)
-
-            play_count = PlayCount.objects.create(
-                user=request.user,
-                country=country,
-                city=city,
-                ip=ip,
-                pay=pay_value
-            )
-            song.play_counts.add(play_count)
-
-            # Mark as used
-            stream_access.one_time_used = True
-            stream_access.save(update_fields=['one_time_used'])
-
-            # Update monthly listener record for the artist
-            if song.artist:
-                ArtistMonthlyListener.objects.update_or_create(
-                    artist=song.artist,
-                    user=request.user
+            with transaction.atomic():
+                # Serialize consumption of a one-time stream token so concurrent
+                # submissions cannot both create accounting rows for one play.
+                stream_access = (
+                    StreamAccess.objects.select_for_update()
+                    .select_related('song__artist')
+                    .get(unique_otplay_id=unique_otplay_id, user=request.user)
                 )
+                if stream_access.one_time_used:
+                    return Response({'error': 'This play ID has already been used'}, status=status.HTTP_400_BAD_REQUEST)
+
+                song = stream_access.song
+                ip = get_client_ip(request)
+
+                config = PlayConfiguration.objects.last()
+                pay_value = Decimal('0.00000000')
+                if config:
+                    if request.user.plan == User.PLAN_PREMIUM:
+                        pay_value = config.premium_play_worth
+                    else:
+                        pay_value = config.free_play_worth
+                pay_value = _finance_decimal(pay_value)
+
+                play_count = PlayCount.objects.create(
+                    user=request.user,
+                    country=country,
+                    city=city,
+                    ip=ip,
+                    pay=pay_value
+                )
+                song.play_counts.add(play_count)
+
+                # Mark as used in the same commit as accounting. The Redis mirror
+                # is updated by the m2m signal only after this transaction commits.
+                stream_access.one_time_used = True
+                stream_access.save(update_fields=['one_time_used'])
+
+                if song.artist:
+                    ArtistMonthlyListener.objects.update_or_create(
+                        artist=song.artist,
+                        user=request.user
+                    )
 
             return Response({'message': 'Play count recorded successfully'})
 

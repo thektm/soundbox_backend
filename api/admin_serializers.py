@@ -8,8 +8,8 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Count, F
 from .utils import sign_r2_urls_in_payload
+from .song_play_metrics import hydrate_song_play_counts
 
 User = get_user_model()
 
@@ -181,7 +181,9 @@ class AdminSongSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTransla
         annotated = getattr(obj, 'total_plays', None)
         if annotated is not None:
             return int(annotated or 0)
-        tracked = getattr(obj, 'tracked_plays', None)
+        tracked = getattr(obj, '_cached_tracked_plays', None)
+        if tracked is None:
+            tracked = getattr(obj, 'tracked_plays', None)
         if tracked is not None:
             return int(obj.plays or 0) + int(tracked or 0)
         return int(obj.plays or 0)
@@ -368,8 +370,6 @@ class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTra
         else:
             song_queryset = (
                 obj.songs.select_related('artist', 'album')
-                .annotate(tracked_plays=Count('play_counts', distinct=True))
-                .annotate(total_plays=F('plays') + F('tracked_plays'))
                 .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
             )
             songs = {song.id: song for song in song_queryset}
@@ -383,7 +383,8 @@ class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTra
     def get_song_details(self, obj):
         if not self.context.get('include_song_details'):
             return []
-        return AdminSongSerializer(self._ordered_songs(obj), many=True).data
+        songs = hydrate_song_play_counts(self._ordered_songs(obj))
+        return AdminSongSerializer(songs, many=True).data
     
     class Meta:
         model = Playlist
