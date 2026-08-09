@@ -33,6 +33,18 @@ class AdminPagination(PageNumberPagination):
     max_page_size = 100
 
 
+def _admin_song_detail_queryset():
+    return (
+        Song.objects.select_related('artist', 'album')
+        .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+        .annotate(
+            likes_count=Count('liked_by', distinct=True),
+            tracked_plays=Count('play_counts', distinct=True),
+        )
+        .annotate(total_plays=F('plays') + F('tracked_plays'))
+    )
+
+
 def _int_list(value):
     """Normalize repeated/CSV/JSON id inputs into a de-duplicated integer list."""
     if value is None:
@@ -66,15 +78,17 @@ def _playlist_builder_queryset(params):
     songs = (
         Song.objects.filter(status=Song.STATUS_PUBLISHED)
         .select_related('artist', 'album')
-        .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
+        .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
         .annotate(
             likes_count=Count('liked_by', distinct=True),
+            tracked_plays=Count('play_counts', distinct=True),
             recent_plays=Count('play_counts', filter=Q(play_counts__created_at__gte=since), distinct=True),
             genre_count=Count('genres', distinct=True),
             mood_count=Count('moods', distinct=True),
             audio_meta_count=audio_score,
         )
         .annotate(
+            total_plays=F('plays') + F('tracked_plays'),
             metadata_sort_score=(
                 Case(When(genre_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
                 + Case(When(mood_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
@@ -110,13 +124,13 @@ def _playlist_builder_queryset(params):
         songs = songs.filter(metadata_sort_score__gte=minimum_score)
 
     ordering = {
-        'trend7': ('-recent_plays', '-likes_count', '-plays', '-id'),
-        'trend30': ('-recent_plays', '-likes_count', '-plays', '-id'),
-        'plays': ('-plays', '-likes_count', '-id'),
-        'likes': ('-likes_count', '-plays', '-id'),
+        'trend7': ('-recent_plays', '-likes_count', '-total_plays', '-id'),
+        'trend30': ('-recent_plays', '-likes_count', '-total_plays', '-id'),
+        'plays': ('-total_plays', '-likes_count', '-id'),
+        'likes': ('-likes_count', '-total_plays', '-id'),
         'newest': ('-created_at', '-id'),
-        'metadata': ('-metadata_sort_score', '-plays', '-likes_count', '-id'),
-    }.get(source, ('-recent_plays', '-likes_count', '-plays', '-id'))
+        'metadata': ('-metadata_sort_score', '-total_plays', '-likes_count', '-id'),
+    }.get(source, ('-recent_plays', '-likes_count', '-total_plays', '-id'))
     return songs.distinct().order_by(*ordering), source
 
 
@@ -607,11 +621,13 @@ class AdminSongListView(APIView):
             .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
             .annotate(
                 likes_count=Count('liked_by', distinct=True),
+                tracked_plays=Count('play_counts', distinct=True),
                 genre_count=Count('genres', distinct=True),
                 mood_count=Count('moods', distinct=True),
                 audio_meta_count=audio_score,
             )
             .annotate(
+                total_plays=F('plays') + F('tracked_plays'),
                 metadata_sort_score=(
                     Case(When(genre_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
                     + Case(When(mood_count__gt=0, then=Value(7)), default=Value(0), output_field=IntegerField())
@@ -630,7 +646,7 @@ class AdminSongListView(APIView):
             )
         sort = str(request.query_params.get('sort') or 'time').strip()
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
-        field = {'time': 'created_at', 'plays': 'plays', 'likes': 'likes_count', 'meta': 'metadata_sort_score', 'release': 'release_date'}.get(sort, 'created_at')
+        field = {'time': 'created_at', 'plays': 'total_plays', 'likes': 'likes_count', 'meta': 'metadata_sort_score', 'release': 'release_date'}.get(sort, 'created_at')
         songs = songs.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
         page = paginator.paginate_queryset(songs, request)
@@ -771,12 +787,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def get(self, request, pk):
-        song = get_object_or_404(
-            Song.objects.select_related('artist', 'album')
-            .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
-            .annotate(likes_count=Count('liked_by', distinct=True)),
-            pk=pk,
-        )
+        song = get_object_or_404(_admin_song_detail_queryset(), pk=pk)
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
 
@@ -813,16 +824,31 @@ class AdminSongDetailView(APIView):
     def _update_song(self, request, song, partial=False):
         data = request.data.copy()
         
-        # Ensure list fields are correctly extracted from QueryDict
-        for field in ['featured_artists', 'producers', 'composers', 'lyricists', 'genres', 'sub_genres', 'moods', 'tags']:
-            if field in data and hasattr(data, 'getlist'):
-                # Only use getlist if it's actually a list of values
-                # Sometimes frontend might send a single value or a comma-separated string
-                val = data.getlist(field)
-                if len(val) == 1 and ',' in val[0]:
-                    data[field] = [v.strip() for v in val[0].split(',')]
-                else:
-                    data[field] = val
+        # Normalize repeated multipart list inputs, including explicit clears.
+        list_fields = [
+            'featured_artists', 'producers', 'producers_en', 'composers', 'composers_en',
+            'lyricists', 'lyricists_en', 'genres', 'sub_genres', 'moods', 'tags',
+        ]
+        for field in list_fields:
+            if field not in data or not hasattr(data, 'getlist'):
+                continue
+            values = data.getlist(field)
+            if len(values) == 1 and ',' in values[0]:
+                values = [value.strip() for value in values[0].split(',') if value.strip()]
+            else:
+                values = [value for value in values if str(value).strip()]
+            if hasattr(data, 'setlist'):
+                data.setlist(field, values)
+            else:
+                data[field] = values
+
+        # Empty multipart values intentionally clear nullable metadata fields.
+        for field in [
+            'tempo', 'energy', 'danceability', 'valence', 'acousticness',
+            'instrumentalness', 'speechiness', 'release_date',
+        ]:
+            if field in data and data.get(field) == '':
+                data[field] = None
 
         # Handle audio file upload
         audio_file = request.FILES.get('audio_file_upload')
@@ -888,7 +914,8 @@ class AdminSongDetailView(APIView):
         serializer = AdminSongSerializer(song, data=data, partial=partial)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)
+            updated_song = get_object_or_404(_admin_song_detail_queryset(), pk=song.pk)
+            return Response(AdminSongSerializer(updated_song).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

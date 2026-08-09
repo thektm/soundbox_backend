@@ -8,6 +8,7 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Count, F
 from .utils import sign_r2_urls_in_payload
 
 User = get_user_model()
@@ -151,6 +152,7 @@ class AdminSongSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTransla
     # Display fields
     artist_name = serializers.CharField(source='artist.name', read_only=True)
     album_title = serializers.CharField(source='album.title', read_only=True, allow_null=True)
+    plays = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
     metadata_completion = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
@@ -174,6 +176,15 @@ class AdminSongSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTransla
 
     def get_featured_artists(self, obj):
         return [{'id': a.id, 'name': a.name, 'artistic_name': a.artistic_name} for a in obj.featured_artists.all()]
+
+    def get_plays(self, obj):
+        annotated = getattr(obj, 'total_plays', None)
+        if annotated is not None:
+            return int(annotated or 0)
+        tracked = getattr(obj, 'tracked_plays', None)
+        if tracked is not None:
+            return int(obj.plays or 0) + int(tracked or 0)
+        return int(obj.plays or 0)
 
     def get_likes_count(self, obj):
         annotated = getattr(obj, 'likes_count', None)
@@ -355,12 +366,13 @@ class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTra
         if not ordered_ids:
             ordered = []
         else:
-            songs = {
-                song.id: song
-                for song in obj.songs.select_related('artist', 'album').prefetch_related(
-                    'featured_artists', 'genres', 'sub_genres', 'moods'
-                )
-            }
+            song_queryset = (
+                obj.songs.select_related('artist', 'album')
+                .annotate(tracked_plays=Count('play_counts', distinct=True))
+                .annotate(total_plays=F('plays') + F('tracked_plays'))
+                .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+            )
+            songs = {song.id: song for song in song_queryset}
             ordered = [songs[song_id] for song_id in ordered_ids if song_id in songs]
         setattr(obj, cache_name, ordered)
         return ordered
@@ -492,11 +504,13 @@ class AdminEventPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEngli
     def validate(self, attrs):
         attrs = super().validate(attrs)
         if self.instance is None and 'playlists' not in attrs:
-            raise serializers.ValidationError({'playlists': 'Exactly 3 playlists are required.'})
+            raise serializers.ValidationError({'playlists': 'Select at least 1 playlist.'})
         if 'playlists' in attrs:
             playlist_ids = [playlist.pk for playlist in attrs['playlists']]
-            if len(playlist_ids) != 3 or len(set(playlist_ids)) != 3:
-                raise serializers.ValidationError({'playlists': 'Exactly 3 distinct playlists are required.'})
+            if not 1 <= len(playlist_ids) <= 3:
+                raise serializers.ValidationError({'playlists': 'Select between 1 and 3 playlists.'})
+            if len(set(playlist_ids)) != len(playlist_ids):
+                raise serializers.ValidationError({'playlists': 'Playlists must be distinct.'})
         time_of_day = attrs.get('time_of_day', getattr(self.instance, 'time_of_day', None))
         if self.instance is None and time_of_day and EventPlaylist.objects.filter(time_of_day=time_of_day).exists():
             raise serializers.ValidationError({'time_of_day': 'A configuration for this time of day already exists.'})
