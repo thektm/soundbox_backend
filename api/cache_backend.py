@@ -1,146 +1,143 @@
-"""Redis cache backend that fails over to an in-process cache.
+"""Redis cache backend that fails open to *cache misses*, never stale local data.
 
-Redis remains the primary shared cache. A temporary Redis/DNS/network problem must
-not make API requests fail or keep Gunicorn unavailable, so cache operations fall
-back to Django's thread-safe local-memory backend until Redis recovers.
+Redis is the shared coordination/cache layer. A per-process value fallback is
+unsafe for freshness because another Daphne worker cannot invalidate it. During
+an outage reads therefore miss and callers fall back to PostgreSQL/current
+computation. A small circuit breaker prevents every request from paying a
+network timeout while Redis is known to be unavailable.
 """
-
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from django.core.cache.backends.base import DEFAULT_TIMEOUT
-from django.core.cache.backends.locmem import LocMemCache
 from django.core.cache.backends.redis import RedisCache
 
 try:
     from redis.exceptions import RedisError
-except Exception:  # pragma: no cover - redis is an installed project dependency.
+except Exception:  # pragma: no cover
     RedisError = Exception
 
 logger = logging.getLogger(__name__)
 
 
 class ResilientRedisCache(RedisCache):
-    """Use Redis normally and degrade to per-process memory on connection errors."""
+    """Use Redis normally; on failure return neutral cache-miss semantics."""
 
     _warning_interval = 60.0
+    _retry_seconds = 5.0
 
     def __init__(self, server, params):
         super().__init__(server, params)
-        fallback_location = f"sedabox-fallback:{params.get('KEY_PREFIX', 'default')}"
-        self._fallback = LocMemCache(fallback_location, params)
         self._last_warning_at = 0.0
+        self._retry_after = 0.0
+        self._state_lock = threading.Lock()
 
     def _warn(self, operation: str, exc: BaseException) -> None:
         now = time.monotonic()
         if now - self._last_warning_at >= self._warning_interval:
             logger.warning(
-                "Redis cache unavailable during %s; using local fallback: %s",
-                operation,
-                exc,
+                "Redis cache unavailable during %s; treating cache as a miss: %s",
+                operation, exc,
             )
             self._last_warning_at = now
 
-    def _redis_call(self, operation: str, redis_func, fallback_func):
+    def _trip(self, operation: str, exc: BaseException) -> None:
+        with self._state_lock:
+            self._retry_after = max(self._retry_after, time.monotonic() + self._retry_seconds)
+        self._warn(operation, exc)
+
+    def _call(self, operation: str, redis_func, fallback_func):
+        if time.monotonic() < self._retry_after:
+            return fallback_func()
         try:
-            return redis_func()
+            result = redis_func()
+            self._retry_after = 0.0
+            return result
         except (RedisError, OSError, TimeoutError) as exc:
-            self._warn(operation, exc)
+            self._trip(operation, exc)
             return fallback_func()
 
     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
-        return self._redis_call(
+        # Claiming work locally is safer than making a request wait for a lock
+        # that cannot exist while Redis is down. Duplicate computation is okay.
+        return self._call(
             "add",
             lambda: super(ResilientRedisCache, self).add(key, value, timeout, version),
-            lambda: self._fallback.add(key, value, timeout, version),
+            lambda: True,
         )
 
     def get(self, key, default=None, version=None):
-        try:
-            value = super().get(key, default, version)
-            if value is not default:
-                self._fallback.set(key, value, self.default_timeout, version)
-            return value
-        except (RedisError, OSError, TimeoutError) as exc:
-            self._warn("get", exc)
-            return self._fallback.get(key, default, version)
+        return self._call(
+            "get",
+            lambda: super(ResilientRedisCache, self).get(key, default, version),
+            lambda: default,
+        )
 
     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
-        result = self._redis_call(
+        return self._call(
             "set",
             lambda: super(ResilientRedisCache, self).set(key, value, timeout, version),
-            lambda: self._fallback.set(key, value, timeout, version),
+            lambda: False,
         )
-        self._fallback.set(key, value, timeout, version)
-        return result
 
     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
-        return self._redis_call(
+        return self._call(
             "touch",
             lambda: super(ResilientRedisCache, self).touch(key, timeout, version),
-            lambda: self._fallback.touch(key, timeout, version),
+            lambda: False,
         )
 
     def delete(self, key, version=None):
-        self._fallback.delete(key, version)
-        return self._redis_call(
+        return self._call(
             "delete",
             lambda: super(ResilientRedisCache, self).delete(key, version),
             lambda: False,
         )
 
     def get_many(self, keys, version=None):
-        try:
-            values = super().get_many(keys, version)
-            if values:
-                self._fallback.set_many(values, self.default_timeout, version)
-            return values
-        except (RedisError, OSError, TimeoutError) as exc:
-            self._warn("get_many", exc)
-            return self._fallback.get_many(keys, version)
+        return self._call(
+            "get_many",
+            lambda: super(ResilientRedisCache, self).get_many(keys, version),
+            dict,
+        )
 
     def set_many(self, data, timeout=DEFAULT_TIMEOUT, version=None):
-        self._fallback.set_many(data, timeout, version)
-        return self._redis_call(
+        return self._call(
             "set_many",
             lambda: super(ResilientRedisCache, self).set_many(data, timeout, version),
-            lambda: [],
+            list,
         )
 
     def delete_many(self, keys, version=None):
-        self._fallback.delete_many(keys, version)
-        return self._redis_call(
+        return self._call(
             "delete_many",
             lambda: super(ResilientRedisCache, self).delete_many(keys, version),
             lambda: 0,
         )
 
     def clear(self):
-        self._fallback.clear()
-        return self._redis_call(
+        return self._call(
             "clear",
             lambda: super(ResilientRedisCache, self).clear(),
             lambda: True,
         )
 
     def incr(self, key, delta=1, version=None):
-        return self._redis_call(
+        def unavailable():
+            raise ConnectionError("Redis shared counter unavailable")
+
+        return self._call(
             "incr",
             lambda: super(ResilientRedisCache, self).incr(key, delta, version),
-            lambda: self._fallback.incr(key, delta, version),
+            unavailable,
         )
 
     def has_key(self, key, version=None):
-        return self._redis_call(
+        return self._call(
             "has_key",
             lambda: super(ResilientRedisCache, self).has_key(key, version),
-            lambda: self._fallback.has_key(key, version),
+            lambda: False,
         )
-
-    def close(self, **kwargs):
-        try:
-            super().close(**kwargs)
-        finally:
-            self._fallback.close(**kwargs)

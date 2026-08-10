@@ -2,21 +2,24 @@
 set -euo pipefail
 
 # update_app.sh
-# Safely update only the web app: fetch from GitHub, hard-reset to origin, rebuild web service,
-# recreate container and run migrations + collectstatic.
+# Safely update the backend runtime: fetch/reset, build one shared backend image,
+# recreate the web service, run migrations/static collection, then recreate background workers.
 # Usage: ./update_app.sh [branch]
 # - branch: git branch to deploy (default: main)
-# - set WEB_SERVICE env var to the service name in docker-compose (default: web)
+# - WEB_SERVICE selects the HTTP/ASGI service (default: web)
+# - RUNTIME_SERVICES selects services that must run the same freshly built image
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
 BRANCH="${1:-main}"
 WEB_SERVICE="${WEB_SERVICE:-web}"
+RUNTIME_SERVICES="${RUNTIME_SERVICES:-release_scheduler recommendation_worker runtime_maintenance ranking_worker}"
 
 echo "Repo: $REPO_DIR"
 echo "Branch: $BRANCH"
 echo "Web service: $WEB_SERVICE"
+echo "Runtime services: $RUNTIME_SERVICES"
 
 # choose compose command
 if command -v docker-compose >/dev/null 2>&1; then
@@ -61,58 +64,32 @@ else
   echo "makemigrations completed (exit $MSTATUS)."
 fi
 
-echo "Stopping and removing existing web container (if any)"
+echo "Stopping backend runtime services before schema/static work"
+# Do not let old worker code keep writing while the freshly built revision is
+# applying schema changes. This also prevents the new web process from serving
+# requests before migrations and static collection complete.
 set +e
-$COMPOSE_CMD stop "$WEB_SERVICE" >/dev/null 2>&1
-$COMPOSE_CMD rm -f "$WEB_SERVICE" >/dev/null 2>&1
+# shellcheck disable=SC2086
+$COMPOSE_CMD stop "$WEB_SERVICE" $RUNTIME_SERVICES >/dev/null 2>&1
+# shellcheck disable=SC2086
+$COMPOSE_CMD rm -f "$WEB_SERVICE" $RUNTIME_SERVICES >/dev/null 2>&1
 set -e
 
-echo "Building web service image (no cache)"
-$COMPOSE_CMD build --no-cache "$WEB_SERVICE"
+echo "Building shared backend image"
+# Docker's content-addressed layer cache is safe here: git was hard-reset to the
+# requested revision, so changed source/dependencies invalidate the right layers
+# without wasting CPU rebuilding unchanged OS/Python dependencies.
+$COMPOSE_CMD build "$WEB_SERVICE"
 
-echo "Starting fresh web container"
-# recreate only web service without dependencies
-$COMPOSE_CMD up -d --no-deps --force-recreate "$WEB_SERVICE"
+echo "Running migrations from the freshly built image"
+$COMPOSE_CMD run --rm --no-deps "$WEB_SERVICE" python manage.py migrate --noinput
 
-echo "Waiting a few seconds for the container to initialize..."
-sleep 4
+echo "Collecting static files from the freshly built image"
+$COMPOSE_CMD run --rm --no-deps "$WEB_SERVICE" python manage.py collectstatic --noinput
 
-echo "Running migrations inside web container"
-# use -T to avoid tty issues in non-interactive scripts
-$COMPOSE_CMD exec -T "$WEB_SERVICE" python manage.py makemigrations  || {
-  echo "Warning: makemigrations failed via compose exec; attempting docker exec by container name"
-  # fallback: find container name and exec into it
-  CONTAINER_NAME=$(docker ps --filter "name=${WEB_SERVICE}" --format "{{.Names}}" | head -n1)
-  if [ -n "$CONTAINER_NAME" ]; then
-    docker exec -i "$CONTAINER_NAME" python manage.py makemigrations 
-  else
-    echo "Could not find running container for service $WEB_SERVICE to run makemigrations." >&2
-    exit 1
-  fi
-}
-$COMPOSE_CMD exec -T "$WEB_SERVICE" python manage.py migrate --noinput || {
-  echo "Warning: migrations failed to run via compose exec; attempting docker exec by container name"
-  # fallback: find container name and exec into it
-  CONTAINER_NAME=$(docker ps --filter "name=${WEB_SERVICE}" --format "{{.Names}}" | head -n1)
-  if [ -n "$CONTAINER_NAME" ]; then
-    docker exec -i "$CONTAINER_NAME" python manage.py migrate --noinput
-  else
-    echo "Could not find running container for service $WEB_SERVICE to run migrations." >&2
-    exit 1
-  fi
-}
-
-echo "Collecting static files"
-$COMPOSE_CMD exec -T "$WEB_SERVICE" python manage.py collectstatic --noinput || {
-  echo "collectstatic failed via compose exec; attempting docker exec by container name"
-  CONTAINER_NAME=$(docker ps --filter "name=${WEB_SERVICE}" --format "{{.Names}}" | head -n1)
-  if [ -n "$CONTAINER_NAME" ]; then
-    docker exec -i "$CONTAINER_NAME" python manage.py collectstatic --noinput
-  else
-    echo "Could not find running container for service $WEB_SERVICE to run collectstatic." >&2
-    exit 1
-  fi
-}
+echo "Starting web and runtime workers on the same revision"
+# shellcheck disable=SC2086
+$COMPOSE_CMD up -d --no-deps --force-recreate "$WEB_SERVICE" $RUNTIME_SERVICES
 
 echo "Deployment finished. Showing recent logs for the web service (last 200 lines):"
 $COMPOSE_CMD logs --no-color --tail=200 "$WEB_SERVICE"

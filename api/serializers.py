@@ -11,18 +11,19 @@ from .models import BannerAd
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from urllib.parse import urlencode
-from django.urls import reverse
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import Q
 from django.db.models.manager import BaseManager
 
 from .localization import get_request_language, localized_value, translate_generated_text, generated_playlist_english
 from .subscriptions import normalize_expired_premium, premium_expires_at
+from .stream_grants import create_stream_grant_url
+from .similarity import ranked_similar_song_ids
 
 from .performance import (
     CATALOG_VERSION_KEY, cache_get_or_claim, cache_set, cache_version,
-    hydrate_album_metrics, hydrate_song_metrics, relation_ids, stable_cache_key,
+    hydrate_album_metrics, hydrate_artist_full_list, hydrate_artist_metrics, hydrate_playlist_metrics, hydrate_song_metrics, relation_ids, stable_cache_key,
 )
 
 
@@ -45,18 +46,14 @@ def _preview_url(song):
 def _stream_wrapper(song, request):
     if not request or not request.user.is_authenticated:
         return _preview_url(song)
-    for _ in range(3):
-        try:
-            access = StreamAccess.objects.create(
-                user=request.user, song=song,
-                short_token=__import__('secrets').token_urlsafe(9)[:12],
-                unique_otplay_id=__import__('secrets').token_urlsafe(18),
-            )
-            path = reverse('stream-short', kwargs={'token': access.short_token})
-            return absolute_api_url(request, path)
-        except IntegrityError:
-            continue
-    return None
+    user_id = int(request.user.pk)
+    grants = getattr(song, '_serializer_stream_grants', None)
+    if grants is None:
+        grants = {}
+        song._serializer_stream_grants = grants
+    if user_id not in grants:
+        grants[user_id] = create_stream_grant_url(request, song)
+    return grants[user_id]
 
 
 def _metric(obj, attr, fallback):
@@ -64,6 +61,135 @@ def _metric(obj, attr, fallback):
     return fallback() if value is None else value
 
 
+def _official_creator_uid(serializer):
+    if not hasattr(serializer, '_official_creator_uid_value'):
+        serializer._official_creator_uid_value = User.objects.filter(
+            first_name='SedaBox |', last_name='صداباکس'
+        ).values_list('unique_id', flat=True).first()
+    return serializer._official_creator_uid_value
+
+
+def _relation_items(obj, relation):
+    cache = getattr(obj, '_serializer_relation_cache', None)
+    if cache is None:
+        cache = {}
+        obj._serializer_relation_cache = cache
+    if relation not in cache:
+        prefetched = getattr(obj, '_prefetched_objects_cache', {}).get(relation)
+        cache[relation] = list(prefetched if prefetched is not None else getattr(obj, relation).all())
+    return cache[relation]
+
+
+def _ensure_song_metrics(obj, request=None):
+    needed = ('_play_count', '_likes_count', '_playlist_count', '_playlist_users_count', '_is_liked')
+    if not all(hasattr(obj, name) for name in needed):
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_song_metrics([obj], user if getattr(user, 'is_authenticated', False) else None)
+    return obj
+
+
+class SongMetricsListSerializer(serializers.ListSerializer):
+    """Batch all song metrics once before child serialization."""
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_song_metrics(items, user if getattr(user, 'is_authenticated', False) else None)
+        return super().to_representation(items)
+
+
+class ArtistMetricsListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_artist_metrics(items, user if getattr(user, 'is_authenticated', False) else None)
+        return super().to_representation(items)
+
+
+class AlbumMetricsListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_album_metrics(items, user if getattr(user, 'is_authenticated', False) else None)
+        return super().to_representation(items)
+
+
+class PlaylistMetricsListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_playlist_metrics(items, user if getattr(user, 'is_authenticated', False) else None)
+        return super().to_representation(items)
+
+
+class SongWithSimilarListSerializer(SongMetricsListSerializer):
+    """Batch similar-song hydration for full song lists.
+
+    Ranking IDs remain independently cached per source song, preserving the
+    exact ranking contract, but all selected similar rows for the response are
+    fetched/metric-hydrated together instead of one ORM query group per song.
+    """
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        request = self.context.get('request')
+        if request and '/artist/' in request.path:
+            return super().to_representation(items)
+        if not items:
+            return super().to_representation(items)
+
+        def positive(name, default, maximum):
+            try:
+                return max(1, min(int(request.query_params.get(name, default)), maximum))
+            except (AttributeError, TypeError, ValueError):
+                return default
+
+        page = positive('similar_page', 1, 1000)
+        page_size = positive('similar_page_size', 6, 24)
+        start = (page - 1) * page_size
+        ranked = {song.pk: ranked_similar_song_ids(song) for song in items}
+        wanted = []
+        seen = set()
+        for ids in ranked.values():
+            for song_id in ids[start:start + page_size]:
+                if song_id not in seen:
+                    seen.add(song_id)
+                    wanted.append(song_id)
+
+        rows = Song.objects.filter(pk__in=wanted).select_related('artist', 'album').prefetch_related(
+            'featured_artists', 'genres', 'moods', 'tags', 'sub_genres'
+        )
+        by_id = {song.pk: song for song in rows}
+        related = [by_id[song_id] for song_id in wanted if song_id in by_id]
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_song_metrics(related, user if getattr(user, 'is_authenticated', False) else None, False)
+
+        for source in items:
+            ids = ranked.get(source.pk, [])
+            selected = ids[start:start + page_size]
+            group = [by_id[song_id] for song_id in selected if song_id in by_id]
+            next_link = None
+            if request and start + page_size < len(ids):
+                from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+                parsed = urlparse(absolute_api_url(request, request.get_full_path()))
+                query = parse_qs(parsed.query)
+                query.update(similar_page=[str(page + 1)], similar_page_size=[str(page_size)])
+                next_link = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+            source._similar_payload = {
+                'items': SongSummarySerializer(group, many=True, context=self.context).data,
+                'total': len(ids),
+                'page': page,
+                'has_next': start + page_size < len(ids),
+                'next': next_link,
+            }
+        return super().to_representation(items)
 
 
 def _relative_day_label(days, request=None):
@@ -195,6 +321,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Song
+        list_serializer_class = SongMetricsListSerializer
         fields = [
             'id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists',
             'album_id', 'album_title', 'cover_image', 'stream_url', 'preview_url', 'is_preview',
@@ -216,11 +343,11 @@ class SongSummarySerializer(LocalizedModelSerializer):
                 'artistic_name_fa': a.artistic_name,
                 'artistic_name_en': a.artistic_name_en or a.artistic_name,
             }
-            for a in obj.featured_artists.all()
+            for a in _relation_items(obj, 'featured_artists')
         ]
 
     def _items(self, obj, relation):
-        return list(getattr(obj, relation).all())
+        return _relation_items(obj, relation)
 
     def get_genres(self, obj):
         request = self.context.get('request')
@@ -240,7 +367,8 @@ class SongSummarySerializer(LocalizedModelSerializer):
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
-        return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and SongLike.objects.filter(user=request.user, song=obj).exists()))
+        _ensure_song_metrics(obj, request)
+        return bool(getattr(obj, '_is_liked', False))
 
     def get_stream_url(self, obj): return _stream_wrapper(obj, self.context.get('request'))
     def get_preview_url(self, obj): return _preview_url(obj)
@@ -248,7 +376,9 @@ class SongSummarySerializer(LocalizedModelSerializer):
         request = self.context.get('request')
         return bool((not request or not request.user.is_authenticated) and obj.preview_audio_url)
     def get_preview_duration_seconds(self, obj): return min(30, obj.duration_seconds or 30) if obj.preview_audio_url else 0
-    def get_play_count(self, obj): return int(obj.plays or 0) + int(_metric(obj, '_play_count', lambda: obj.play_counts.count()))
+    def get_play_count(self, obj):
+        _ensure_song_metrics(obj, self.context.get('request'))
+        return int(obj.plays or 0) + int(getattr(obj, '_play_count', 0) or 0)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -281,6 +411,7 @@ class ArtistSummarySerializer(LocalizedModelSerializer):
     social_accounts = serializers.SerializerMethodField()
 
     class Meta:
+        list_serializer_class = ArtistMetricsListSerializer
         model = Artist
         fields = [
             'id', 'name', 'artistic_name', 'unique_id', 'bio', 'profile_image',
@@ -335,6 +466,7 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
     cover_image = serializers.SerializerMethodField()
 
     class Meta:
+        list_serializer_class = AlbumMetricsListSerializer
         model = Album
         fields = ['id', 'title', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'is_liked', 'genres', 'genre_names', 'mood_names', 'sub_genre_names']
 
@@ -351,7 +483,7 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
 
     def get_genres(self, obj):
         request = self.context.get('request')
-        genres = {genre.id: genre for genre in obj.genres.all()}
+        genres = {genre.id: genre for genre in _relation_items(obj, 'genres')}
         for song in self._songs(obj):
             genres.update({genre.id: genre for genre in song.genres.all()})
         return sorted(
@@ -458,6 +590,7 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
     creator_unique_id = serializers.SerializerMethodField()
 
     class Meta:
+        list_serializer_class = PlaylistMetricsListSerializer
         model = Playlist
         fields = [
             'id', 'title', 'description', 'cover_image', 'top_three_song_covers',
@@ -486,11 +619,11 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
         request = self.context.get('request')
         return [
             {'id': genre.id, 'name': localized_value(genre, 'name', request)}
-            for genre in obj.genres.all()
+            for genre in _relation_items(obj, 'genres')
         ]
 
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
-    def get_mood_names(self, obj): return [localized_value(m, 'name', self.context.get('request')) for m in obj.moods.all()]
+    def get_mood_names(self, obj): return [localized_value(m, 'name', self.context.get('request')) for m in _relation_items(obj, 'moods')]
 
     def get_top_three_song_covers(self, obj):
         return [_signed_url(song.cover_image or getattr(song.album, 'cover_image', None)) for song in self._songs(obj)[:3] if song.cover_image or getattr(song.album, 'cover_image', None)]
@@ -552,16 +685,22 @@ class FollowableEntitySerializer(serializers.Serializer):
         return obj.is_verified
 
     def get_followers_count(self, obj):
+        if hasattr(obj, '_followers_count'):
+            return int(obj._followers_count or 0)
         if isinstance(obj, Artist):
             return Follow.objects.filter(followed_artist=obj).count()
         return Follow.objects.filter(followed_user=obj).count()
 
     def get_following_count(self, obj):
+        if hasattr(obj, '_followings_count'):
+            return int(obj._followings_count or 0)
         if isinstance(obj, Artist):
             return Follow.objects.filter(follower_artist=obj).count()
         return Follow.objects.filter(follower_user=obj).count()
 
     def get_is_following(self, obj):
+        if hasattr(obj, '_is_following'):
+            return bool(obj._is_following)
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
@@ -1099,6 +1238,38 @@ class ChangePasswordSerializer(serializers.Serializer):
         return attrs
 
 
+class ArtistFullListSerializer(serializers.ListSerializer):
+    """Batch the full artist-list payload, including nested follow pages."""
+
+    @staticmethod
+    def _page(request, page_name, size_name, default_size=10):
+        page, size = 1, default_size
+        if request is not None:
+            try:
+                page = int(request.query_params.get(page_name, 1))
+                size = int(request.query_params.get(size_name, default_size))
+            except (TypeError, ValueError):
+                pass
+        return page, size, (page - 1) * size
+
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        _f_page, f_size, f_offset = self._page(request, 'f_page', 'f_page_size')
+        _fg_page, fg_size, fg_offset = self._page(request, 'fg_page', 'fg_page_size')
+        hydrate_artist_full_list(
+            items,
+            user if getattr(user, 'is_authenticated', False) else None,
+            followers_offset=f_offset,
+            followers_page_size=f_size,
+            following_offset=fg_offset,
+            following_page_size=fg_size,
+        )
+        return super().to_representation(items)
+
+
 class ArtistSerializer(LocalizedModelSerializer):
     """Serializer for Artist model"""
     user_id = serializers.PrimaryKeyRelatedField(
@@ -1110,7 +1281,7 @@ class ArtistSerializer(LocalizedModelSerializer):
     followers_count = serializers.SerializerMethodField()
     followings_count = serializers.SerializerMethodField()
     monthly_listeners_count = serializers.SerializerMethodField()
-    live_listeners = serializers.ReadOnlyField()
+    live_listeners = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
     followers = serializers.SerializerMethodField()
     following = serializers.SerializerMethodField()
@@ -1118,6 +1289,7 @@ class ArtistSerializer(LocalizedModelSerializer):
     
     class Meta:
         model = Artist
+        list_serializer_class = ArtistFullListSerializer
         fields = [
             'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id', 'user_id', 'bio', 'bio_en', 'profile_image', 'banner_image', 
             'email', 'city', 'city_en', 'date_of_birth', 'address', 'address_en', 'id_number',
@@ -1146,9 +1318,16 @@ class ArtistSerializer(LocalizedModelSerializer):
             except (ValueError, TypeError): pass
         
         offset = (page - 1) * page_size
-        qs = Follow.objects.filter(followed_artist=obj).order_by('-created_at')
-        total = qs.count()
-        items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
+        prepared = getattr(obj, '_followers_page_items', None)
+        if prepared is not None:
+            total = int(getattr(obj, '_followers_count', 0) or 0)
+            items = prepared
+        else:
+            qs = Follow.objects.filter(followed_artist=obj).select_related(
+                'follower_user', 'follower_artist'
+            ).order_by('-created_at')
+            total = qs.count()
+            items = [f.follower_user or f.follower_artist for f in qs[offset:offset + page_size]]
         
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -1167,9 +1346,16 @@ class ArtistSerializer(LocalizedModelSerializer):
             except (ValueError, TypeError): pass
         
         offset = (page - 1) * page_size
-        qs = Follow.objects.filter(follower_artist=obj).order_by('-created_at')
-        total = qs.count()
-        items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
+        prepared = getattr(obj, '_following_page_items', None)
+        if prepared is not None:
+            total = int(getattr(obj, '_followings_count', 0) or 0)
+            items = prepared
+        else:
+            qs = Follow.objects.filter(follower_artist=obj).select_related(
+                'followed_user', 'followed_artist'
+            ).order_by('-created_at')
+            total = qs.count()
+            items = [f.followed_user or f.followed_artist for f in qs[offset:offset + page_size]]
         
         return {
             'items': FollowableEntitySerializer(items, many=True, context=self.context).data,
@@ -1177,6 +1363,10 @@ class ArtistSerializer(LocalizedModelSerializer):
             'page': page,
             'has_next': total > offset + page_size
         }
+
+    def get_live_listeners(self, obj):
+        value = getattr(obj, '_live_listeners_count', None)
+        return int(value if value is not None else obj.live_listeners)
 
     def get_monthly_listeners_count(self, obj):
         from django.utils import timezone
@@ -1286,6 +1476,7 @@ class AlbumSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Album
+        list_serializer_class = AlbumMetricsListSerializer
         fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'cover_image', 'release_date',
                   'description', 'description_en', 'created_at', 'likes_count', 'songs_count', 'is_liked', 'genre_ids_write', 'sub_genre_ids_write',
                   'mood_ids_write', 'genre_ids', 'sub_genre_ids', 'mood_ids', 'genre_items', 'sub_genre_items', 'mood_items', 'songs', 'song_genre_names', 'song_mood_names']
@@ -1296,9 +1487,9 @@ class AlbumSerializer(LocalizedModelSerializer):
     def get_is_liked(self, obj):
         request = self.context.get('request')
         return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and AlbumLike.objects.filter(user=request.user, album=obj).exists()))
-    def get_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.genres.all()]
-    def get_sub_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.sub_genres.all()]
-    def get_mood_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in obj.moods.all()]
+    def get_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in _relation_items(obj, 'genres')]
+    def get_sub_genre_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in _relation_items(obj, 'sub_genres')]
+    def get_mood_ids(self, obj): return [localized_value(x, 'name', self.context.get('request')) for x in _relation_items(obj, 'moods')]
     def _taxonomy_items(self, values):
         request = self.context.get('request')
         return [{'id': item.id, 'title': localized_value(item, 'name', request), 'name': item.name, 'name_en': item.name_en} for item in values.all()]
@@ -1433,6 +1624,7 @@ class SongSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Song
+        list_serializer_class = SongWithSimilarListSerializer
         fields = ['id', 'title', 'title_en', 'artist_id', 'artist_name', 'artist_unique_id', 'featured_artists', 'featured_artist_ids',
                   'album', 'album_id', 'album_title', 'is_single', 'album_disc_number', 'album_track_number', 'stream_url', 'preview_url', 'is_preview',
                   'preview_duration_seconds', 'audio_file', 'converted_audio_url', 'cover_image', 'original_format',
@@ -1459,26 +1651,35 @@ class SongSerializer(LocalizedModelSerializer):
                 'artistic_name_fa': a.artistic_name,
                 'artistic_name_en': a.artistic_name_en or a.artistic_name,
             }
-            for a in obj.featured_artists.all()
+            for a in _relation_items(obj, 'featured_artists')
         ]
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
             {'id': genre.id, 'name': localized_value(genre, 'name', request)}
-            for genre in obj.genres.all()
+            for genre in _relation_items(obj, 'genres')
         ]
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
-    def get_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.genres.all()]
-    def get_sub_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.sub_genres.all()]
-    def get_mood_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.moods.all()]
-    def get_tag_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in obj.tags.all()]
-    def get_plays(self, obj): return int(obj.plays or 0) + int(_metric(obj, '_play_count', lambda: obj.play_counts.count()))
-    def get_likes_count(self, obj): return int(_metric(obj, '_likes_count', lambda: SongLike.objects.filter(song=obj).count()))
-    def get_added_to_playlists_count(self, obj): return int(_metric(obj, '_playlist_count', lambda: obj.user_playlists.count()))
-    def get_added_to_playlist(self, obj): return int(_metric(obj, '_playlist_users_count', lambda: obj.user_playlists.values('user_id').distinct().count()))
+    def get_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'genres')]
+    def get_sub_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'sub_genres')]
+    def get_mood_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'moods')]
+    def get_tag_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'tags')]
+    def get_plays(self, obj):
+        _ensure_song_metrics(obj, self.context.get('request'))
+        return int(obj.plays or 0) + int(getattr(obj, '_play_count', 0) or 0)
+    def get_likes_count(self, obj):
+        _ensure_song_metrics(obj, self.context.get('request'))
+        return int(getattr(obj, '_likes_count', 0) or 0)
+    def get_added_to_playlists_count(self, obj):
+        _ensure_song_metrics(obj, self.context.get('request'))
+        return int(getattr(obj, '_playlist_count', 0) or 0)
+    def get_added_to_playlist(self, obj):
+        _ensure_song_metrics(obj, self.context.get('request'))
+        return int(getattr(obj, '_playlist_users_count', 0) or 0)
     def get_is_liked(self, obj):
         request = self.context.get('request')
-        return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and SongLike.objects.filter(user=request.user, song=obj).exists()))
+        _ensure_song_metrics(obj, request)
+        return bool(getattr(obj, '_is_liked', False))
     def get_stream_url(self, obj): return _stream_wrapper(obj, self.context.get('request'))
     def get_preview_url(self, obj): return _preview_url(obj)
     def get_is_preview(self, obj):
@@ -1490,47 +1691,41 @@ class SongSerializer(LocalizedModelSerializer):
         request = self.context.get('request')
         if request and '/artist/' in request.path:
             return None
+        prepared = getattr(obj, '_similar_payload', None)
+        if prepared is not None:
+            return prepared
+
         def positive(name, default, maximum):
-            try: return max(1, min(int(request.query_params.get(name, default)), maximum))
-            except (AttributeError, TypeError, ValueError): return default
-        page, page_size = positive('similar_page', 1, 1000), positive('similar_page_size', 6, 24)
-        genres, moods, tags = relation_ids(obj, 'genres'), relation_ids(obj, 'moods'), relation_ids(obj, 'tags')
-        key = stable_cache_key('similar-songs-v5', obj.pk, obj.updated_at, cache_version(CATALOG_VERSION_KEY))
-        ranked_ids, _ = cache_get_or_claim(key)
-        if ranked_ids is None:
-            match = Q(artist_id=obj.artist_id)
-            if genres: match |= Q(genres__in=genres)
-            if moods: match |= Q(moods__in=moods)
-            if tags: match |= Q(tags__in=tags)
-            candidates = list(Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(pk=obj.pk).filter(match).distinct()
-                              .select_related('artist', 'album').prefetch_related('genres', 'moods', 'tags')
-                              .order_by('-plays', '-release_date', '-created_at')[:300])
-            source_year = getattr(obj.release_date, 'year', None)
-            def near(a, b, weight, scale=100):
-                return 0 if a is None or b is None else max(0, scale - abs(a-b)) / scale * weight
-            scored=[]
-            for song in candidates:
-                score = 3*len(genres & relation_ids(song,'genres')) + 2*len(moods & relation_ids(song,'moods')) + 1.5*len(tags & relation_ids(song,'tags'))
-                score += 8 if song.artist_id == obj.artist_id else 0
-                year=getattr(song.release_date,'year',None)
-                score += 3 if source_year and year and source_year//10 == year//10 else 0
-                score += near(obj.energy,song.energy,3)+near(obj.danceability,song.danceability,2.5)+near(obj.valence,song.valence,2)+near(obj.tempo,song.tempo,1,200)
-                if score > 0: scored.append((song.pk, score, song.plays or 0))
-            scored.sort(key=lambda x:(x[1],x[2]), reverse=True)
-            ranked_ids=[x[0] for x in scored] or list(Song.objects.filter(status=Song.STATUS_PUBLISHED).exclude(pk=obj.pk).order_by('-plays','-created_at').values_list('id',flat=True)[:100])
-            cache_set(key, ranked_ids, getattr(settings, 'CACHE_TTL_SIMILAR', 90))
-        start=(page-1)*page_size; selected=ranked_ids[start:start+page_size]
-        rows=Song.objects.filter(pk__in=selected).select_related('artist','album').prefetch_related('featured_artists','genres','moods','tags','sub_genres')
-        by_id={s.pk:s for s in rows}; items=[by_id[x] for x in selected if x in by_id]
-        hydrate_song_metrics(items, getattr(request,'user',None), False)
-        next_link=None
-        if request and start+page_size < len(ranked_ids):
+            try:
+                return max(1, min(int(request.query_params.get(name, default)), maximum))
+            except (AttributeError, TypeError, ValueError):
+                return default
+
+        page = positive('similar_page', 1, 1000)
+        page_size = positive('similar_page_size', 6, 24)
+        ranked_ids = ranked_similar_song_ids(obj)
+        start = (page - 1) * page_size
+        selected = ranked_ids[start:start + page_size]
+        rows = Song.objects.filter(pk__in=selected).select_related('artist', 'album').prefetch_related(
+            'featured_artists', 'genres', 'moods', 'tags', 'sub_genres'
+        )
+        by_id = {song.pk: song for song in rows}
+        items = [by_id[pk] for pk in selected if pk in by_id]
+        hydrate_song_metrics(items, getattr(request, 'user', None), False)
+        next_link = None
+        if request and start + page_size < len(ranked_ids):
             from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-            parsed=urlparse(absolute_api_url(request, request.get_full_path())); query=parse_qs(parsed.query)
-            query.update(similar_page=[str(page+1)], similar_page_size=[str(page_size)])
-            next_link=urlunparse(parsed._replace(query=urlencode(query,doseq=True)))
-        return {'items': SongSummarySerializer(items,many=True,context=self.context).data, 'total':len(ranked_ids),
-                'page':page, 'has_next':start+page_size<len(ranked_ids), 'next':next_link}
+            parsed = urlparse(absolute_api_url(request, request.get_full_path()))
+            query = parse_qs(parsed.query)
+            query.update(similar_page=[str(page + 1)], similar_page_size=[str(page_size)])
+            next_link = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+        return {
+            'items': SongSummarySerializer(items, many=True, context=self.context).data,
+            'total': len(ranked_ids),
+            'page': page,
+            'has_next': start + page_size < len(ranked_ids),
+            'next': next_link,
+        }
 
     def to_representation(self, instance):
         data=super().to_representation(instance)
@@ -1678,14 +1873,44 @@ class SongUploadSerializer(serializers.Serializer):
 
 
 
+def _prepare_playlist_song_order(playlists):
+    items = [item for item in playlists if getattr(item, 'pk', None)]
+    if not items:
+        return items
+    through = Playlist.songs.through
+    order_map = {item.pk: [] for item in items}
+    for playlist_id, song_id in (
+        through.objects.filter(playlist_id__in=order_map)
+        .order_by('playlist_id', 'pk')
+        .values_list('playlist_id', 'song_id')
+    ):
+        order_map[int(playlist_id)].append(int(song_id))
+    for item in items:
+        item._ordered_song_ids = order_map.get(item.pk, [])
+    return items
+
+
+class OrderedPlaylistListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        _prepare_playlist_song_order(items)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        hydrate_playlist_metrics(items, user if getattr(user, 'is_authenticated', False) else None)
+        return super().to_representation(items)
+
+
 def _ordered_playlist_songs(playlist):
     """Return official playlist songs in the order persisted by the M2M rows."""
-    through = Playlist.songs.through
-    ordered_ids = list(
-        through.objects.filter(playlist_id=playlist.pk)
-        .order_by('pk')
-        .values_list('song_id', flat=True)
-    )
+    ordered_ids = getattr(playlist, '_ordered_song_ids', None)
+    if ordered_ids is None:
+        through = Playlist.songs.through
+        ordered_ids = list(
+            through.objects.filter(playlist_id=playlist.pk)
+            .order_by('pk')
+            .values_list('song_id', flat=True)
+        )
     if not ordered_ids:
         return []
     song_map = {song.id: song for song in playlist.songs.all()}
@@ -1708,15 +1933,20 @@ class PlaylistSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Playlist
+        list_serializer_class = OrderedPlaylistListSerializer
         fields = ['id','title','title_en','description','description_en','cover_image','created_at','created_by','generated_by','creator_unique_id',
                   'genres','moods','tags','songs','likes_count','is_liked','genre_ids','mood_ids','tag_ids','song_ids']
         read_only_fields = ['id','created_at','likes_count','is_liked','generated_by','creator_unique_id']
 
     def get_creator_unique_id(self, obj):
-        value=getattr(obj,'_creator_unique_id',None)
-        if value is not None: return value
-        user=User.objects.filter(first_name='SedaBox |', last_name='صداباکس').only('unique_id').first()
-        return user.unique_id if user else None
+        value = getattr(obj, '_creator_unique_id', None)
+        if value is not None:
+            return value
+        if not hasattr(self, '_creator_uid'):
+            self._creator_uid = User.objects.filter(
+                first_name='SedaBox |', last_name='صداباکس'
+            ).values_list('unique_id', flat=True).first()
+        return self._creator_uid
     def get_likes_count(self, obj): return int(_metric(obj,'_likes_count',lambda: PlaylistLike.objects.filter(playlist=obj).count()))
     def get_songs(self, obj):
         return SongSummarySerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
@@ -1736,6 +1966,7 @@ class PlaylistForEventSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Playlist
+        list_serializer_class = OrderedPlaylistListSerializer
         fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = ['id', 'created_at']
 
@@ -1743,9 +1974,11 @@ class PlaylistForEventSerializer(LocalizedModelSerializer):
     creator_unique_id = serializers.SerializerMethodField()
 
     def get_creator_unique_id(self, obj):
-        from .models import User
-        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
-        return sedabox_user.unique_id if sedabox_user else None
+        if not hasattr(self, '_creator_uid'):
+            self._creator_uid = User.objects.filter(
+                first_name="SedaBox |", last_name="صداباکس"
+            ).values_list('unique_id', flat=True).first()
+        return self._creator_uid
 
     def get_songs(self, obj):
         return SongSerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
@@ -1773,6 +2006,7 @@ class SongStreamSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = Song
+        list_serializer_class = SongMetricsListSerializer
         fields = ['id','title','artist_id','artist_name','artist_unique_id','featured_artists','album','album_title',
                   'is_single','stream_url','preview_url','is_preview','preview_duration_seconds','cover_image','duration_seconds',
                   'duration_display','plays','likes_count','is_liked','genres','genre_names','genre_ids',
@@ -1792,26 +2026,28 @@ class SongStreamSerializer(LocalizedModelSerializer):
                 'artistic_name_fa': a.artistic_name,
                 'artistic_name_en': a.artistic_name_en or a.artistic_name,
             }
-            for a in obj.featured_artists.all()
+            for a in _relation_items(obj, 'featured_artists')
         ]
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
             {'id': genre.id, 'name': localized_value(genre, 'name', request)}
-            for genre in obj.genres.all()
+            for genre in _relation_items(obj, 'genres')
         ]
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
-    def get_genre_ids(self, obj): return [genre.id for genre in obj.genres.all()]
-    def get_likes_count(self,obj): return int(_metric(obj,'_likes_count',lambda: SongLike.objects.filter(song=obj).count()))
+    def get_genre_ids(self, obj): return [genre.id for genre in _relation_items(obj, 'genres')]
+    def get_likes_count(self,obj):
+        _ensure_song_metrics(obj, self.context.get('request')); return int(getattr(obj,'_likes_count',0) or 0)
     def get_is_liked(self,obj):
         request=self.context.get('request')
-        return bool(_metric(obj,'_is_liked',lambda: request and request.user.is_authenticated and SongLike.objects.filter(user=request.user,song=obj).exists()))
+        _ensure_song_metrics(obj, request); return bool(getattr(obj,'_is_liked',False))
     def get_stream_url(self,obj): return _stream_wrapper(obj,self.context.get('request'))
     def get_preview_url(self,obj): return _preview_url(obj)
     def get_is_preview(self,obj):
         request=self.context.get('request'); return bool((not request or not request.user.is_authenticated) and obj.preview_audio_url)
     def get_preview_duration_seconds(self,obj): return min(30,obj.duration_seconds or 30) if obj.preview_audio_url else 0
-    def get_plays(self,obj): return int(obj.plays or 0)+int(_metric(obj,'_play_count',lambda:obj.play_counts.count()))
+    def get_plays(self,obj):
+        _ensure_song_metrics(obj, self.context.get('request')); return int(obj.plays or 0)+int(getattr(obj,'_play_count',0) or 0)
     def to_representation(self,instance):
         data=super().to_representation(instance); data['cover_image']=_signed_url(data.get('cover_image')); return data
 
@@ -2114,14 +2350,41 @@ class SearchResultSerializer(serializers.Serializer):
         return {}
 
 
+def _prepare_event_playlist_order(events):
+    items = [item for item in events if getattr(item, 'pk', None)]
+    if not items:
+        return items
+    through = EventPlaylist.playlists.through
+    order_map = {item.pk: [] for item in items}
+    for event_id, playlist_id in (
+        through.objects.filter(eventplaylist_id__in=order_map)
+        .order_by('eventplaylist_id', 'pk')
+        .values_list('eventplaylist_id', 'playlist_id')
+    ):
+        order_map[int(event_id)].append(int(playlist_id))
+    for item in items:
+        item._ordered_playlist_ids = order_map.get(item.pk, [])
+    return items
+
+
+class OrderedEventPlaylistListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        iterable = data.all() if isinstance(data, BaseManager) else data
+        items = list(iterable)
+        _prepare_event_playlist_order(items)
+        return super().to_representation(items)
+
+
 def _ordered_event_playlists(event):
     """Return event playlists in the explicit order persisted by the M2M rows."""
-    through = EventPlaylist.playlists.through
-    ordered_ids = list(
-        through.objects.filter(eventplaylist_id=event.pk)
-        .order_by('pk')
-        .values_list('playlist_id', flat=True)
-    )
+    ordered_ids = getattr(event, '_ordered_playlist_ids', None)
+    if ordered_ids is None:
+        through = EventPlaylist.playlists.through
+        ordered_ids = list(
+            through.objects.filter(eventplaylist_id=event.pk)
+            .order_by('pk')
+            .values_list('playlist_id', flat=True)
+        )
     playlist_map = {playlist.id: playlist for playlist in event.playlists.all()}
     return [playlist_map[playlist_id] for playlist_id in ordered_ids if playlist_id in playlist_map]
 
@@ -2139,12 +2402,11 @@ class EventPlaylistSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = EventPlaylist
+        list_serializer_class = OrderedEventPlaylistListSerializer
         fields = ['id', 'title', 'title_en', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
 
     def get_creator_unique_id(self, obj):
-        from .models import User
-        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
-        return sedabox_user.unique_id if sedabox_user else None
+        return _official_creator_uid(self)
 
 
 class PlaylistCoverSerializer(LocalizedModelSerializer):
@@ -2164,9 +2426,7 @@ class PlaylistCoverSerializer(LocalizedModelSerializer):
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
-        from .models import User
-        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
-        return sedabox_user.unique_id if sedabox_user else None
+        return _official_creator_uid(self)
 
     def _songs(self, obj):
         prefetched = getattr(obj, '_prefetched_objects_cache', {}).get('songs')
@@ -2209,13 +2469,12 @@ class EventPlaylistListSerializer(LocalizedModelSerializer):
 
     class Meta:
         model = EventPlaylist
+        list_serializer_class = OrderedEventPlaylistListSerializer
         fields = ['id', 'title', 'title_en', 'time_of_day', 'playlists', 'created_at', 'updated_at', 'generated_by', 'creator_unique_id', 'type']
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
-        from .models import User
-        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
-        return sedabox_user.unique_id if sedabox_user else None
+        return _official_creator_uid(self)
 
 
 class PlaylistDetailForEventSerializer(LocalizedModelSerializer):
@@ -2228,15 +2487,14 @@ class PlaylistDetailForEventSerializer(LocalizedModelSerializer):
     creator_unique_id = serializers.SerializerMethodField()
 
     def get_creator_unique_id(self, obj):
-        from .models import User
-        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
-        return sedabox_user.unique_id if sedabox_user else None
+        return _official_creator_uid(self)
 
     def get_songs(self, obj):
         return SongSummarySerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
 
     class Meta:
         model = Playlist
+        list_serializer_class = OrderedPlaylistListSerializer
         fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = fields
 
@@ -2257,9 +2515,7 @@ class EventPlaylistDetailSerializer(LocalizedModelSerializer):
         read_only_fields = fields
 
     def get_creator_unique_id(self, obj):
-        from .models import User
-        sedabox_user = User.objects.filter(first_name="SedaBox |", last_name="صداباکس").first()
-        return sedabox_user.unique_id if sedabox_user else None
+        return _official_creator_uid(self)
 
 
 class SearchSectionSerializer(LocalizedModelSerializer):

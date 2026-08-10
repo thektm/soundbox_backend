@@ -5,6 +5,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -162,47 +165,62 @@ def _fresh_signed_r2_url(value, minimum_ttl=60):
         return False
 
 
+@lru_cache(maxsize=16384)
+def _cached_presigned_get(key, expiration, bucket):
+    # ``bucket`` intentionally participates in the key. The time bucket keeps
+    # URLs fresh while collapsing thousands of identical card signatures.
+    del bucket
+    return _r2_client().generate_presigned_url(
+        'get_object',
+        Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': key},
+        ExpiresIn=expiration,
+    )
+
+
 def generate_signed_r2_url(object_key, expiration=3600):
-    """Generate a fresh short-lived GET URL for a Sedabox R2 object."""
+    """Return a fresh-enough signed URL using a reusable S3 client."""
+    if _fresh_signed_r2_url(object_key, minimum_ttl=60):
+        return str(object_key)
     key = r2_object_key(object_key)
     if not key:
         return str(object_key) if str(object_key or '').startswith(('http://', 'https://')) else None
 
+    expiration = max(60, min(int(expiration), 86400))
+    # At most five minutes of signature reuse, and never more than 1/4 of the
+    # signed lifetime. A caller therefore receives a URL with ample TTL left.
+    window = max(15, min(300, expiration // 4))
+    bucket = int(time.time() // window)
     try:
-        return _r2_client().generate_presigned_url(
-            'get_object',
-            Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': key},
-            ExpiresIn=max(60, min(int(expiration), 86400)),
-        )
+        return _cached_presigned_get(key, expiration, bucket)
     except Exception:
         logger.exception('Could not sign R2 object %s', key)
         return None
 
 
 def sign_r2_urls_in_payload(value, expiration=3600, *, strict=False, refresh=False):
-    """Recursively replace R2 URLs with usable signed URLs.
-
-    ``refresh=True`` deliberately re-signs cached URLs even when their old
-    signature has not expired yet. This is used by client-home responses so
-    every backend request receives a full fresh validity window.
-    """
+    """Recursively sign private R2 URLs with copy-on-write containers."""
     if isinstance(value, dict):
-        return {
-            key: sign_r2_urls_in_payload(
+        changed = False
+        signed_items = {}
+        for key, item in value.items():
+            signed = sign_r2_urls_in_payload(
                 item, expiration, strict=strict, refresh=refresh
             )
-            for key, item in value.items()
-        }
+            signed_items[key] = signed
+            changed = changed or signed is not item
+        return signed_items if changed else value
     if isinstance(value, list):
-        return [
+        signed_items = [
             sign_r2_urls_in_payload(item, expiration, strict=strict, refresh=refresh)
             for item in value
         ]
+        return signed_items if any(a is not b for a, b in zip(signed_items, value)) else value
     if isinstance(value, tuple):
-        return tuple(
+        signed_items = tuple(
             sign_r2_urls_in_payload(item, expiration, strict=strict, refresh=refresh)
             for item in value
         )
+        return signed_items if any(a is not b for a, b in zip(signed_items, value)) else value
     if not isinstance(value, str) or not r2_object_key(value, allow_key=False):
         return value
     if not refresh and _fresh_signed_r2_url(value):
@@ -212,8 +230,12 @@ def sign_r2_urls_in_payload(value, expiration=3600, *, strict=False, refresh=Fal
     if signed:
         return signed
     if strict:
-        raise MediaPipelineError('ایجاد دسترسی امن به فایل رسانه‌ای انجام نشد. لطفاً دوباره تلاش کنید.', 'r2_signing_failed', 503)
+        raise MediaPipelineError(
+            'ایجاد دسترسی امن به فایل رسانه‌ای انجام نشد. لطفاً دوباره تلاش کنید.',
+            'r2_signing_failed', 503,
+        )
     return value
+
 
 class MediaPipelineError(Exception):
     def __init__(self, message, code='media_pipeline_failed', status_code=502):
@@ -222,7 +244,17 @@ class MediaPipelineError(Exception):
         self.status_code = status_code
 
 
+_R2_CLIENT = None
+_R2_CLIENT_LOCK = threading.Lock()
+
+
 def _r2_client():
+    """Return one low-level S3 client per process.
+
+    Boto3 low-level clients are designed for concurrent thread use. Reusing the
+    connection pool avoids rebuilding botocore's service model/signers for each
+    media field in a response.
+    """
     required = {
         'endpoint': getattr(settings, 'R2_ENDPOINT_URL', None),
         'access key': getattr(settings, 'R2_ACCESS_KEY_ID', None),
@@ -236,22 +268,33 @@ def _r2_client():
             'r2_not_configured',
             503,
         )
-    kwargs = {
-        'service_name': 's3',
-        'endpoint_url': required['endpoint'],
-        'aws_access_key_id': required['access key'],
-        'aws_secret_access_key': required['secret key'],
-        'config': Config(
-            signature_version='s3v4',
-            connect_timeout=10,
-            read_timeout=180,
-            retries={'max_attempts': 3, 'mode': 'standard'},
-        ),
-    }
-    token = getattr(settings, 'R2_SESSION_TOKEN', None)
-    if token:
-        kwargs['aws_session_token'] = token
-    return boto3.client(**kwargs)
+    global _R2_CLIENT
+    if _R2_CLIENT is not None:
+        return _R2_CLIENT
+
+    with _R2_CLIENT_LOCK:
+        if _R2_CLIENT is not None:
+            return _R2_CLIENT
+        kwargs = {
+            'service_name': 's3',
+            'endpoint_url': required['endpoint'],
+            'aws_access_key_id': required['access key'],
+            'aws_secret_access_key': required['secret key'],
+            'config': Config(
+                signature_version='s3v4',
+                connect_timeout=10,
+                read_timeout=180,
+                retries={'max_attempts': 3, 'mode': 'standard'},
+                max_pool_connections=max(10, int(getattr(settings, 'R2_MAX_POOL_CONNECTIONS', 64))),
+            ),
+        }
+        token = getattr(settings, 'R2_SESSION_TOKEN', None)
+        if token:
+            kwargs['aws_session_token'] = token
+        # Create the Session/client outside request-time concurrent code, then
+        # reuse the client's own connection pool for this Daphne process.
+        _R2_CLIENT = boto3.session.Session().client(**kwargs)
+        return _R2_CLIENT
 
 
 def check_r2_storage():

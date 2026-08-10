@@ -7,6 +7,4 @@ class ApiConfig(AppConfig):
 
     def ready(self):
         import api.signals
-        from api.recommendation_runtime import start_generated_playlist_maintenance
-        start_generated_playlist_maintenance()
 

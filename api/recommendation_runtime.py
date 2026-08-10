@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import sys
 import threading
 import time
 from datetime import timedelta
@@ -30,15 +29,11 @@ _REDIS_CLIENT = None
 _REDIS_CLIENT_LOCK = threading.Lock()
 _REDIS_RETRY_AFTER = 0.0
 _REDIS_LAST_WARNING_AT = 0.0
-_MAINTENANCE_STARTED = False
-_MAINTENANCE_LOCK = threading.Lock()
 _LOCAL_FRESH_COUNTERS: dict[str, int] = {}
 _LOCAL_FRESH_LOCK = threading.Lock()
 
 _USAGE_ZSET = "sedabox:generated-playlists:last-used"
 _CLEANUP_LOCK = "sedabox:generated-playlists:cleanup-lock"
-_STARTUP_GUARD = "sedabox:generated-playlists:startup-guard"
-_PERIODIC_DUE = "sedabox:generated-playlists:periodic-due"
 
 
 def get_redis_client():
@@ -339,6 +334,7 @@ def cleanup_unused_generated_playlists(*, startup: bool = False) -> dict[str, in
         cutoff_score = cutoff.timestamp()
         batch_size = max(100, int(getattr(settings, "GENERATED_PLAYLIST_CLEANUP_BATCH", 500)))
         cursor = 0
+        max_rows = max(batch_size, int(getattr(settings, 'RUNTIME_CLEANUP_MAX_ROWS_PER_TABLE', 5000)))
 
         generated_filter = (
             Q(unique_id__startswith='smart_rec_')
@@ -347,6 +343,7 @@ def cleanup_unused_generated_playlists(*, startup: bool = False) -> dict[str, in
         base = RecommendedPlaylist.objects.filter(generated_filter,
             id__gt=cursor,
             expires_at__isnull=False,
+            expires_at__lt=timezone.now(),
             updated_at__lt=cutoff,
             views=0,
             liked_by__isnull=True,
@@ -362,6 +359,13 @@ def cleanup_unused_generated_playlists(*, startup: bool = False) -> dict[str, in
                 break
             cursor = ids[-1]
             candidate_total += len(ids)
+            if candidate_total > max_rows:
+                overflow = candidate_total - max_rows
+                if overflow > 0:
+                    ids = ids[:-overflow] if overflow < len(ids) else []
+                    candidate_total = max_rows
+                if not ids:
+                    break
             scores = _recent_usage_scores(client, ids)
             stale_ids = [
                 item_id for item_id, score in zip(ids, scores)
@@ -371,6 +375,7 @@ def cleanup_unused_generated_playlists(*, startup: bool = False) -> dict[str, in
                 delete_qs = RecommendedPlaylist.objects.filter(generated_filter,
                     id__in=stale_ids,
                     expires_at__isnull=False,
+                    expires_at__lt=timezone.now(),
                     views=0,
                     liked_by__isnull=True,
                     saved_by__isnull=True,
@@ -383,20 +388,14 @@ def cleanup_unused_generated_playlists(*, startup: bool = False) -> dict[str, in
                     client.zrem(_USAGE_ZSET, *[str(item_id) for item_id in stale_ids])
                 except Exception:
                     pass
+            if candidate_total >= max_rows:
+                break
 
         # Keep the Redis usage index itself bounded.
         try:
             client.zremrangebyscore(_USAGE_ZSET, "-inf", cutoff_score)
         except Exception:
             pass
-
-        # Safe secondary housekeeping for high-churn authentication tables.
-        from .models import OtpCode, RefreshToken
-
-        OtpCode.objects.filter(expires_at__lt=timezone.now() - timedelta(days=1)).delete()
-        RefreshToken.objects.filter(
-            expires_at__lt=timezone.now() - timedelta(days=7)
-        ).delete()
 
         logger.info(
             "Generated playlist cleanup complete: startup=%s candidates=%s deleted=%s",
@@ -417,60 +416,73 @@ def cleanup_unused_generated_playlists(*, startup: bool = False) -> dict[str, in
             pass
 
 
-def _maintenance_loop() -> None:
-    # Redis may start a few seconds after the web container. Keep retrying without
-    # blocking Gunicorn instead of silently disabling maintenance for this process.
-    client = None
-    while client is None:
-        client = get_redis_client()
-        if client is None:
-            time.sleep(5)
 
-    # One cleanup per deployment start even when Gunicorn boots several workers.
+# Personal recommendation refresh queue. Redis stores only user IDs; PostgreSQL
+# remains the source of all recommendation inputs and generated rows.
+_PERSONAL_REFRESH_QUEUE = "sedabox:recommendations:personal-refresh:v1"
+_PERSONAL_REFRESH_DEDUPE_PREFIX = "sedabox:recommendations:personal-refresh:queued:v1"
+_PERSONAL_REFRESH_DONE_PREFIX = "sedabox:recommendations:personal-refresh:done:v1"
+
+
+def enqueue_personal_recommendation_refresh(user_id: int, *, ttl: int = 120) -> bool:
+    if not user_id:
+        return False
+    client = get_redis_client()
+    if client is None:
+        return False
+    dedupe = f"{_PERSONAL_REFRESH_DEDUPE_PREFIX}:{int(user_id)}"
     try:
-        if client.set(_STARTUP_GUARD, os.getpid(), nx=True, ex=300):
-            cleanup_unused_generated_playlists(startup=True)
+        if not client.set(dedupe, "1", nx=True, ex=max(30, int(ttl))):
+            return False
+        client.lpush(_PERSONAL_REFRESH_QUEUE, int(user_id))
+        return True
     except Exception:
-        pass
-
-    interval = max(300, int(getattr(settings, "GENERATED_PLAYLIST_CLEANUP_INTERVAL", 3600)))
-    while True:
-        time.sleep(interval)
-        client = get_redis_client()
-        if client is None:
-            continue
         try:
-            # All workers may wake up; only one receives the distributed due token.
-            if not client.set(_PERIODIC_DUE, os.getpid(), nx=True, ex=max(60, interval - 10)):
-                continue
+            client.delete(dedupe)
         except Exception:
-            continue
-        cleanup_unused_generated_playlists(startup=False)
+            pass
+        return False
 
 
-def start_generated_playlist_maintenance() -> None:
-    """Start one failure-safe daemon scheduler per process.
 
-    Redis guards ensure only one Gunicorn worker performs each startup/hourly
-    cleanup cycle. Management commands are deliberately excluded.
-    """
-    global _MAINTENANCE_STARTED
-    if not getattr(settings, "GENERATED_PLAYLIST_MAINTENANCE_ENABLED", True):
-        return
-    management_commands = {
-        "makemigrations", "migrate", "collectstatic", "shell", "test",
-        "ensure_bilingual_schema", "ensure_search_indexes",
-    }
-    if any(argument in management_commands for argument in sys.argv[1:]):
-        return
+def personal_recommendation_refresh_version(user_id: int) -> int | None:
+    if not user_id:
+        return None
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        value = client.get(f"{_PERSONAL_REFRESH_DONE_PREFIX}:{int(user_id)}")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError, Exception):
+        return None
 
-    with _MAINTENANCE_LOCK:
-        if _MAINTENANCE_STARTED:
-            return
-        _MAINTENANCE_STARTED = True
-        thread = threading.Thread(
-            target=_maintenance_loop,
-            name="generated-playlist-maintenance",
-            daemon=True,
-        )
-        thread.start()
+
+def mark_personal_recommendation_refresh(user_id: int, affinity_version: int) -> bool:
+    if not user_id:
+        return False
+    client = get_redis_client()
+    if client is None:
+        return False
+    try:
+        ttl = max(300, int(getattr(settings, "RECOMMENDATION_REFRESH_VERSION_TTL", 7 * 24 * 60 * 60)))
+        return bool(client.set(
+            f"{_PERSONAL_REFRESH_DONE_PREFIX}:{int(user_id)}",
+            int(affinity_version), ex=ttl,
+        ))
+    except Exception:
+        return False
+
+def pop_personal_recommendation_refresh(timeout: int = 5) -> int | None:
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        item = client.brpop(_PERSONAL_REFRESH_QUEUE, timeout=max(1, int(timeout)))
+        if not item:
+            return None
+        user_id = int(item[1])
+        client.delete(f"{_PERSONAL_REFRESH_DEDUPE_PREFIX}:{user_id}")
+        return user_id
+    except Exception:
+        return None

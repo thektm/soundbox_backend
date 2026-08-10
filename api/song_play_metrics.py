@@ -139,30 +139,28 @@ def _count_key(namespace: int, song_id: int) -> str:
     return f"{_COUNT_PREFIX}:{namespace}:{int(song_id)}"
 
 
-def hydrate_song_play_counts(songs):
-    """Attach exact tracked-play counts to song objects with one Redis MGET.
+def get_tracked_song_play_counts(song_ids: Iterable[int]) -> dict[int, int]:
+    """Return exact tracked-play counts for IDs with one Redis bulk read.
 
-    Cache misses are resolved in one grouped PostgreSQL query. If Redis is down,
-    the same grouped query is used directly; the resilient local-memory cache is
-    intentionally bypassed for this metric so one Gunicorn worker can never
-    serve a stale private copy.
+    PostgreSQL is always authoritative. Redis is accepted only after the same
+    latest-PlayCount coherence check used by serializers, so callers such as
+    trending can reuse all-time counts without scanning the full relation.
     """
-    items = list(songs)
-    song_ids = [int(song.pk) for song in items if getattr(song, "pk", None)]
-    if not song_ids:
-        return items
+    ids = list(dict.fromkeys(int(song_id) for song_id in song_ids if song_id))
+    if not ids:
+        return {}
 
     counts: dict[int, int] = {}
     client = get_redis_client()
     coherence = _coherent_namespace(client) if client is not None else None
     namespace, expected_last_id = coherence if coherence is not None else (None, None)
 
-    missing = list(song_ids)
+    missing = list(ids)
     if client is not None and namespace is not None:
         try:
-            values = client.mget([_count_key(namespace, song_id) for song_id in song_ids])
+            values = client.mget([_count_key(namespace, song_id) for song_id in ids])
             missing = []
-            for song_id, value in zip(song_ids, values):
+            for song_id, value in zip(ids, values):
                 if value is None:
                     missing.append(song_id)
                     continue
@@ -173,7 +171,7 @@ def hydrate_song_play_counts(songs):
         except Exception as exc:
             logger.warning("Song play-count Redis bulk read failed: %s", exc)
             namespace = None
-            missing = list(song_ids)
+            missing = list(ids)
 
     if missing:
         exact = _db_tracked_counts(missing)
@@ -192,6 +190,14 @@ def hydrate_song_play_counts(songs):
             except Exception as exc:
                 logger.warning("Song play-count Redis warm failed: %s", exc)
 
+    return {song_id: int(counts.get(song_id, 0)) for song_id in ids}
+
+
+def hydrate_song_play_counts(songs):
+    """Attach exact tracked-play counts with one Redis MGET / one DB fallback."""
+    items = list(songs)
+    song_ids = [int(song.pk) for song in items if getattr(song, "pk", None)]
+    counts = get_tracked_song_play_counts(song_ids)
     for song in items:
         if getattr(song, "pk", None):
             song._cached_tracked_plays = int(counts.get(int(song.pk), 0))

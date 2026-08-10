@@ -37,6 +37,25 @@ class Command(BaseCommand):
                     "ON api_song (status, plays DESC, created_at DESC)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_playcount_created_at_idx "
                     "ON api_playcount (created_at DESC)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_playcount_user_created_idx "
+                    "ON api_playcount (user_id, created_at DESC)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_streamaccess_pending_ad_idx "
+                    "ON api_streamaccess (user_id, created_at DESC) "
+                    "WHERE ad_required = TRUE AND ad_seen = FALSE",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_streamaccess_unwrapped_at_idx "
+                    "ON api_streamaccess (user_id, unwrapped_at DESC) "
+                    "WHERE unwrapped = TRUE",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_streamaccess_unused_cleanup_idx "
+                    "ON api_streamaccess (created_at, id) "
+                    "WHERE unwrapped = FALSE AND (ad_required = FALSE OR ad_seen = TRUE)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_streamaccess_abandoned_cleanup_idx "
+                    "ON api_streamaccess (created_at, id) "
+                    "WHERE unwrapped = TRUE AND one_time_used = FALSE AND (ad_required = FALSE OR ad_seen = TRUE)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_streamaccess_used_cleanup_idx "
+                    "ON api_streamaccess (created_at, id) "
+                    "WHERE one_time_used = TRUE AND (ad_required = FALSE OR ad_seen = TRUE)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_activeplayback_expiry_id_idx "
+                    "ON api_activeplayback (expiration_time, id)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_recommended_guest_rank_idx "
                     "ON api_recommendedplaylist (relevance_score DESC, created_at DESC) "
                     "WHERE user_id IS NULL",
@@ -52,10 +71,14 @@ class Command(BaseCommand):
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_refreshtoken_active_user_idx "
                     "ON api_refreshtoken (user_id, created_at DESC) "
                     "WHERE revoked_at IS NULL",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_refreshtoken_expiry_idx "
+                    "ON api_refreshtoken (expires_at, id)",
                     # Case-insensitive contains searches. PostgreSQL can combine these
                     # bitmap indexes across the endpoint's OR predicates.
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_song_title_trgm_idx "
                     "ON api_song USING gin (UPPER(title) gin_trgm_ops)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_song_title_en_trgm_idx "
+                    "ON api_song USING gin (UPPER(title_en) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_song_description_trgm_idx "
                     "ON api_song USING gin (UPPER(description) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_song_lyrics_trgm_idx "
@@ -70,6 +93,10 @@ class Command(BaseCommand):
                     "ON api_artist USING gin (UPPER(name) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_artist_artistic_name_trgm_idx "
                     "ON api_artist USING gin (UPPER(artistic_name) gin_trgm_ops)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_artist_name_en_trgm_idx "
+                    "ON api_artist USING gin (UPPER(name_en) gin_trgm_ops)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_artist_artistic_name_en_trgm_idx "
+                    "ON api_artist USING gin (UPPER(artistic_name_en) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_artist_unique_id_trgm_idx "
                     "ON api_artist USING gin (UPPER(unique_id) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_user_unique_id_trgm_idx "
@@ -84,10 +111,14 @@ class Command(BaseCommand):
                     "ON api_artist USING gin (UPPER(bio) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_album_title_trgm_idx "
                     "ON api_album USING gin (UPPER(title) gin_trgm_ops)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_album_title_en_trgm_idx "
+                    "ON api_album USING gin (UPPER(title_en) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_album_description_trgm_idx "
                     "ON api_album USING gin (UPPER(description) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_playlist_title_trgm_idx "
                     "ON api_playlist USING gin (UPPER(title) gin_trgm_ops)",
+                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_playlist_title_en_trgm_idx "
+                    "ON api_playlist USING gin (UPPER(title_en) gin_trgm_ops)",
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS api_playlist_description_trgm_idx "
                     "ON api_playlist USING gin (UPPER(description) gin_trgm_ops)",
                 ]

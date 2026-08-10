@@ -527,57 +527,54 @@ def localize_api_payload(
     message_context: bool = False,
     key: str | None = None,
 ) -> Any:
-    """Recursively localize response-owned messages, not domain content."""
+    """Localize API-owned messages with copy-on-write containers.
+
+    Success payloads are dominated by domain data that must remain byte-for-byte
+    unchanged. We still traverse for nested message keys, but only allocate a new
+    dict/list/tuple when an actual child changed.
+    """
     if isinstance(value, dict):
+        changed = False
         localized = {}
         for child_key, child_value in value.items():
             child_key_string = str(child_key)
             technical = (
                 child_key_string in _TECHNICAL_RESPONSE_KEYS
-                or child_key_string.endswith("_id")
-                or child_key_string.endswith("_url")
-                or child_key_string.endswith("_token")
+                or child_key_string.endswith('_id')
+                or child_key_string.endswith('_url')
+                or child_key_string.endswith('_token')
             )
             child_message_context = (
-                not technical
-                and (
+                not technical and (
                     message_context
                     or child_key_string in _MESSAGE_RESPONSE_KEYS
                     or status_code >= 400
                 )
             )
-            localized[child_key] = localize_api_payload(
-                child_value,
-                language,
-                status_code=status_code,
-                message_context=child_message_context,
-                key=child_key_string,
+            child = localize_api_payload(
+                child_value, language, status_code=status_code,
+                message_context=child_message_context, key=child_key_string,
             )
-        return localized
+            localized[child_key] = child
+            changed = changed or child is not child_value
+        return localized if changed else value
     if isinstance(value, list):
-        return [
-            localize_api_payload(
-                item,
-                language,
-                status_code=status_code,
-                message_context=message_context,
-                key=key,
-            )
+        localized = [
+            localize_api_payload(item, language, status_code=status_code,
+                                 message_context=message_context, key=key)
             for item in value
         ]
+        return localized if any(a is not b for a, b in zip(localized, value)) else value
     if isinstance(value, tuple):
-        return tuple(
-            localize_api_payload(
-                item,
-                language,
-                status_code=status_code,
-                message_context=message_context,
-                key=key,
-            )
+        localized = tuple(
+            localize_api_payload(item, language, status_code=status_code,
+                                 message_context=message_context, key=key)
             for item in value
         )
+        return localized if any(a is not b for a, b in zip(localized, value)) else value
     if isinstance(value, str) and message_context:
-        return localize_api_message(value, language)
+        translated = localize_api_message(value, language)
+        return translated if translated != value else value
     return value
 
 

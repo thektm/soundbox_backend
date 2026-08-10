@@ -17,6 +17,9 @@ from .models import (
     Notification,
     NotificationSetting,
     PlayCount,
+    PlayConfiguration,
+    AudioAd,
+    BannerAd,
     Playlist,
     PaymentTransaction,
     PlaylistLike,
@@ -40,6 +43,7 @@ from .notification_service import (
     send_user_notification,
 )
 from .realtime_notifications import schedule_notification_publish
+from .recommendation_runtime import enqueue_personal_recommendation_refresh
 from .song_play_metrics import (
     invalidate_song_play_count_cache,
     record_committed_song_play,
@@ -851,7 +855,7 @@ from .performance import (
     AFFINITY_VERSION_KEY,
     CATALOG_VERSION_KEY,
     USER_DIRECTORY_VERSION_KEY,
-    cache_increment,
+    cache_increment, cache_delete,
     bump_user_affinity_version,
 )
 
@@ -925,23 +929,39 @@ post_delete.connect(_bump_user_directory, sender=User, dispatch_uid='api.user.di
 
 # Keep per-user recommendation pools current without invalidating every user's
 # cache whenever one account interacts with music.
+def _refresh_user_recommendations(user_id):
+    if not user_id:
+        return
+
+    user_id = int(user_id)
+
+    def committed_refresh():
+        # Keep Redis freshness state aligned with committed PostgreSQL state.
+        # A rolled-back interaction must not advance the affinity version or
+        # enqueue recommendation work for data that never became authoritative.
+        bump_user_affinity_version(user_id)
+        enqueue_personal_recommendation_refresh(user_id)
+
+    transaction.on_commit(committed_refresh)
+
+
 def _bump_instance_user_affinity(sender=None, instance=None, **_kwargs):
-    bump_user_affinity_version(getattr(instance, 'user_id', None))
+    _refresh_user_recommendations(getattr(instance, 'user_id', None))
 
 
 def _bump_follow_user_affinity(sender=None, instance=None, **_kwargs):
-    bump_user_affinity_version(getattr(instance, 'follower_user_id', None))
+    _refresh_user_recommendations(getattr(instance, 'follower_user_id', None))
 
 
 def _bump_user_playlist_songs(sender=None, instance=None, action=None, **_kwargs):
     if action in {'post_add', 'post_remove', 'post_clear'}:
-        bump_user_affinity_version(getattr(instance, 'user_id', None))
+        _refresh_user_recommendations(getattr(instance, 'user_id', None))
 
 
 def _bump_recommended_interactions(sender=None, action=None, pk_set=None, **_kwargs):
     if action in {'post_add', 'post_remove', 'post_clear'}:
         for user_id in pk_set or ():
-            bump_user_affinity_version(user_id)
+            _refresh_user_recommendations(user_id)
 
 
 for interaction_model in (SongLike, AlbumLike, PlaylistLike, PlayCount):
@@ -974,3 +994,21 @@ for field_name in ('liked_by', 'saved_by', 'viewed_by'):
         sender=RecommendedPlaylist._meta.get_field(field_name).remote_field.through,
         dispatch_uid=f'api.user-affinity.recommended.{field_name}',
     )
+
+
+@receiver(post_save, sender=PlayConfiguration, dispatch_uid='api.stream-config.cache.save')
+@receiver(post_delete, sender=PlayConfiguration, dispatch_uid='api.stream-config.cache.delete')
+def _invalidate_stream_config_cache(**_kwargs):
+    cache_delete('stream-play-config:v1', 'stream-play-worth:v1')
+
+
+@receiver(post_save, sender=AudioAd, dispatch_uid='api.audio-ad.cache.save')
+@receiver(post_delete, sender=AudioAd, dispatch_uid='api.audio-ad.cache.delete')
+def _invalidate_audio_ad_pool(**_kwargs):
+    cache_delete('stream-active-audio-ads:v1')
+
+
+@receiver(post_save, sender=BannerAd, dispatch_uid='api.banner-active.cache.save')
+@receiver(post_delete, sender=BannerAd, dispatch_uid='api.banner-active.cache.delete')
+def _invalidate_banner_active_cache(**_kwargs):
+    cache_delete('banner-active-ids:v2')

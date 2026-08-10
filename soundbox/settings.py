@@ -64,7 +64,8 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'api.middleware.ArtistPanelSignedR2Middleware',
-    'api.middleware.ClientHomeSignedR2Middleware',
+    'api.middleware.AdminPanelSignedR2Middleware',
+    'api.middleware.ClientHomeCacheControlMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -99,13 +100,17 @@ DATABASES = {
         'PASSWORD': os.environ.get('DB_PASSWORD', 'postgres'),
         'HOST': os.environ.get('DB_HOST', 'db'),
         'PORT': os.environ.get('DB_PORT', '5432'),
-        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '0')),
     }
 }
 
 
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/1')
 CHANNEL_REDIS_URL = os.environ.get('CHANNEL_REDIS_URL', REDIS_URL)
+REDIS_CONNECT_TIMEOUT = float(os.environ.get('REDIS_CONNECT_TIMEOUT', '1'))
+REDIS_SOCKET_TIMEOUT = float(os.environ.get('REDIS_SOCKET_TIMEOUT', '1'))
+REDIS_MAX_CONNECTIONS = int(os.environ.get('REDIS_MAX_CONNECTIONS', '96'))
+REDIS_RETRY_SECONDS = float(os.environ.get('REDIS_RETRY_SECONDS', '5'))
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
@@ -127,8 +132,9 @@ CACHES = {
         'TIMEOUT': 300,
         'KEY_PREFIX': 'sedabox',
         'OPTIONS': {
-            'socket_connect_timeout': 1,
-            'socket_timeout': 1,
+            'socket_connect_timeout': REDIS_CONNECT_TIMEOUT,
+            'socket_timeout': REDIS_SOCKET_TIMEOUT,
+            'max_connections': REDIS_MAX_CONNECTIONS,
         },
     }
 }
@@ -140,16 +146,24 @@ CACHE_TTL_USER_SEARCH = int(os.environ.get('CACHE_TTL_USER_SEARCH', '15'))
 CACHE_TTL_DISCOVERY = int(os.environ.get('CACHE_TTL_DISCOVERY', '300'))
 CACHE_TTL_SIMILAR = int(os.environ.get('CACHE_TTL_SIMILAR', '90'))
 SONG_PLAY_COUNT_CACHE_TTL = int(os.environ.get('SONG_PLAY_COUNT_CACHE_TTL', '21600'))
+R2_MAX_POOL_CONNECTIONS = int(os.environ.get('R2_MAX_POOL_CONNECTIONS', '64'))
+DAPHNE_WORKERS = int(os.environ.get('DAPHNE_WORKERS', '0'))
+RUNTIME_MAINTENANCE_INTERVAL = int(os.environ.get('RUNTIME_MAINTENANCE_INTERVAL', '900'))
+TRENDING_REFRESH_INTERVAL = int(os.environ.get('TRENDING_REFRESH_INTERVAL', '90'))
+STREAM_ACCESS_UNUSED_TTL_HOURS = int(os.environ.get('STREAM_ACCESS_UNUSED_TTL_HOURS', '720'))
+STREAM_ACCESS_ABANDONED_TTL_DAYS = int(os.environ.get('STREAM_ACCESS_ABANDONED_TTL_DAYS', '14'))
+STREAM_ACCESS_USED_TTL_DAYS = int(os.environ.get('STREAM_ACCESS_USED_TTL_DAYS', '14'))
+STREAM_GRANT_MAX_AGE_SECONDS = int(os.environ.get('STREAM_GRANT_MAX_AGE_SECONDS', str(30 * 24 * 60 * 60)))
+RUNTIME_CLEANUP_MAX_ROWS_PER_TABLE = int(os.environ.get('RUNTIME_CLEANUP_MAX_ROWS_PER_TABLE', '5000'))
+RECOMMENDATION_BACKGROUND_WAIT_MS = int(os.environ.get('RECOMMENDATION_BACKGROUND_WAIT_MS', '150'))
+RECOMMENDATION_REFRESH_VERSION_TTL = int(os.environ.get('RECOMMENDATION_REFRESH_VERSION_TTL', str(7 * 24 * 60 * 60)))
+
 
 # Redis-backed recommendation freshness and safe generated-row housekeeping.
 GENERATED_PLAYLIST_MAINTENANCE_ENABLED = os.environ.get('GENERATED_PLAYLIST_MAINTENANCE_ENABLED', 'true').lower() in ('1', 'true', 'yes', 'on')
 GENERATED_PLAYLIST_UNUSED_TTL = int(os.environ.get('GENERATED_PLAYLIST_UNUSED_TTL', '3600'))
 GENERATED_PLAYLIST_CLEANUP_INTERVAL = int(os.environ.get('GENERATED_PLAYLIST_CLEANUP_INTERVAL', '3600'))
 GENERATED_PLAYLIST_CLEANUP_BATCH = int(os.environ.get('GENERATED_PLAYLIST_CLEANUP_BATCH', '500'))
-REDIS_CONNECT_TIMEOUT = float(os.environ.get('REDIS_CONNECT_TIMEOUT', '1'))
-REDIS_SOCKET_TIMEOUT = float(os.environ.get('REDIS_SOCKET_TIMEOUT', '1'))
-REDIS_MAX_CONNECTIONS = int(os.environ.get('REDIS_MAX_CONNECTIONS', '40'))
-REDIS_RETRY_SECONDS = float(os.environ.get('REDIS_RETRY_SECONDS', '5'))
 OTP_SEND_COOLDOWN_SECONDS = int(os.environ.get('OTP_SEND_COOLDOWN_SECONDS', '60'))
 OTP_REQUEST_TIMEOUT_CONNECT = float(os.environ.get('OTP_REQUEST_TIMEOUT_CONNECT', '1.5'))
 OTP_REQUEST_TIMEOUT_READ = float(os.environ.get('OTP_REQUEST_TIMEOUT_READ', '3.5'))
@@ -258,6 +272,8 @@ R2_BUCKET_NAME = 'sedabox'
 # CDN base used to build final download URLs. Ensure this matches your CDN configuration.
 R2_CDN_BASE = 'https://cdn.sedabox.com'
 ARTIST_API_PREFIX = os.environ.get('ARTIST_API_PREFIX', '/api/artist/')
+ADMIN_API_PREFIX = os.environ.get('ADMIN_API_PREFIX', '/api/admin/')
+ADMIN_R2_SIGNED_URL_TTL = int(os.environ.get('ADMIN_R2_SIGNED_URL_TTL', '3600'))
 ARTIST_R2_SIGNED_URL_TTL = int(os.environ.get('ARTIST_R2_SIGNED_URL_TTL', '3600'))
 HOME_API_PREFIX = os.environ.get('HOME_API_PREFIX', '/api/home/')
 HOME_R2_SIGNED_URL_TTL = int(os.environ.get('HOME_R2_SIGNED_URL_TTL', '3600'))

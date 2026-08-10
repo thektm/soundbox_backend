@@ -8,17 +8,12 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from .utils import sign_r2_urls_in_payload
 from .song_play_metrics import hydrate_song_play_counts
 
 User = get_user_model()
 
 class AdminSignedMediaSerializerMixin:
-    """Sign private R2 media recursively in admin API responses."""
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return sign_r2_urls_in_payload(data, refresh=True)
+    """Marker for admin serializers; media is signed once by response middleware."""
 
 
 class RequireEnglishTranslationSerializerMixin:

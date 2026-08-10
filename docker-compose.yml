@@ -2,9 +2,11 @@ version: '3.8'
 
 services:
   web:
+    image: soundbox-backend:latest
     build: .
     container_name: soundbox_web
     restart: unless-stopped
+    stop_grace_period: 20s
     environment: &soundbox_environment
       DJANGO_DEBUG: 'False'
       DJANGO_SECRET: 'replace-with-a-long-random-secret'
@@ -15,7 +17,7 @@ services:
       DB_PASSWORD: 'postgres'
       DB_HOST: 'db'
       DB_PORT: '5432'
-      DB_CONN_MAX_AGE: '60'
+      DB_CONN_MAX_AGE: '0'
       REDIS_URL: 'redis://redis:6379/1'
       CHANNEL_REDIS_URL: 'redis://redis:6379/2'
       CHANNEL_CAPACITY: '100'
@@ -26,7 +28,21 @@ services:
       CHANNEL_REDIS_STARTUP_WAIT_SECONDS: '60'
       REDIS_CONNECT_TIMEOUT: '1'
       REDIS_SOCKET_TIMEOUT: '1'
-      REDIS_MAX_CONNECTIONS: '40'
+      REDIS_MAX_CONNECTIONS: '96'
+      R2_MAX_POOL_CONNECTIONS: '64'
+      DAPHNE_WORKERS: '0'
+      RUNTIME_MAINTENANCE_INTERVAL: '900'
+      PREVIEW_STARTUP_DELAY_SECONDS: '60'
+      PREVIEW_MAINTENANCE_INTERVAL: '300'
+      PREVIEW_MAINTENANCE_BATCH: '2'
+      PREVIEW_FFMPEG_THREADS: '1'
+      TRENDING_REFRESH_INTERVAL: '90'
+      STREAM_ACCESS_UNUSED_TTL_HOURS: '720'
+      STREAM_ACCESS_ABANDONED_TTL_DAYS: '14'
+      STREAM_ACCESS_USED_TTL_DAYS: '14'
+      STREAM_GRANT_MAX_AGE_SECONDS: '2592000'
+      RUNTIME_CLEANUP_MAX_ROWS_PER_TABLE: '5000'
+      RECOMMENDATION_BACKGROUND_WAIT_MS: '150'
       REDIS_RETRY_SECONDS: '5'
       REDIS_REQUIRED_ON_STARTUP: '1'
       REDIS_STARTUP_WAIT_SECONDS: '60'
@@ -47,7 +63,7 @@ services:
       - soundbox_network
 
   release_scheduler:
-    build: .
+    image: soundbox-backend:latest
     container_name: soundbox_release_scheduler
     restart: unless-stopped
     environment: *soundbox_environment
@@ -59,6 +75,53 @@ services:
     command: ['python', 'manage.py', 'publish_scheduled_releases', '--watch', '--interval', '30']
     volumes:
       - media_volume:/app/media
+    networks:
+      - soundbox_network
+
+  recommendation_worker:
+    image: soundbox-backend:latest
+    container_name: soundbox_recommendation_worker
+    restart: unless-stopped
+    environment: *soundbox_environment
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ['python', 'manage.py', 'run_recommendation_worker']
+    volumes:
+      - media_volume:/app/media
+    networks:
+      - soundbox_network
+
+  runtime_maintenance:
+    image: soundbox-backend:latest
+    container_name: soundbox_runtime_maintenance
+    restart: unless-stopped
+    environment: *soundbox_environment
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ['python', 'manage.py', 'run_runtime_maintenance']
+    volumes:
+      - media_volume:/app/media
+    networks:
+      - soundbox_network
+
+
+  ranking_worker:
+    image: soundbox-backend:latest
+    container_name: soundbox_ranking_worker
+    restart: unless-stopped
+    environment: *soundbox_environment
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ['python', 'manage.py', 'run_ranking_worker']
     networks:
       - soundbox_network
 

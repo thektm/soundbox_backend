@@ -91,29 +91,12 @@ else:
 PY
 
 
-[ "${ENSURE_SEARCH_INDEXES_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_search_indexes || true
-
-
-# Backfill guest previews for already-published songs that were uploaded before
-# preview generation became part of the artist upload pipeline.
-#
-# Run this only for the main Daphne web container. The release scheduler uses the
-# same image/entrypoint, so command-gating here prevents duplicate startup work.
-# The management command has its own PostgreSQL advisory lock as a second safety
-# layer if multiple web containers are ever started.
-if [ "${GENERATE_PREVIEWS_ON_STARTUP:-1}" = "1" ] && [ "${1:-}" = "daphne" ]; then
-    (
-        delay="${PREVIEW_STARTUP_DELAY_SECONDS:-3}"
-        echo "preview backfill: scheduled in ${delay}s" >&2
-        sleep "$delay"
-        echo "preview backfill: scanning published songs missing previews" >&2
-        if python manage.py generate_missing_previews \
-            --attempts-per-run "${PREVIEW_STARTUP_ATTEMPTS_PER_RUN:-3}"; then
-            echo "preview backfill: complete" >&2
-        else
-            echo "preview backfill: failed; web process will remain available" >&2
-        fi
-    ) &
-fi
+# Schema/index maintenance runs once in the web service. Other worker services
+# use the same image but must not repeat startup DDL.
+case " $* " in
+  *" run_daphne_cluster.py "*)
+    [ "${ENSURE_SEARCH_INDEXES_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_search_indexes || true
+    ;;
+esac
 
 exec "$@"

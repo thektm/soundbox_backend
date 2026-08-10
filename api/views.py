@@ -74,7 +74,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.pagination import PageNumberPagination
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import (
     Sum, Count, F, IntegerField, BigIntegerField, Value, Prefetch, DecimalField, CharField, ExpressionWrapper,
     TextField, OuterRef, Subquery, Max, Case, When,
@@ -122,10 +122,14 @@ from collections import Counter
 import json
 from .subscriptions import activate_one_month_premium_locked
 from .recommendation_runtime import (
-    fresh_order_ids, fresh_order_objects, fresh_select_ids,
-    mark_generated_playlist_usage, remember_exposure,
+    enqueue_personal_recommendation_refresh, fresh_order_ids, fresh_order_objects, fresh_select_ids,
+    get_redis_client, mark_generated_playlist_usage, mark_personal_recommendation_refresh,
+    personal_recommendation_refresh_version, remember_exposure,
 )
 from .release_service import mark_release_for_review, merged_release_metadata, merged_shared
+from .stream_grants import materialize_stream_grant, stream_grant_identity
+from .song_play_metrics import get_tracked_song_play_counts
+from .trending import trending_song_ids
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +172,88 @@ def _minimum_payout_amount():
     if configured is None:
         return DEFAULT_MINIMUM_PAYOUT_AMOUNT
     return max(DEFAULT_MINIMUM_PAYOUT_AMOUNT, _payout_decimal(configured))
+
+
+_STREAM_PLAY_CONFIG_CACHE_KEY = 'stream-play-config:v1'
+_STREAM_PLAY_WORTH_CACHE_KEY = 'stream-play-worth:v1'
+_ACTIVE_AUDIO_AD_IDS_CACHE_KEY = 'stream-active-audio-ads:v1'
+
+
+def _create_stream_access(user, song):
+    """Create a unique stream row without preflight EXISTS queries."""
+    for _ in range(5):
+        try:
+            return StreamAccess.objects.create(
+                user=user,
+                song=song,
+                short_token=secrets.token_urlsafe(6)[:8],
+                unique_otplay_id=secrets.token_urlsafe(16),
+            )
+        except IntegrityError:
+            continue
+    # Collision probability is negligible; UUID fallback keeps legacy behavior.
+    return StreamAccess.objects.create(
+        user=user,
+        song=song,
+        short_token=uuid.uuid4().hex[:8],
+        unique_otplay_id=uuid.uuid4().hex,
+    )
+
+
+def _stream_ad_frequency():
+    cached = cache_get(_STREAM_PLAY_CONFIG_CACHE_KEY)
+    if cached is not None:
+        return int(cached)
+    config = PlayConfiguration.objects.order_by('-updated_at', '-pk').values('ad_frequency').first()
+    value = int(config['ad_frequency']) if config else 15
+    cache_set(_STREAM_PLAY_CONFIG_CACHE_KEY, value, 300)
+    return value
+
+
+def _stream_play_worth(plan):
+    cached = cache_get(_STREAM_PLAY_WORTH_CACHE_KEY)
+    if not isinstance(cached, dict):
+        config = PlayConfiguration.objects.order_by('-pk').values(
+            'free_play_worth', 'premium_play_worth'
+        ).first()
+        cached = {
+            'free': str(config['free_play_worth'] if config else Decimal('0.00000000')),
+            'premium': str(config['premium_play_worth'] if config else Decimal('0.00000000')),
+        }
+        cache_set(_STREAM_PLAY_WORTH_CACHE_KEY, cached, 300)
+    key = 'premium' if plan == User.PLAN_PREMIUM else 'free'
+    return _finance_decimal(cached.get(key, '0'))
+
+
+def _stream_access_stats(user):
+    cutoff = timezone.now() - timedelta(hours=24)
+    last_ad_at = StreamAccess.objects.filter(
+        user=user, ad_required=True, ad_seen=True, unwrapped_at__isnull=False
+    ).order_by('-unwrapped_at').values_list('unwrapped_at', flat=True).first()
+    since_filter = Q(unwrapped_at__isnull=False)
+    if last_ad_at is not None:
+        since_filter &= Q(unwrapped_at__gt=last_ad_at)
+    stats = StreamAccess.objects.filter(user=user, unwrapped=True).aggregate(
+        total_24h=Count('id', filter=Q(unwrapped_at__gte=cutoff)),
+        since_last_ad=Count('id', filter=since_filter),
+    )
+    return int(stats['total_24h'] or 0), int(stats['since_last_ad'] or 0)
+
+
+def _choose_audio_ad():
+    ids = cache_get(_ACTIVE_AUDIO_AD_IDS_CACHE_KEY)
+    if ids is None:
+        ids = list(AudioAd.objects.filter(is_active=True).values_list('id', flat=True))
+        if not ids:
+            ids = list(AudioAd.objects.values_list('id', flat=True))
+        cache_set(_ACTIVE_AUDIO_AD_IDS_CACHE_KEY, ids, 300)
+    if not ids:
+        return None
+    ad = AudioAd.objects.filter(pk=random.choice(ids)).first()
+    if ad is None:
+        cache_delete(_ACTIVE_AUDIO_AD_IDS_CACHE_KEY)
+        return _choose_audio_ad()
+    return ad
 
 
 def _finance_day_start(value):
@@ -2069,7 +2155,7 @@ class ArtistListView(APIView):
         - `q`: text to search in `name` and `artistic_name` (spaces ignored)
         - `unlinked`: boolean; if true only include artists with `user IS NULL`.
         """
-        qs = Artist.objects.all()
+        qs = Artist.objects.all().prefetch_related('social_account_links__platform')
 
         # unlinked filter
         unlinked_val = request.query_params.get('unlinked')
@@ -2369,14 +2455,33 @@ class ArtistDetailView(APIView):
             _touch_user_history(request.user, UserHistory.TYPE_ARTIST, artist=artist)
         page, page_size = _page_values(request, 10, 50); offset = (page - 1) * page_size
         song_base = _song_card_queryset().filter(artist=artist)
-        top = song_base.annotate(total_plays=Coalesce(F('plays'), 0) + Count('play_counts')).order_by('-total_plays', '-created_at')
+        # Rank artist songs from lightweight rows + the exact coherent Redis play
+        # mirror. This removes the large live M2M COUNT join from every artist
+        # detail request while keeping the same legacy+tracked play total.
+        top_rows = list(
+            Song.objects.filter(artist=artist, status=Song.STATUS_PUBLISHED)
+            .order_by('-created_at', '-id')
+            .values('id', 'plays', 'created_at')
+        )
+        tracked = get_tracked_song_play_counts(row['id'] for row in top_rows)
+        top_rows.sort(
+            key=lambda row: int(row.get('plays') or 0) + int(tracked.get(int(row['id']), 0)),
+            reverse=True,
+        )
+        top_ids = [int(row['id']) for row in top_rows]
         latest = song_base.order_by('-release_date', '-created_at')
         albums = Album.objects.filter(artist=artist, songs__status=Song.STATUS_PUBLISHED).exclude(Q(title__iexact='single') | Q(title='سینگل')).distinct().select_related('artist').prefetch_related(
             'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=_song_card_queryset())
         ).order_by('-release_date', '-created_at')
         list_type = request.query_params.get('type')
         if list_type in {'top_songs', 'latest_songs'}:
-            queryset = top if list_type == 'top_songs' else latest; total = queryset.count(); items = list(queryset[offset:offset+page_size])
+            if list_type == 'top_songs':
+                total = len(top_ids)
+                page_ids = top_ids[offset:offset + page_size]
+                items = _ordered_queryset_items(song_base, page_ids)
+            else:
+                total = len(top_ids)
+                items = list(latest[offset:offset + page_size])
             hydrate_song_metrics(items, request.user, False)
             return Response({'items': SongStreamSerializer(items, many=True, context={'request': request}).data,
                              'total': total, 'page': page, 'has_next': total > offset + page_size})
@@ -2385,8 +2490,10 @@ class ArtistDetailView(APIView):
             for album in items: hydrate_song_metrics(list(album.songs.all()), request.user, False)
             return Response({'items': AlbumSerializer(items, many=True, context={'request': request}).data,
                              'total': total, 'page': page, 'has_next': total > offset + page_size})
-        top_total, album_total, latest_total = top.count(), albums.count(), latest.count()
-        top_items, album_items, latest_items = list(top[:5]), list(albums[:5]), list(latest[:5])
+        top_total = latest_total = len(top_ids)
+        album_total = albums.count()
+        top_items = _ordered_queryset_items(song_base, top_ids[:5])
+        album_items, latest_items = list(albums[:5]), list(latest[:5])
         hydrate_song_metrics(top_items + latest_items, request.user, False); hydrate_album_metrics(album_items, request.user); hydrate_artist_metrics([artist], request.user)
         for album in album_items: hydrate_song_metrics(list(album.songs.all()), request.user, False)
         discovered = list(Playlist.objects.filter(songs__artist=artist).values('id','title','cover_image','created_by').distinct()[:8])
@@ -3031,7 +3138,9 @@ class SongListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         """Filter songs by status for non-staff users"""
-        queryset = Song.objects.all()
+        queryset = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        )
 
         # Non-authenticated or non-staff users only see published songs
         if not self.request.user.is_authenticated or not self.request.user.is_staff:
@@ -3310,8 +3419,7 @@ class UnwrapStreamView(APIView):
             ).count()
 
             # Use ad frequency from configuration
-            config = PlayConfiguration.objects.order_by('-updated_at').first()
-            ad_freq = config.ad_frequency if config else 15
+            ad_freq = _stream_ad_frequency()
 
             # ONLY show ads for FREE users
             is_premium = request.user.plan == User.PLAN_PREMIUM
@@ -3478,6 +3586,42 @@ class StreamShortRedirectView(APIView):
                 'ad_status': 'blocking_pending'
             })
 
+        # Database-backed legacy short tokens are capped at 16 chars by the
+        # model. New stateless grants are longer, so consume them directly and
+        # avoid an guaranteed-miss indexed lookup plus recursive re-entry.
+        if len(token) > 16:
+            identity = stream_grant_identity(token)
+            if not identity:
+                return Response(
+                    {'error': 'Invalid or unauthorized stream URL'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            grant_user_id, grant_song_id = identity
+            if grant_user_id != request.user.pk:
+                # Preserve the legacy cross-user short-link contract: issue a
+                # fresh user-owned short link and return the same 421 payload.
+                song = Song.objects.filter(pk=grant_song_id).first()
+                if song is None:
+                    return Response(
+                        {'error': 'Invalid or unauthorized stream URL'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                new_sa = _create_stream_access(request.user, song)
+                new_path = reverse('stream-short', kwargs={'token': new_sa.short_token})
+                return Response({
+                    'error': 'Stream link expired or unauthorized for this user',
+                    'message': 'A new short stream link has been generated',
+                    'new_stream_url': absolute_api_url(request, new_path),
+                }, status=421)
+
+            granted = materialize_stream_grant(token, user=request.user)
+            if not granted or not granted.short_token:
+                return Response(
+                    {'error': 'Invalid or unauthorized stream URL'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            token = granted.short_token
+
         try:
             # Get the stream access record
             stream_access = StreamAccess.objects.select_related('song', 'user').get(
@@ -3486,8 +3630,7 @@ class StreamShortRedirectView(APIView):
             )
 
             # Use ad frequency from configuration
-            config = PlayConfiguration.objects.order_by('-updated_at').first()
-            ad_freq = config.ad_frequency if config else 15
+            ad_freq = _stream_ad_frequency()
             is_premium = request.user.plan == User.PLAN_PREMIUM
 
             # Check if already unwrapped
@@ -3495,59 +3638,19 @@ class StreamShortRedirectView(APIView):
                 # Generate a new short token for this user/song and return it
                 from django.urls import reverse
                 import secrets
-                from uuid import uuid4
                 import random
 
-                short_token = None
-                for _ in range(6):
-                    candidate = secrets.token_urlsafe(6)[:8]
-                    if not StreamAccess.objects.filter(short_token=candidate).exists():
-                        short_token = candidate
-                        break
-                if not short_token:
-                    short_token = uuid4().hex[:8]
-
-                unique_otplay_id = None
-                for _ in range(6):
-                    candidate = secrets.token_urlsafe(16)
-                    if not StreamAccess.objects.filter(unique_otplay_id=candidate).exists():
-                        unique_otplay_id = candidate
-                        break
-                if not unique_otplay_id:
-                    unique_otplay_id = uuid4().hex
-
-                # create a new StreamAccess for this user and same song
-                new_sa = StreamAccess.objects.create(
-                    user=request.user,
-                    song=stream_access.song,
-                    short_token=short_token,
-                    unique_otplay_id=unique_otplay_id
-                )
+                # Unique constraints handle the astronomically rare collision;
+                # avoid 12 preflight EXISTS queries on this playback path.
+                new_sa = _create_stream_access(request.user, stream_access.song)
+                short_token = new_sa.short_token
 
                 # Build new short URL
                 new_path = reverse('stream-short', kwargs={'token': short_token})
                 new_url = absolute_api_url(request, new_path)
 
-                # Count unwrapped streams for this user (last 24 hours for fairness)
-                cutoff_time = timezone.now() - timedelta(hours=24)
-                unwrapped_count = StreamAccess.objects.filter(
-                    user=request.user,
-                    unwrapped=True,
-                    unwrapped_at__gte=cutoff_time
-                ).count()
-
-                # Calculate songs since last ad
-                last_ad_seen = StreamAccess.objects.filter(
-                    user=request.user,
-                    ad_required=True,
-                    ad_seen=True
-                ).order_by('-unwrapped_at').first()
-
-                since_query = Q(user=request.user, unwrapped=True)
-                if last_ad_seen and last_ad_seen.unwrapped_at:
-                    since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
-
-                unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
+                # One indexed aggregate replaces three history queries.
+                unwrapped_count, unwrapped_since_last_ad = _stream_access_stats(request.user)
 
                 # Ad decision status for response diagnostic
                 ad_status = {
@@ -3559,12 +3662,8 @@ class StreamShortRedirectView(APIView):
                 }
 
                 if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
-                    active_ads = AudioAd.objects.filter(is_active=True)
-                    if not active_ads.exists():
-                        active_ads = AudioAd.objects.all()
-
-                    if active_ads.exists():
-                        ad = random.choice(active_ads)
+                    ad = _choose_audio_ad()
+                    if ad is not None:
                         submit_id = secrets.token_urlsafe(32)
 
                         new_sa.ad_required = True
@@ -3596,26 +3695,7 @@ class StreamShortRedirectView(APIView):
             stream_access.unwrapped_at = timezone.now()
             stream_access.save(update_fields=['unwrapped', 'unwrapped_at'])
 
-            # Count unwrapped streams for this user (last 24 hours for fairness)
-            cutoff_time = timezone.now() - timedelta(hours=24)
-            unwrapped_count = StreamAccess.objects.filter(
-                user=request.user,
-                unwrapped=True,
-                unwrapped_at__gte=cutoff_time
-            ).count()
-
-            # Calculate songs since last ad
-            last_ad_seen = StreamAccess.objects.filter(
-                user=request.user,
-                ad_required=True,
-                ad_seen=True
-            ).order_by('-unwrapped_at').first()
-
-            since_query = Q(user=request.user, unwrapped=True)
-            if last_ad_seen and last_ad_seen.unwrapped_at:
-                since_query &= Q(unwrapped_at__gt=last_ad_seen.unwrapped_at)
-
-            unwrapped_since_last_ad = StreamAccess.objects.filter(since_query).count()
+            unwrapped_count, unwrapped_since_last_ad = _stream_access_stats(request.user)
 
             # Ad decision status for response diagnostic
             ad_status = {
@@ -3626,15 +3706,9 @@ class StreamShortRedirectView(APIView):
             }
 
             if not is_premium and ad_freq > 0 and unwrapped_since_last_ad >= ad_freq:
-                # Pick a random active ad
-                active_ads = AudioAd.objects.filter(is_active=True)
-                if not active_ads.exists():
-                    active_ads = AudioAd.objects.all()
-
-                if active_ads.exists():
-                    import random
-                    import secrets
-                    ad = random.choice(active_ads)
+                # Pick from the invalidation-backed active-id cache.
+                ad = _choose_audio_ad()
+                if ad is not None:
                     submit_id = secrets.token_urlsafe(32)
 
                     stream_access.ad_required = True
@@ -3662,7 +3736,7 @@ class StreamShortRedirectView(APIView):
             return response
 
         except StreamAccess.DoesNotExist:
-            # Try to find a StreamAccess with this token regardless of user.
+            # Try to find a legacy StreamAccess with this token regardless of user.
             # If found, it means the short link exists but belongs to another user
             # or was expired/removed for this user. Create a new short token for
             # the current user for the same song and return 421 with the new link.
@@ -3671,33 +3745,9 @@ class StreamShortRedirectView(APIView):
             if other and other.song:
                 # generate a new short token and unique_otplay_id
                 import secrets
-                from uuid import uuid4
 
-                short_token = None
-                for _ in range(6):
-                    candidate = secrets.token_urlsafe(6)[:8]
-                    if not StreamAccess.objects.filter(short_token=candidate).exists():
-                        short_token = candidate
-                        break
-                if not short_token:
-                    short_token = uuid4().hex[:8]
-
-                unique_otplay_id = None
-                for _ in range(6):
-                    candidate = secrets.token_urlsafe(16)
-                    if not StreamAccess.objects.filter(unique_otplay_id=candidate).exists():
-                        unique_otplay_id = candidate
-                        break
-                if not unique_otplay_id:
-                    unique_otplay_id = uuid4().hex
-
-                # create a new StreamAccess for this user and same song
-                new_sa = StreamAccess.objects.create(
-                    user=request.user,
-                    song=other.song,
-                    short_token=short_token,
-                    unique_otplay_id=unique_otplay_id
-                )
+                new_sa = _create_stream_access(request.user, other.song)
+                short_token = new_sa.short_token
 
                 new_path = reverse('stream-short', kwargs={'token': short_token})
                 new_url = absolute_api_url(request, new_path)
@@ -3785,37 +3835,91 @@ class AdSubmitView(APIView):
     responses={200: BannerAdSerializer, 204: None}
 )
 class BannerAdView(APIView):
-    """Public endpoint that returns exactly one banner ad.
+    """Public round-robin banner endpoint without a cross-request DB row lock.
 
-    Uses a DB-backed counter (`BannerAdServeCounter`) to atomically
-    rotate through active banners so view counts grow in a flat line.
+    Redis is used only as the shared rotation cursor. Durable serve/view counts
+    remain PostgreSQL counters. If Redis is unavailable the previous locked DB
+    algorithm is used, preserving exact behavior during cache outages.
     """
     permission_classes = [AllowAny]
+    _ACTIVE_KEY = 'banner-active-ids:v2'
+    _ROTATION_KEY = 'sedabox:banner-rotation:v2'
 
-    def get(self, request, *args, **kwargs):
-        from django.db import transaction
-        from django.db.models import F
+    @classmethod
+    def _active_ids(cls):
+        cached = cache_get(cls._ACTIVE_KEY)
+        if isinstance(cached, list):
+            return [int(value) for value in cached]
+        values = list(
+            BannerAd.objects.filter(is_active=True)
+            .order_by('created_at', 'pk')
+            .values_list('pk', flat=True)
+        )
+        cache_set(cls._ACTIVE_KEY, values, 300)
+        return values
 
+    @staticmethod
+    def _increment_durable_serve_counter():
+        updated = BannerAdServeCounter.objects.filter(pk=1).update(
+            total_serves=F('total_serves') + 1
+        )
+        if updated:
+            return
+        try:
+            BannerAdServeCounter.objects.create(pk=1, total_serves=1)
+        except IntegrityError:
+            BannerAdServeCounter.objects.filter(pk=1).update(
+                total_serves=F('total_serves') + 1
+            )
+
+    def _redis_path(self, active_ids):
+        client = get_redis_client()
+        if client is None:
+            return None
+        try:
+            sequence = int(client.incr(self._ROTATION_KEY)) - 1
+        except Exception:
+            return None
+
+        ad_id = active_ids[sequence % len(active_ids)]
+        updated = BannerAd.objects.filter(pk=ad_id, is_active=True).update(
+            view_count=F('view_count') + 1
+        )
+        if not updated:
+            cache_delete(self._ACTIVE_KEY)
+            return None
+        self._increment_durable_serve_counter()
+        return BannerAd.objects.filter(pk=ad_id).first()
+
+    @staticmethod
+    def _db_fallback():
         with transaction.atomic():
             counter, _ = BannerAdServeCounter.objects.select_for_update().get_or_create(pk=1)
-            active_ads = list(BannerAd.objects.filter(is_active=True).order_by('created_at'))
+            active_ads = list(BannerAd.objects.filter(is_active=True).order_by('created_at', 'pk'))
             if not active_ads:
-                return Response(status=status.HTTP_204_NO_CONTENT)
-
-            n = len(active_ads)
-            idx = (counter.total_serves % n) if n > 0 else 0
-            ad = active_ads[idx]
-
-            # Increment global counter and selected ad's view_count atomically
+                return None
+            ad = active_ads[counter.total_serves % len(active_ads)]
             counter.total_serves = F('total_serves') + 1
-            counter.save()
+            counter.save(update_fields=['total_serves'])
             ad.view_count = F('view_count') + 1
-            ad.save()
-            # refresh to get concrete integers
+            ad.save(update_fields=['view_count'])
             ad.refresh_from_db()
+            return ad
 
-        serializer = BannerAdSerializer(ad, context={'request': request})
-        return Response(serializer.data)
+    def get(self, request, *args, **kwargs):
+        active_ids = self._active_ids()
+        if not active_ids:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        ad = self._redis_path(active_ids)
+        if ad is None:
+            # A Redis outage or a concurrent ad-state change falls back to the
+            # authoritative DB path instead of returning a stale/missing ad.
+            cache_delete(self._ACTIVE_KEY)
+            ad = self._db_fallback()
+        if ad is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(BannerAdSerializer(ad, context={'request': request}).data)
 
 class StreamAccessView(APIView):
     """One-time access endpoint: redirects once to a presigned R2 URL and then becomes invalid."""
@@ -3828,28 +3932,30 @@ class StreamAccessView(APIView):
     )
     def get(self, request, token):
         try:
-            stream_access = StreamAccess.objects.select_related('song', 'user').get(
-                one_time_token=token,
-                user=request.user
-            )
+            with transaction.atomic():
+                stream_access = (
+                    StreamAccess.objects.select_for_update()
+                    .select_related('song', 'user')
+                    .get(one_time_token=token, user=request.user)
+                )
 
-            # Check token expiry and usage
-            if stream_access.one_time_used:
-                return Response({'error': 'This one-time access URL has already been used'}, status=status.HTTP_400_BAD_REQUEST)
+                # Check token expiry and usage while holding the row lock so a
+                # concurrent retry cannot consume the same one-time URL twice.
+                if stream_access.one_time_used:
+                    return Response({'error': 'This one-time access URL has already been used'}, status=status.HTTP_400_BAD_REQUEST)
 
-            if stream_access.one_time_expires_at and timezone.now() > stream_access.one_time_expires_at:
-                return Response({'error': 'This one-time access URL has expired'}, status=status.HTTP_410_GONE)
+                if stream_access.one_time_expires_at and timezone.now() > stream_access.one_time_expires_at:
+                    return Response({'error': 'This one-time access URL has expired'}, status=status.HTTP_410_GONE)
 
-            # Check if ad was required and seen
-            if stream_access.ad_required and not stream_access.ad_seen:
-                return Response({'error': 'Advertisement must be watched before accessing this stream'}, status=status.HTTP_403_FORBIDDEN)
+                if stream_access.ad_required and not stream_access.ad_seen:
+                    return Response({'error': 'Advertisement must be watched before accessing this stream'}, status=status.HTTP_403_FORBIDDEN)
 
-            # Mark used before redirecting (best-effort; race-conditions remain small)
-            stream_access.one_time_used = True
-            stream_access.save(update_fields=['one_time_used'])
+                stream_access.one_time_used = True
+                stream_access.save(update_fields=['one_time_used'])
+                song = stream_access.song
 
-            # Build presigned R2 URL and redirect
-            song = stream_access.song
+            # Build presigned R2 URL after the small accounting transaction is
+            # committed; network/signing work must not hold a database row lock.
             quality = request.user.settings.get('stream_quality', 'low')
             if quality == 'high' and song.audio_file:
                 audio_url = song.audio_file
@@ -3933,14 +4039,7 @@ class PlayCountView(APIView):
                 song = stream_access.song
                 ip = get_client_ip(request)
 
-                config = PlayConfiguration.objects.last()
-                pay_value = Decimal('0.00000000')
-                if config:
-                    if request.user.plan == User.PLAN_PREMIUM:
-                        pay_value = config.premium_play_worth
-                    else:
-                        pay_value = config.free_play_worth
-                pay_value = _finance_decimal(pay_value)
+                pay_value = _stream_play_worth(request.user.plan)
 
                 play_count = PlayCount.objects.create(
                     user=request.user,
@@ -4550,15 +4649,8 @@ class SedaBoxProfileView(APIView):
 
 
 def _home_song_queryset(require_preview=False):
-    # Cheap, cache-guarded publication sweep keeps scheduled releases automatic
-    # without changing any audience endpoint or requiring a client update.
-    try:
-        if cache.add('artist-release-due-publish-lock', '1', timeout=60):
-            from .release_service import publish_due_releases
-            publish_due_releases(limit=25)
-    except Exception:
-        # Deployment may briefly run before the additive release tables exist.
-        pass
+    # Scheduled publication belongs to the dedicated release scheduler. A read
+    # endpoint must never mutate releases or contend on publication locks.
     qs = _song_card_queryset()
     if require_preview:
         qs = qs.filter(preview_audio_url__isnull=False).exclude(preview_audio_url='')
@@ -4648,7 +4740,7 @@ def _recent_play_song_ids(require_preview=False, days=1, limit=300):
         'recent-play-song-ids', days, require_preview, limit, bucket,
         cache_version(CATALOG_VERSION_KEY), 'v2',
     )
-    cached = cache_get(key)
+    cached, claimed = cache_get_or_claim(key, lock_timeout=20, wait_timeout=1.0)
     if cached is not None:
         return cached
 
@@ -4874,7 +4966,7 @@ def _user_has_music_activity(user):
     return active
 
 
-def _ensure_personal_recommendations(user, target=18):
+def _generate_personal_recommendations(user, target=18):
     """Maintain a compact, current personal playlist pool for one user.
 
     The expensive factor analysis runs at most once per five-minute bucket and
@@ -5237,46 +5329,128 @@ def _ensure_personal_recommendations(user, target=18):
     return unique_ids
 
 
-def _playlist_recommendation_items(user=None, limit=80):
+def _ensure_personal_recommendations(user, target=18):
+    """Keep personal rows fresh without making Home the normal generator.
+
+    Interaction signals enqueue a deduplicated refresh after commit. Home uses
+    the background result when it has processed the current affinity version.
+    If the worker is unavailable or behind, the old synchronous path remains a
+    correctness fallback so response freshness never intentionally regresses.
+    """
+    if user is None or not getattr(user, 'is_authenticated', False):
+        return []
+    if not _user_has_music_activity(user):
+        return []
+
+    now = timezone.now()
+    current_ids = list(
+        RecommendedPlaylist.objects.filter(user=user).filter(
+            Q(expires_at__isnull=True) | Q(updated_at__gte=now - timedelta(minutes=20))
+        ).order_by('-relevance_score', '-created_at')
+        .values_list('unique_id', flat=True)[:target]
+    )
+    affinity = user_affinity_version(user.pk)
+    completed = personal_recommendation_refresh_version(user.pk)
+    enqueue_personal_recommendation_refresh(user.pk)
+
+    if current_ids and completed is not None and completed >= affinity:
+        return current_ids
+
+    # Give the already-running worker a very small chance to finish; this is
+    # bounded and configurable. It avoids duplicate heavy generation after a
+    # like/play without adding meaningful latency to ordinary Home requests.
+    wait_ms = max(0, min(int(getattr(settings, 'RECOMMENDATION_BACKGROUND_WAIT_MS', 150)), 500))
+    deadline = time.monotonic() + (wait_ms / 1000.0)
+    while current_ids and time.monotonic() < deadline:
+        time.sleep(0.025)
+        completed = personal_recommendation_refresh_version(user.pk)
+        if completed is not None and completed >= affinity:
+            return current_ids
+
+    # Exact-fresh fallback: identical generator/rows as before this refactor.
+    result = _generate_personal_recommendations(user, target=target)
+    mark_personal_recommendation_refresh(user.pk, affinity)
+    return result
+
+
+def _playlist_recommendation_refs(user=None, limit=80):
+    """Return the exact recommendation ordering as lightweight references.
+
+    This preserves the old personal/dynamic/global merge, deduplication and
+    freshness rotation while avoiding model/song prefetch hydration for rows
+    that pagination will discard.
+    """
     authenticated = bool(user is not None and getattr(user, 'is_authenticated', False))
     base = _home_playlist_queryset(user)
     dynamic = _dynamic_playlist_items(user)
+
+    def persisted_refs(queryset):
+        return [
+            (str(unique_id), int(pk), None)
+            for unique_id, pk in queryset.values_list('unique_id', 'pk')[:limit]
+            if unique_id is not None
+        ]
+
+    dynamic_refs = [
+        (str(item.unique_id), None, item)
+        for item in dynamic
+        if getattr(item, 'unique_id', None) is not None
+    ]
     if authenticated:
-        # Expiring personal rows are useful only while they are current. Durable
-        # rows (liked/saved/detail-viewed copies) have no expiry and stay visible.
-        personal = list(
+        personal = persisted_refs(
             base.filter(user=user).filter(
                 Q(expires_at__isnull=True)
                 | Q(updated_at__gte=timezone.now() - timedelta(minutes=20))
-            ).order_by('-relevance_score', '-created_at')[:limit]
+            ).order_by('-relevance_score', '-created_at')
         )
-        global_items = list(
-            base.filter(user__isnull=True).order_by('-relevance_score', '-created_at')[:limit]
+        global_items = persisted_refs(
+            base.filter(user__isnull=True).order_by('-relevance_score', '-created_at')
         )
         ordered = (
-            personal + dynamic + global_items
+            personal + dynamic_refs + global_items
             if personal and _user_has_music_activity(user)
-            else dynamic + global_items + personal
+            else dynamic_refs + global_items + personal
         )
     else:
-        global_items = list(base.order_by('-relevance_score', '-created_at')[:limit])
-        ordered = dynamic + global_items
+        global_items = persisted_refs(base.order_by('-relevance_score', '-created_at'))
+        ordered = dynamic_refs + global_items
 
     seen = set()
-    items = []
-    for item in ordered:
-        key = item.unique_id
-        if key in seen:
+    refs = []
+    for ref in ordered:
+        unique_id = ref[0]
+        if unique_id in seen:
             continue
-        seen.add(key)
-        items.append(item)
+        seen.add(unique_id)
+        refs.append(ref)
 
-    if authenticated:
-        items = fresh_order_objects(
-            f'recommended-playlists:user:{user.pk}', items,
-            identity=lambda item: item.unique_id,
+    if authenticated and refs:
+        by_unique = {ref[0]: ref for ref in refs}
+        ordered_ids = fresh_order_ids(
+            f'recommended-playlists:user:{user.pk}', list(by_unique), limit=len(by_unique)
         )
-    return items[:limit]
+        refs = [by_unique[str(unique_id)] for unique_id in ordered_ids if str(unique_id) in by_unique]
+    return refs[:limit]
+
+
+def _hydrate_playlist_recommendation_refs(user, refs):
+    refs = list(refs)
+    persisted_ids = [ref[1] for ref in refs if ref[1] is not None]
+    persisted = {}
+    if persisted_ids:
+        persisted = _home_playlist_queryset(user).filter(pk__in=persisted_ids).in_bulk()
+    items = []
+    for _unique_id, pk, dynamic in refs:
+        item = dynamic if dynamic is not None else persisted.get(pk)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def _playlist_recommendation_items(user=None, limit=80):
+    return _hydrate_playlist_recommendation_refs(
+        user, _playlist_recommendation_refs(user, limit=limit)
+    )
 
 
 def _remember_playlist_results(user, items):
@@ -5343,10 +5517,15 @@ def _materialize_dynamic_playlist(item):
 
 def _cached_ranked_ids(name, queryset, limit=300, timeout=300, *parts):
     key = stable_cache_key(name, cache_version(CATALOG_VERSION_KEY), *parts)
-    ids = cache_get(key)
-    if ids is None:
-        ids = list(queryset.values_list('id', flat=True)[:limit])
-        cache_set(key, ids, timeout)
+    ids, claimed = cache_get_or_claim(key, lock_timeout=20, wait_timeout=1.0)
+    if ids is not None:
+        return ids
+    # If this worker owns the distributed build claim (or the cache backend is
+    # unavailable), compute the exact same ranking and publish it. A waiter only
+    # falls through after the bounded wait, so cold-cache bursts cannot normally
+    # fan out into one heavy ranking query per Daphne worker.
+    ids = list(queryset.values_list('id', flat=True)[:limit])
+    cache_set(key, ids, timeout)
     return ids
 
 
@@ -5410,8 +5589,8 @@ def _song_recommendation_candidate_ids(request, pool_limit=240):
         'home-song-candidate-pool', user.pk, catalog_version,
         affinity_version, pool_limit, 'v7',
     )
-    cached = cache_get(key)
-    if cached:
+    cached, claimed = cache_get_or_claim(key, lock_timeout=30, wait_timeout=1.0)
+    if cached is not None:
         return cached.get('type', 'personalized'), cached.get('ids', [])
 
     base = _home_song_queryset()
@@ -5553,7 +5732,7 @@ def _merge_active_song_promotions(songs, limit):
 
     return merged[:limit]
 
-def _song_recommendations(request, limit=12, *, remember=True, scope='today-picks'):
+def _song_recommendations(request, limit=12, *, remember=True, scope='today-picks', hydrate_metrics=True):
     recommendation_type, ranked_ids = _song_recommendation_candidate_ids(
         request, max(120, int(limit) * 12)
     )
@@ -5582,7 +5761,8 @@ def _song_recommendations(request, limit=12, *, remember=True, scope='today-pick
         )
         songs.extend(fallback)
     songs = _merge_active_song_promotions(songs, limit)
-    hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
+    if hydrate_metrics:
+        hydrate_song_metrics(songs, request.user if request.user.is_authenticated else None)
 
     return recommendation_type, songs, len(ranked_ids) > len(songs)
 
@@ -5597,146 +5777,20 @@ def _paginated_payload(request, items, page_param, page, size, serializer):
     }
 
 
-TRENDING_MIN_SONGS = 6
-TRENDING_MAX_SONGS = 12
-TRENDING_WINDOWS_DAYS = (7, 14, 30, 60, 90, 180, 365)
 
 
-def _trending_song_ids(*, require_preview=False):
-    """Return genuinely played songs from the smallest useful recent window.
-
-    The ranking begins with seven days. When fewer than six distinct eligible
-    songs were played, it progressively widens the period until six are
-    available. The final fallback is all recorded history plus the legacy
-    aggregate ``Song.plays`` counter; songs with zero real plays are never used.
-    Results are globally cacheable because the ranking is not user-specific.
-    """
-    version = cache_version(CATALOG_VERSION_KEY)
-    cache_key = stable_cache_key(
-        'home-trending-songs',
-        'preview' if require_preview else 'full',
-        version,
-        'v1',
-    )
-    cached = cache_get(cache_key)
-    if isinstance(cached, dict) and isinstance(cached.get('ids'), list):
-        return cached
-
-    now = timezone.now()
-    through = Song.play_counts.through
-    link_filter = Q(song__status=Song.STATUS_PUBLISHED)
-    if require_preview:
-        link_filter &= Q(song__preview_audio_url__isnull=False)
-        link_filter &= ~Q(song__preview_audio_url='')
-
-    annotations = {
-        'recorded_plays_all': Count('playcount_id'),
-        'last_play_all': Max('playcount__created_at'),
-    }
-    for days in TRENDING_WINDOWS_DAYS:
-        cutoff = now - timedelta(days=days)
-        annotations[f'recorded_plays_{days}'] = Count(
-            'playcount_id',
-            filter=Q(playcount__created_at__gte=cutoff),
-        )
-        annotations[f'last_play_{days}'] = Max(
-            'playcount__created_at',
-            filter=Q(playcount__created_at__gte=cutoff),
-        )
-
-    rows = list(
-        through.objects.filter(link_filter)
-        .values('song_id')
-        .annotate(**annotations)
-    )
-
-    selected_window = None
-    candidates = []
-    for days in TRENDING_WINDOWS_DAYS:
-        score_field = f'recorded_plays_{days}'
-        period_rows = [row for row in rows if int(row.get(score_field) or 0) > 0]
-        if len(period_rows) >= TRENDING_MIN_SONGS:
-            selected_window = days
-            candidates = period_rows
-            break
-
-    if selected_window is not None:
-        score_field = f'recorded_plays_{selected_window}'
-        last_field = f'last_play_{selected_window}'
-        candidates.sort(
-            key=lambda row: (
-                int(row.get(score_field) or 0),
-                row.get(last_field) or row.get('last_play_all') or now - timedelta(days=36500),
-                int(row.get('recorded_plays_all') or 0),
-                int(row['song_id']),
-            ),
-            reverse=True,
-        )
-        result = {
-            'ids': [int(row['song_id']) for row in candidates[:TRENDING_MAX_SONGS]],
-            'window_days': selected_window,
-            'is_all_time': False,
-        }
-    else:
-        # Some older installations only populated Song.plays. Include that real
-        # all-time counter only after every timestamped window has been exhausted.
-        row_by_song = {int(row['song_id']): row for row in rows}
-        song_filter = Q(status=Song.STATUS_PUBLISHED)
-        if require_preview:
-            song_filter &= Q(preview_audio_url__isnull=False)
-            song_filter &= ~Q(preview_audio_url='')
-        legacy_rows = Song.objects.filter(song_filter).filter(
-            Q(plays__gt=0) | Q(id__in=row_by_song.keys())
-        ).values('id', 'plays')
-
-        all_time = []
-        for song_row in legacy_rows:
-            song_id = int(song_row['id'])
-            event_row = row_by_song.get(song_id, {})
-            recorded = int(event_row.get('recorded_plays_all') or 0)
-            legacy = int(song_row.get('plays') or 0)
-            total = recorded + legacy
-            if total <= 0:
-                continue
-            all_time.append({
-                'song_id': song_id,
-                'score': total,
-                'recorded': recorded,
-                'last_play': event_row.get('last_play_all'),
-            })
-
-        all_time.sort(
-            key=lambda row: (
-                row['score'],
-                row['last_play'] or now - timedelta(days=36500),
-                row['recorded'],
-                row['song_id'],
-            ),
-            reverse=True,
-        )
-        result = {
-            'ids': [row['song_id'] for row in all_time[:TRENDING_MAX_SONGS]],
-            'window_days': None,
-            'is_all_time': True,
-        }
-
-    # Short TTL keeps the section responsive to new plays without executing the
-    # aggregate query on every home request. Redis shares it across workers.
-    cache_set(cache_key, result, 180)
-    return result
-
-
-def _trending_songs(request):
-    ranking = _trending_song_ids(require_preview=not request.user.is_authenticated)
+def _trending_songs(request, *, hydrate_metrics=True):
+    ranking = trending_song_ids(require_preview=not request.user.is_authenticated)
     ids = ranking['ids']
     song_map = _home_song_queryset(not request.user.is_authenticated).filter(
         id__in=ids
     ).in_bulk()
     songs = [song_map[song_id] for song_id in ids if song_id in song_map]
-    hydrate_song_metrics(
-        songs,
-        request.user if request.user.is_authenticated else None,
-    )
+    if hydrate_metrics:
+        hydrate_song_metrics(
+            songs,
+            request.user if request.user.is_authenticated else None,
+        )
     return ranking, songs
 
 
@@ -5763,12 +5817,12 @@ class HomeSummaryView(APIView):
             # Authenticated users always receive a complete, fresh twelve-item
             # Today's Picks set. Ranking is cached; exposure rotation is Redis-only.
             rec_type, rec_page, rec_next = _song_recommendations(
-                request, rec_size, remember=True, scope='home-today-picks'
+                request, rec_size, remember=True, scope='home-today-picks', hydrate_metrics=False
             )
             rec_songs = rec_page
         else:
             rec_type, rec_songs, _ = _song_recommendations(
-                request, 48, remember=False, scope='guest-home-today-picks'
+                request, 48, remember=False, scope='guest-home-today-picks', hydrate_metrics=False
             )
             rec_page, rec_next = _slice_items(rec_songs, pages['rec'], rec_size)
 
@@ -5777,37 +5831,55 @@ class HomeSummaryView(APIView):
             'home-latest', latest_qs.order_by('-release_date', '-created_at'), 80, 180,
             not user.is_authenticated,
         )
-        latest = _ordered_queryset_items(latest_qs, latest_ids)
-        latest_page, latest_next = _slice_items(latest, pages['latest'], 6)
-        hydrate_song_metrics(latest_page, user if user.is_authenticated else None)
+        latest_page_ids, latest_next = _slice_items(latest_ids, pages['latest'], 6)
+        latest_page = _ordered_queryset_items(latest_qs, latest_page_ids)
 
         artist_qs = _artist_popularity_queryset()
         artist_ids = _cached_ranked_ids('home-popular-artists', artist_qs.order_by('-score', '-verified', 'name'), 80, 300)
-        artists = _ordered_queryset_items(artist_qs, artist_ids)
-        artist_page, artist_next = _slice_items(artists, pages['artists'], 6)
+        artist_page_ids, artist_next = _slice_items(artist_ids, pages['artists'], 6)
+        artist_page = _ordered_queryset_items(artist_qs, artist_page_ids)
         hydrate_artist_metrics(artist_page, user if user.is_authenticated else None)
 
         album_qs = _album_popularity_queryset()
         album_ids = _cached_ranked_ids('home-popular-albums', album_qs.order_by('-score', '-release_date'), 80, 300)
-        albums = _ordered_queryset_items(album_qs, album_ids)
-        album_page, album_next = _slice_items(albums, pages['albums'], 6)
+        album_page_ids, album_next = _slice_items(album_ids, pages['albums'], 6)
+        album_page = _ordered_queryset_items(album_qs, album_page_ids)
         hydrate_album_metrics(album_page, user if user.is_authenticated else None)
 
         if user.is_authenticated:
             _ensure_personal_recommendations(user, target=18)
-        playlists = _playlist_recommendation_items(user, 80)
+        # Fetch only enough playlist objects to determine this page + has-next.
+        playlist_limit = pages['playlists'] * 6 + 1
+        playlists = _playlist_recommendation_items(user, playlist_limit)
         playlist_page, playlist_next = _slice_items(playlists, pages['playlists'], 6)
         _attach_recommended_metrics(playlist_page, user)
         _remember_playlist_results(user, playlist_page)
 
         discovery_base = _home_song_queryset(not user.is_authenticated)
-        excluded = {song.id for song in latest[:30]} | {song.id for song in rec_songs}
-        discovery_pool = list(discovery_base.exclude(id__in=excluded).order_by('-created_at')[:120])
-        discoveries = _rotate_sample(discovery_pool, 60, f'{audience}:{timezone.now():%Y-%m-%d-%H}')
-        discovery_page, discovery_next = _slice_items(discoveries, pages['discoveries'], 6)
-        hydrate_song_metrics(discovery_page, user if user.is_authenticated else None)
+        excluded = set(latest_ids[:30]) | {song.id for song in rec_songs}
+        discovery_pool_ids = list(
+            discovery_base.exclude(id__in=excluded).order_by('-created_at')
+            .values_list('id', flat=True)[:120]
+        )
+        discovery_ids = _rotate_sample(
+            discovery_pool_ids, 60, f'{audience}:{timezone.now():%Y-%m-%d-%H}'
+        )
+        discovery_page_ids, discovery_next = _slice_items(discovery_ids, pages['discoveries'], 6)
+        discovery_page = _ordered_queryset_items(discovery_base, discovery_page_ids)
 
-        trending_ranking, trending_songs = _trending_songs(request)
+        trending_ranking, trending_songs = _trending_songs(request, hydrate_metrics=False)
+
+        # One metric batch for every song card in Home. The serializers detect
+        # these attached metrics and perform zero additional metric queries.
+        metric_songs = []
+        seen_song_ids = set()
+        for group in (rec_page, latest_page, discovery_page, trending_songs):
+            for song in group:
+                if song.pk in seen_song_ids:
+                    continue
+                seen_song_ids.add(song.pk)
+                metric_songs.append(song)
+        hydrate_song_metrics(metric_songs, user if user.is_authenticated else None)
 
         payload = {
             'sections': 7,
@@ -5898,11 +5970,13 @@ class DiscoveriesView(APIView):
             if user.is_authenticated:
                 excluded |= set(SongLike.objects.filter(user=user).values_list('song_id', flat=True))
                 excluded |= set(PlayCount.objects.filter(user=user).values_list('songs__id', flat=True))
-            pool = list(qs.exclude(id__in=excluded).order_by('-created_at')[:240])
+            pool = list(
+                qs.exclude(id__in=excluded).order_by('-created_at')
+                .values_list('id', flat=True)[:240]
+            )
             if not pool:
-                pool = list(qs.order_by('-created_at')[:240])
-            pool = _rotate_sample(pool, len(pool), key)
-            ids = [song.id for song in pool]
+                pool = list(qs.order_by('-created_at').values_list('id', flat=True)[:240])
+            ids = _rotate_sample(pool, len(pool), key)
             cache_set(key, ids, getattr(settings, 'CACHE_TTL_DISCOVERY', 300))
         page_ids, has_next = _slice_items(ids, page, size)
         song_map = _home_song_queryset(not user.is_authenticated).filter(id__in=page_ids).in_bulk()
@@ -5984,8 +6058,8 @@ class _GlobalChartView(APIView):
         cutoff = timezone.now() - timedelta(days=self.days)
         version = cache_version(CATALOG_VERSION_KEY)
         key = stable_cache_key('global-chart', self.entity, self.days, version, timezone.now().strftime('%Y-%m-%d-%H'), 'v3')
-        ids = cache_get(key)
-        if not ids:
+        ids, claimed = cache_get_or_claim(key, lock_timeout=30, wait_timeout=1.0)
+        if ids is None:
             through = Song.play_counts.through
             links = through.objects.filter(playcount__created_at__gte=cutoff)
             if self.entity == 'song':
@@ -6075,9 +6149,10 @@ class PlaylistRecommendationsView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         if request.user.is_authenticated:
             self._ensure_personal(request.user)
-        all_items = _playlist_recommendation_items(request.user, 80)
-        page = self.paginate_queryset(all_items)
-        items = list(page if page is not None else all_items)
+        refs = _playlist_recommendation_refs(request.user, 80)
+        page = self.paginate_queryset(refs)
+        page_refs = list(page if page is not None else refs)
+        items = _hydrate_playlist_recommendation_refs(request.user, page_refs)
         _attach_recommended_metrics(items, request.user)
         _remember_playlist_results(request.user, items)
         data = self.get_serializer(items, many=True).data
@@ -6415,13 +6490,22 @@ class SearchView(APIView):
                 status=400,
             )
 
+        # User/mixed search excludes the requester, so only those cache
+        # entries are requester-scoped. Pure catalog searches remain globally
+        # shared across users for maximum cache efficiency.
+        requester_scope = (
+            int(request.user.pk)
+            if request.user.is_authenticated and search_type in (None, 'user')
+            else 0
+        )
         key = stable_cache_key(
-            'search-ids-v12',
+            'search-ids-v13',
             query.casefold(),
             search_type or 'mixed',
             moods,
             page,
             page_size,
+            requester_scope,
             cache_version(CATALOG_VERSION_KEY),
             cache_version(USER_DIRECTORY_VERSION_KEY),
         )
@@ -6628,10 +6712,12 @@ class EventPlaylistView(APIView):
         responses={200: EventPlaylistSerializer(many=True)}
     )
     def get(self, request):
-        # list view: return event playlists with lightweight playlist covers
+        # List view: hydrate only the relations used by lightweight playlist covers.
+        event_playlist_qs = Playlist.objects.prefetch_related(
+            Prefetch('songs', queryset=Song.objects.select_related('album')),
+        )
         queryset = EventPlaylist.objects.all().prefetch_related(
-            'playlists',
-            Prefetch('playlists__songs', queryset=Song.objects.select_related('album')),
+            Prefetch('playlists', queryset=event_playlist_qs),
         )
 
         time_of_day = request.query_params.get('time_of_day')
@@ -6655,12 +6741,14 @@ class EventPlaylistDetailView(APIView):
     )
     def get(self, request, pk):
         from django.shortcuts import get_object_or_404
+        event_song_qs = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        )
+        event_playlist_qs = Playlist.objects.prefetch_related(
+            'genres', 'moods', 'tags', Prefetch('songs', queryset=event_song_qs)
+        )
         queryset = EventPlaylist.objects.all().prefetch_related(
-            'playlists',
-            'playlists__songs',
-            'playlists__genres',
-            'playlists__moods',
-            'playlists__tags',
+            Prefetch('playlists', queryset=event_playlist_qs),
         )
         obj = get_object_or_404(queryset, pk=pk)
 
@@ -6683,7 +6771,22 @@ class SearchSectionListView(APIView):
         responses={200: SearchSectionSerializer(many=True)}
     )
     def get(self, request):
-        sections = SearchSection.objects.all().prefetch_related('songs', 'albums', 'playlists', 'songs__artist', 'albums__artist')
+        section_song_qs = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        )
+        section_album_qs = Album.objects.select_related('artist').prefetch_related(
+            'genres', 'sub_genres', 'moods',
+            Prefetch('songs', queryset=section_song_qs),
+        )
+        section_playlist_qs = Playlist.objects.prefetch_related(
+            'genres', 'moods', 'tags',
+            Prefetch('songs', queryset=section_song_qs),
+        )
+        sections = SearchSection.objects.all().prefetch_related(
+            Prefetch('songs', queryset=section_song_qs),
+            Prefetch('albums', queryset=section_album_qs),
+            Prefetch('playlists', queryset=section_playlist_qs),
+        )
         serializer = SearchSectionSerializer(sections, many=True, context={'request': request})
         return Response(serializer.data)
 
@@ -6710,10 +6813,20 @@ class SearchSectionDetailView(APIView):
         return [IsAuthenticated()]
 
     def get_object(self, pk):
-        try:
-            return SearchSection.objects.get(pk=pk)
-        except SearchSection.DoesNotExist:
-            return None
+        section_song_qs = Song.objects.select_related('artist', 'album', 'uploader').prefetch_related(
+            'featured_artists', 'genres', 'sub_genres', 'moods', 'tags'
+        )
+        section_album_qs = Album.objects.select_related('artist').prefetch_related(
+            'genres', 'sub_genres', 'moods', Prefetch('songs', queryset=section_song_qs)
+        )
+        section_playlist_qs = Playlist.objects.prefetch_related(
+            'genres', 'moods', 'tags', Prefetch('songs', queryset=section_song_qs)
+        )
+        return SearchSection.objects.prefetch_related(
+            Prefetch('songs', queryset=section_song_qs),
+            Prefetch('albums', queryset=section_album_qs),
+            Prefetch('playlists', queryset=section_playlist_qs),
+        ).filter(pk=pk).first()
 
     @extend_schema(
         summary="جزئیات بخش جستجو",
