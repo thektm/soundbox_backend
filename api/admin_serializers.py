@@ -314,7 +314,6 @@ class AdminAudioAdSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTran
 class AdminPaymentTransactionSerializer(RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('description', 'description_en'),)
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
-    user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
     user_plan = serializers.CharField(source='user.plan', read_only=True)
 
     class Meta:
@@ -548,7 +547,6 @@ class AdminEventPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEngli
 
 class AdminSupportTicketSerializer(serializers.ModelSerializer):
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
-    user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
     artist_name = serializers.SerializerMethodField()
     responded_by_phone = serializers.CharField(source='responded_by.phone_number', read_only=True, allow_null=True)
 

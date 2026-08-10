@@ -82,7 +82,7 @@ from django.db.models import (
 from django.db.models.functions import Coalesce, TruncDate, TruncHour, TruncWeek, TruncMonth, Replace, Cast, Concat
 from django.utils import timezone
 from django.conf import settings
-from django.http import StreamingHttpResponse
+from django.http import Http404, StreamingHttpResponse
 from django.core.cache import cache
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
@@ -129,7 +129,7 @@ from .recommendation_runtime import (
 from .release_service import mark_release_for_review, merged_release_metadata, merged_shared
 from .stream_grants import materialize_stream_grant, stream_grant_identity
 from .song_play_metrics import get_tracked_song_play_counts
-from .trending import trending_song_ids
+from .trending import TRENDING_MIN_SONGS, trending_song_ids
 
 logger = logging.getLogger(__name__)
 
