@@ -7,13 +7,14 @@ from django.shortcuts import get_object_or_404
 from .models import (
     User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, 
     PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest,
-    SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
+    SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion,
+    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory
 )
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
 from django.db import transaction
-from django.db.models import Sum, Count, Q, Case, When, Value, IntegerField, F
+from django.db.models import Sum, Count, Q, Case, When, Value, IntegerField, F, Prefetch
 from decimal import Decimal
 from .admin_serializers import (
     AdminUserSerializer, AdminArtistSerializer, AdminArtistAuthSerializer, 
@@ -26,6 +27,7 @@ from .admin_serializers import (
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage
 from .song_play_metrics import apply_annotated_song_play_counts, hydrate_song_play_counts
+from .performance import CATALOG_VERSION_KEY, cache_increment
 import os
 
 class AdminPagination(PageNumberPagination):
@@ -37,9 +39,69 @@ class AdminPagination(PageNumberPagination):
 def _admin_song_detail_queryset():
     return (
         Song.objects.select_related('artist', 'album')
+        .exclude(status=Song.STATUS_DRAFT)
         .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
         .annotate(likes_count=Count('liked_by', distinct=True))
     )
+
+
+_CATALOG_VERSION_TTL = 7 * 24 * 60 * 60
+
+def _bump_catalog_after_commit():
+    transaction.on_commit(lambda: cache_increment(CATALOG_VERSION_KEY, _CATALOG_VERSION_TTL))
+
+def _renumber_admin_release_tracks(release_ids):
+    for release_id in set(release_ids):
+        links = list(
+            ArtistReleaseTrack.objects.select_for_update()
+            .filter(release_id=release_id)
+            .order_by('position', 'id')
+        )
+        # Move out of the constrained range first, then write the final order.
+        for index, link in enumerate(links, start=1):
+            if link.position != index:
+                ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=100000 + index)
+        for index, link in enumerate(links, start=1):
+            ArtistReleaseTrack.objects.filter(pk=link.pk).update(position=index)
+
+def _take_down_empty_admin_releases(release_ids, actor, note):
+    now = timezone.now()
+    for release in ArtistRelease.objects.select_for_update().filter(pk__in=set(release_ids)):
+        if release.release_tracks.exclude(song__status=Song.STATUS_DELETED).exists():
+            continue
+        if release.status in {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_TAKEN_DOWN}:
+            continue
+        previous = release.status
+        release.status = ArtistRelease.STATUS_TAKEN_DOWN
+        release.taken_down_at = now
+        release.validation_snapshot = {}
+        release.lock_version += 1
+        release.save(update_fields=['status', 'taken_down_at', 'validation_snapshot', 'lock_version', 'updated_at'])
+        ArtistReleaseStatusHistory.objects.create(
+            release=release, from_status=previous, to_status=ArtistRelease.STATUS_TAKEN_DOWN,
+            note=note, actor=actor,
+        )
+
+def _hard_delete_admin_song(song, actor):
+    """Permanently remove a song while leaving release history internally coherent."""
+    links = list(
+        ArtistReleaseTrack.objects.select_for_update()
+        .filter(song=song)
+        .select_related('release')
+    )
+    release_ids = {link.release_id for link in links}
+    if links:
+        ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in links]).delete()
+        _renumber_admin_release_tracks(release_ids)
+        _take_down_empty_admin_releases(
+            release_ids, actor, 'Song permanently deleted by an administrator.'
+        )
+
+    play_ids = list(song.play_counts.values_list('pk', flat=True))
+    song.delete()
+    if play_ids:
+        PlayCount.objects.filter(pk__in=play_ids, songs__isnull=True).delete()
+
 
 
 def _int_list(value):
@@ -612,7 +674,8 @@ class AdminSongListView(APIView):
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
 
         songs = (
-            Song.objects.select_related('artist', 'album')
+            Song.objects.exclude(status=Song.STATUS_DRAFT)
+            .select_related('artist', 'album')
             .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
             .annotate(likes_count=Count('liked_by', distinct=True))
         )
@@ -757,6 +820,9 @@ class AdminSongListView(APIView):
             song_data['original_format'] = original_format
             song_data['duration_seconds'] = duration
             song_data['uploader'] = request.user
+            # Draft belongs to the artist workspace; admin-created catalog items enter review instead.
+            if song_data.get('status', Song.STATUS_DRAFT) == Song.STATUS_DRAFT:
+                song_data['status'] = Song.STATUS_PENDING
             
             # Remove file fields and many-to-many from data for create
             song_data.pop('audio_file_upload', None)
@@ -817,7 +883,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def patch(self, request, pk):
-        song = get_object_or_404(Song, pk=pk)
+        song = get_object_or_404(Song.objects.exclude(status=Song.STATUS_DRAFT), pk=pk)
         return self._update_song(request, song, partial=True)
 
     @extend_schema(
@@ -827,7 +893,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def put(self, request, pk):
-        song = get_object_or_404(Song, pk=pk)
+        song = get_object_or_404(Song.objects.exclude(status=Song.STATUS_DRAFT), pk=pk)
         return self._update_song(request, song, partial=False)
 
     @extend_schema(
@@ -836,8 +902,23 @@ class AdminSongDetailView(APIView):
         responses={204: None}
     )
     def delete(self, request, pk):
-        song = get_object_or_404(Song, pk=pk)
-        song.delete()
+        mode = str(request.query_params.get('mode') or 'hard').strip().lower()
+        if mode not in {'soft', 'hard'}:
+            return Response({'detail': 'mode must be soft or hard.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            song = get_object_or_404(
+                Song.objects.select_for_update().exclude(status=Song.STATUS_DRAFT), pk=pk
+            )
+            if mode == 'soft':
+                release_ids = list(song.release_track_links.values_list('release_id', flat=True))
+                if song.status != Song.STATUS_DELETED:
+                    song.status = Song.STATUS_DELETED
+                    song.save(update_fields=['status', 'updated_at'])
+                _take_down_empty_admin_releases(
+                    release_ids, request.user, 'Song taken down by an administrator.'
+                )
+                return Response({'deletion': 'soft', 'id': song.pk}, status=status.HTTP_200_OK)
+            _hard_delete_admin_song(song, request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _update_song(self, request, song, partial=False):
@@ -1288,8 +1369,19 @@ class AdminAlbumListView(APIView):
         responses={200: AdminAlbumSerializer(many=True)}
     )
     def get(self, request):
-        qs = Album.objects.annotate(song_count=Count('songs')).filter(song_count__gt=0)
-        qs = qs.exclude(song_count=1, songs__is_single=True)
+        visible_song_filter = ~Q(songs__status=Song.STATUS_DRAFT)
+        qs = Album.objects.annotate(
+            song_count=Count('songs', filter=visible_song_filter, distinct=True),
+            active_song_count=Count(
+                'songs', filter=visible_song_filter & ~Q(songs__status=Song.STATUS_DELETED), distinct=True
+            ),
+            visible_single_count=Count(
+                'songs', filter=visible_song_filter & Q(songs__is_single=True), distinct=True
+            ),
+        ).filter(song_count__gt=0)
+        qs = qs.exclude(song_count=1, visible_single_count=1).prefetch_related(
+            Prefetch('songs', queryset=_admin_song_detail_queryset(), to_attr='_admin_visible_songs')
+        )
         query = str(request.query_params.get('q') or '').strip()
         if query:
             qs = qs.filter(
@@ -1319,7 +1411,11 @@ class AdminAlbumDetailView(APIView):
         responses={200: AdminAlbumSerializer}
     )
     def get(self, request, pk):
-        album = get_object_or_404(Album, pk=pk)
+        album = get_object_or_404(
+            Album.objects.prefetch_related(
+                Prefetch('songs', queryset=_admin_song_detail_queryset(), to_attr='_admin_visible_songs')
+            ), pk=pk
+        )
         serializer = AdminAlbumSerializer(album)
         return Response(serializer.data)
 
@@ -1349,8 +1445,31 @@ class AdminAlbumDetailView(APIView):
         responses={204: None}
     )
     def delete(self, request, pk):
-        album = get_object_or_404(Album, pk=pk)
-        album.delete()
+        mode = str(request.query_params.get('mode') or 'hard').strip().lower()
+        if mode not in {'soft', 'hard'}:
+            return Response({'detail': 'mode must be soft or hard.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            album = get_object_or_404(Album.objects.select_for_update(), pk=pk)
+            songs = Song.objects.select_for_update().filter(album=album)
+            if mode == 'soft':
+                release_ids = list(
+                    ArtistReleaseTrack.objects.filter(song__album=album)
+                    .values_list('release_id', flat=True).distinct()
+                )
+                affected = songs.exclude(status=Song.STATUS_DELETED).update(
+                    status=Song.STATUS_DELETED, updated_at=timezone.now()
+                )
+                _take_down_empty_admin_releases(
+                    release_ids, request.user, 'Album taken down by an administrator.'
+                )
+                _bump_catalog_after_commit()
+                return Response({
+                    'deletion': 'soft', 'id': album.pk, 'affected_songs': affected
+                }, status=status.HTTP_200_OK)
+
+            # Hard album deletion removes only the album record. Keep recordings as singles.
+            songs.update(album=None, is_single=True, updated_at=timezone.now())
+            album.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _update_album(self, request, album, partial=False):

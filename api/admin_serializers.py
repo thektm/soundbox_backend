@@ -249,9 +249,30 @@ class AdminReportSerializer(serializers.ModelSerializer):
 class AdminAlbumSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('title', 'title_en'), ('description', 'description_en'))
     artist_name = serializers.CharField(source='artist.name', read_only=True)
-    songs = AdminSongSerializer(many=True, read_only=True)
+    songs = serializers.SerializerMethodField()
+    is_removed = serializers.SerializerMethodField()
     cover_image_upload = serializers.ImageField(write_only=True, required=False)
     
+    def _admin_songs(self, obj):
+        prefetched = getattr(obj, '_admin_visible_songs', None)
+        if prefetched is not None:
+            return list(prefetched)
+        return list(
+            obj.songs.exclude(status=Song.STATUS_DRAFT)
+            .select_related('artist', 'album')
+            .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
+        )
+
+    def get_songs(self, obj):
+        return AdminSongSerializer(self._admin_songs(obj), many=True).data
+
+    def get_is_removed(self, obj):
+        active_count = getattr(obj, 'active_song_count', None)
+        if active_count is not None:
+            return int(active_count) == 0
+        songs = self._admin_songs(obj)
+        return bool(songs) and all(song.status == Song.STATUS_DELETED for song in songs)
+
     # For write operations
     genres = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, required=False)
     sub_genres = serializers.PrimaryKeyRelatedField(queryset=SubGenre.objects.all(), many=True, required=False)
@@ -262,7 +283,7 @@ class AdminAlbumSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTransl
         fields = [
             'id', 'title', 'title_en', 'artist', 'artist_name', 'cover_image', 'cover_image_upload',
             'release_date', 'description', 'description_en', 'genres', 'sub_genres', 'moods',
-            'created_at', 'songs'
+            'created_at', 'songs', 'is_removed'
         ]
         read_only_fields = ['id', 'cover_image', 'created_at']
 
