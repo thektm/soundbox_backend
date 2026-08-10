@@ -64,8 +64,16 @@ def main():
     stopping = False
 
     def spawn():
+        worker_entry = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'timed_daphne.py')
         proc = subprocess.Popen(
-            ['daphne', '--fd', str(fd), '--proxy-headers', '--verbosity', '1', 'soundbox.asgi:application'],
+            [
+                sys.executable,
+                worker_entry,
+                '--fd', str(fd),
+                '--proxy-headers',
+                '--verbosity', '1',
+                'soundbox.asgi:application',
+            ],
             pass_fds=(fd,),
         )
         children.append(proc)
