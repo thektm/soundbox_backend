@@ -2170,6 +2170,10 @@ class AdminEmployeeDetailView(APIView):
 class AdminDepositRequestDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
+    def get(self, request, pk):
+        deposit = get_object_or_404(DepositRequest.objects.select_related('artist'), pk=pk)
+        return Response(AdminDepositRequestSerializer(deposit).data)
+
     def patch(self, request, pk):
         deposit = get_object_or_404(DepositRequest.objects.select_related('artist'), pk=pk)
         new_status = str(request.data.get('status') or deposit.status).strip()
@@ -2310,6 +2314,12 @@ class AdminSongPromotionListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSongPromotionDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, pk):
+        promotion = get_object_or_404(
+            SongPromotion.objects.select_related('song', 'song__artist', 'created_by'), pk=pk
+        )
+        return Response(AdminSongPromotionSerializer(promotion).data)
 
     def patch(self, request, pk):
         promotion = get_object_or_404(SongPromotion, pk=pk)
