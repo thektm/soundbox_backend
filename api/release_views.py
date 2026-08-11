@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -1113,13 +1114,27 @@ class AdminReleaseActionView(APIView):
             elif action == 'approve':
                 release = approve_release(release, actor=request.user, note=note)
             elif action == 'schedule':
-                scheduled_at = scheduled_datetime(release)
+                raw_scheduled_at = str(request.data.get('scheduled_at') or '').strip()
+                if raw_scheduled_at:
+                    scheduled_at = parse_datetime(raw_scheduled_at)
+                    if not scheduled_at:
+                        return Response(
+                            {'scheduled_at': ['تاریخ و ساعت انتخاب‌شده معتبر نیست.']},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if timezone.is_naive(scheduled_at):
+                        scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
+                else:
+                    # Backward-compatible fallback for older clients.
+                    scheduled_at = scheduled_datetime(release)
                 if not scheduled_at or scheduled_at <= timezone.now():
                     return Response(
-                        {'release_date': ['زمان‌بندی فقط برای تاریخ آینده امکان‌پذیر است. برای امروز یا تاریخ‌های گذشته، انتشار مستقیم را انتخاب کنید.']},
+                        {'scheduled_at': ['زمان انتشار باید در آینده باشد.']},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                release = prepare_release(release, schedule=True)
+                release = prepare_release(release, schedule=False)
+                release.scheduled_at = scheduled_at
+                release.save(update_fields=['scheduled_at', 'updated_at'])
                 change_status(release, ArtistRelease.STATUS_SCHEDULED, actor=request.user, note=note or 'انتشار زمان‌بندی شد.')
             elif action == 'publish':
                 release = materialize_release(release, publish=True)
