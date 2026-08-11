@@ -386,6 +386,27 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
     links = list(release.release_tracks.all())
     validation = release.validation_snapshot or validation_payload(release)
     is_staff = bool(request and getattr(getattr(request, 'user', None), 'is_staff', False))
+    shared_metadata = merged_shared(release.shared_metadata)
+
+    shared_metadata_display = {}
+    if is_staff and include_history:
+        def taxonomy_names(model, values):
+            normalized_ids = []
+            for value in values or []:
+                try:
+                    normalized_ids.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+            names_by_id = dict(model.objects.filter(id__in=normalized_ids).values_list('id', 'name'))
+            return [names_by_id[value] for value in normalized_ids if names_by_id.get(value)]
+
+        shared_metadata_display = {
+            'genre_names': taxonomy_names(Genre, shared_metadata.get('genre_ids')),
+            'sub_genre_names': taxonomy_names(SubGenre, shared_metadata.get('sub_genre_ids')),
+            'mood_names': taxonomy_names(Mood, shared_metadata.get('mood_ids')),
+            'tag_names': taxonomy_names(Tag, shared_metadata.get('tag_ids')),
+        }
+
     result = {
         'id': str(release.id),
         'album_id': release.album_id,
@@ -399,7 +420,7 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
         'current_step': max(1, min(5, release.current_step or 1)),
         'track_ids': [link.song_id for link in links],
         'tracks': [serialize_track(link, request, metadata.get('cover_url')) for link in links],
-        'shared_metadata': merged_shared(release.shared_metadata),
+        'shared_metadata': shared_metadata,
         'release_metadata': metadata,
         'track_extras': {str(link.song_id): normalize_track_extras(link.extras, link.position) for link in links},
         'validation': validation,
@@ -416,6 +437,8 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
         'published_at': release.published_at,
         'taken_down_at': release.taken_down_at,
     }
+    if is_staff and include_history:
+        result['shared_metadata_display'] = shared_metadata_display
     if include_history:
         result['status_history'] = [
             {
