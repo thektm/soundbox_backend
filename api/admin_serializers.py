@@ -236,14 +236,23 @@ class AdminReportSerializer(serializers.ModelSerializer):
     song_title = serializers.CharField(source='song.title', read_only=True, allow_null=True)
     artist_name = serializers.CharField(source='artist.name', read_only=True, allow_null=True)
     reported_user_phone = serializers.CharField(source='reported_user.phone_number', read_only=True, allow_null=True)
+    reported_user_unique_id = serializers.CharField(source='reported_user.unique_id', read_only=True, allow_null=True)
+    reported_user_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Report
         fields = [
             'id', 'user', 'user_phone', 'user_is_banned', 'song', 'song_title', 'artist', 'artist_name', 'reported_user', 'reported_user_phone',
-            'text', 'has_reviewed', 'reviewed_at', 'created_at', 'updated_at'
+            'reported_user_unique_id', 'reported_user_name', 'text', 'has_reviewed', 'reviewed_at', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'song', 'artist', 'reported_user', 'created_at', 'updated_at']
+
+    def get_reported_user_name(self, obj):
+        user = obj.reported_user
+        if not user:
+            return ''
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        return full_name or user.unique_id or user.phone_number
 
 
 class AdminAlbumSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):

@@ -1035,7 +1035,7 @@ class AdminReportListView(APIView):
         responses={200: AdminReportSerializer(many=True)}
     )
     def get(self, request):
-        qs = Report.objects.all().order_by('-created_at')
+        qs = Report.objects.select_related('user', 'song', 'artist', 'reported_user').all().order_by('-created_at')
         
         has_reviewed = request.query_params.get('has_reviewed')
         if has_reviewed is not None:
@@ -1066,7 +1066,7 @@ class AdminReportDetailView(APIView):
         responses={200: AdminReportSerializer}
     )
     def get(self, request, pk):
-        report = get_object_or_404(Report, pk=pk)
+        report = get_object_or_404(Report.objects.select_related('user', 'song', 'artist', 'reported_user'), pk=pk)
         serializer = AdminReportSerializer(report)
         return Response(serializer.data)
 
@@ -1077,7 +1077,7 @@ class AdminReportDetailView(APIView):
         responses={200: AdminReportSerializer}
     )
     def put(self, request, pk):
-        report = get_object_or_404(Report, pk=pk)
+        report = get_object_or_404(Report.objects.select_related('user', 'song', 'artist', 'reported_user'), pk=pk)
         data = request.data.copy()
         
         # If has_reviewed is being set to true, set reviewed_at
@@ -1097,7 +1097,7 @@ class AdminReportDetailView(APIView):
         responses={204: None}
     )
     def delete(self, request, pk):
-        report = get_object_or_404(Report, pk=pk)
+        report = get_object_or_404(Report.objects.select_related('user', 'song', 'artist', 'reported_user'), pk=pk)
         report.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
