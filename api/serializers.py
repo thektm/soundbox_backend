@@ -2716,6 +2716,24 @@ class ReportSerializer(LocalizedModelSerializer):
         fields = ['id', 'song', 'artist', 'artist_id', 'artist_unique_id', 'reported_user', 'reported_user_phone', 'text', 'created_at']
         read_only_fields = ['id', 'created_at']
 
+    def create(self, validated_data):
+        # ``artist_id`` intentionally keeps the existing public request/response
+        # shape, but DRF materializes ``source='artist.id'`` as a nested dict.
+        # Resolve that dict to the actual relation before ModelSerializer.create
+        # so report submission remains behavior-compatible and no nested write is
+        # attempted.
+        artist_value = validated_data.get('artist')
+        if isinstance(artist_value, dict):
+            artist_id = artist_value.get('id')
+            if artist_id is None:
+                validated_data.pop('artist', None)
+            else:
+                try:
+                    validated_data['artist'] = Artist.objects.get(pk=artist_id)
+                except Artist.DoesNotExist:
+                    raise serializers.ValidationError({'artist_id': ['هنرمند انتخاب‌شده پیدا نشد.']})
+        return super().create(validated_data)
+
     def validate(self, data):
         # Require exactly one target: song, artist, or reported_user
         has_song = bool(data.get('song'))

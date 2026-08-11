@@ -375,6 +375,67 @@ def validation_payload(release: ArtistRelease) -> dict:
     }
 
 
+
+def release_removal_state(release: ArtistRelease) -> dict:
+    """Describe why a release is unavailable without adding schema state.
+
+    Artist deletions and administrator takedowns historically share the
+    ``taken_down`` status.  The existing audit note + linked recording state is
+    sufficient to distinguish them for moderation while keeping old data and
+    avoiding a migration.
+    """
+    links = list(release.release_tracks.all())
+    deleted_count = sum(1 for link in links if link.song.status == Song.STATUS_DELETED)
+    active_count = len(links) - deleted_count
+    latest_take_down = next(
+        (item for item in release.status_history.all() if item.to_status == ArtistRelease.STATUS_TAKEN_DOWN),
+        None,
+    )
+    note = str(getattr(latest_take_down, 'note', '') or '').strip()
+    note_lower = note.casefold()
+
+    origin = ''
+    state = 'active'
+    if release.status == ArtistRelease.STATUS_TAKEN_DOWN:
+        artist_markers = (
+            'توسط هنرمند حذف شد',
+            'removed or deleted by the artist',
+        )
+        admin_delete_markers = (
+            'song taken down by an administrator',
+            'song permanently deleted by an administrator',
+        )
+        if any(marker.casefold() in note_lower for marker in artist_markers):
+            origin = 'artist'
+            state = 'artist_deleted'
+        elif any(marker.casefold() in note_lower for marker in admin_delete_markers):
+            origin = 'admin'
+            state = 'admin_deleted'
+        elif deleted_count or not links:
+            origin = 'unknown'
+            state = 'deleted_unavailable'
+        else:
+            # Normal release-level takedown is an administrative reversible
+            # visibility action; recordings and their historical data remain.
+            origin = 'admin'
+            state = 'admin_unreachable'
+
+    can_restore = (
+        release.status == ArtistRelease.STATUS_TAKEN_DOWN
+        and state == 'admin_unreachable'
+        and active_count > 0
+        and deleted_count == 0
+    )
+    return {
+        'state': state,
+        'origin': origin,
+        'reason': note,
+        'deleted_track_count': deleted_count,
+        'active_track_count': active_count,
+        'can_restore': can_restore,
+        'artist_deleted': state == 'artist_deleted',
+    }
+
 def serialize_release(release: ArtistRelease, request=None, include_history=False) -> dict:
     metadata = merged_release_metadata(release.release_metadata, release.artist_id)
     raw_cover_url = metadata.get('cover_url')
@@ -387,6 +448,22 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
     validation = release.validation_snapshot or validation_payload(release)
     is_staff = bool(request and getattr(getattr(request, 'user', None), 'is_staff', False))
     shared_metadata = merged_shared(release.shared_metadata)
+    removal = release_removal_state(release)
+    serialized_tracks = []
+    for link in links:
+        item = serialize_track(link, request, metadata.get('cover_url'))
+        if link.song.status == Song.STATUS_DELETED:
+            if removal['state'] == 'artist_deleted':
+                item['deletion_origin'] = 'artist'
+            elif removal['state'] == 'admin_deleted':
+                item['deletion_origin'] = 'admin'
+            else:
+                item['deletion_origin'] = 'unknown'
+            item['deletion_state'] = 'deleted'
+        else:
+            item['deletion_origin'] = ''
+            item['deletion_state'] = 'active'
+        serialized_tracks.append(item)
 
     shared_metadata_display = {}
     if is_staff and include_history:
@@ -419,7 +496,7 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
         'status': release.status,
         'current_step': max(1, min(5, release.current_step or 1)),
         'track_ids': [link.song_id for link in links],
-        'tracks': [serialize_track(link, request, metadata.get('cover_url')) for link in links],
+        'tracks': serialized_tracks,
         'shared_metadata': shared_metadata,
         'release_metadata': metadata,
         'track_extras': {str(link.song_id): normalize_track_extras(link.extras, link.position) for link in links},
@@ -436,6 +513,13 @@ def serialize_release(release: ArtistRelease, request=None, include_history=Fals
         'scheduled_at': release.scheduled_at,
         'published_at': release.published_at,
         'taken_down_at': release.taken_down_at,
+        'removal_state': removal['state'],
+        'removal_origin': removal['origin'],
+        'removal_reason': removal['reason'],
+        'deleted_track_count': removal['deleted_track_count'],
+        'active_track_count': removal['active_track_count'],
+        'can_restore': removal['can_restore'],
+        'artist_deleted': removal['artist_deleted'],
     }
     if is_staff and include_history:
         result['shared_metadata_display'] = shared_metadata_display

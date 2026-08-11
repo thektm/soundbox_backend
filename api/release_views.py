@@ -22,6 +22,7 @@ from .models import (
     ArtistReleaseTrack,
     ReleaseContributor,
     Song,
+    PlayCount,
     User,
 )
 from .release_service import (
@@ -38,6 +39,7 @@ from .release_service import (
     prepare_release,
     publish_due_releases,
     release_queryset,
+    release_removal_state,
     scheduled_datetime,
     serialize_release,
     snapshot_song,
@@ -1062,6 +1064,78 @@ class AdminReleaseDetailView(APIView):
         return Response(serialize_release(release_queryset().get(pk=release.pk), request, include_history=True))
 
 
+    def delete(self, request, pk):
+        """Permanently erase one release and data owned exclusively by it.
+
+        Recordings reused by another release are detached rather than destroyed,
+        preventing a destructive admin action from corrupting unrelated catalog
+        content. Unique recordings are deleted normally so their dependent
+        likes/history/stream relations are cascaded by the existing model rules.
+        """
+        media_urls = []
+        orphan_play_ids = []
+        with transaction.atomic():
+            release = get_object_or_404(
+                ArtistRelease.objects.select_for_update().select_related('album'),
+                pk=pk,
+            )
+            links = list(
+                ArtistReleaseTrack.objects.select_for_update()
+                .select_related('song')
+                .filter(release=release)
+            )
+            song_ids = [link.song_id for link in links]
+            shared_song_ids = set(
+                ArtistReleaseTrack.objects.filter(song_id__in=song_ids)
+                .exclude(release=release)
+                .values_list('song_id', flat=True)
+            )
+            unique_songs = [link.song for link in links if link.song_id not in shared_song_ids]
+            unique_song_ids = [song.pk for song in unique_songs]
+
+            for song in unique_songs:
+                media_urls.extend(filter(None, [
+                    song.audio_file,
+                    song.converted_audio_url,
+                    song.preview_audio_url,
+                    song.cover_image,
+                ]))
+                orphan_play_ids.extend(song.play_counts.values_list('pk', flat=True))
+
+            raw_cover = str((release.release_metadata or {}).get('cover_url') or '').strip()
+            if raw_cover:
+                media_urls.append(raw_cover)
+            album = release.album
+
+            # Remove this release's links/history/workspace first. Shared songs
+            # remain valid because their other release links are untouched.
+            release.delete()
+            if unique_song_ids:
+                Song.objects.filter(pk__in=unique_song_ids).delete()
+            if orphan_play_ids:
+                PlayCount.objects.filter(pk__in=set(orphan_play_ids), songs__isnull=True).delete()
+
+            album_deleted = False
+            if album and not album.songs.exists():
+                if album.cover_image:
+                    media_urls.append(album.cover_image)
+                album.delete()
+                album_deleted = True
+
+            if media_urls:
+                transaction.on_commit(
+                    lambda values=tuple(media_urls): _cleanup_unreferenced_release_media(values)
+                )
+
+        return Response({
+            'deleted': True,
+            'release_id': str(pk),
+            'deleted_recordings': len(unique_song_ids),
+            'preserved_shared_recordings': len(shared_song_ids),
+            'album_deleted': album_deleted,
+        })
+
+
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseActionView(APIView):
     permission_classes = [permissions.IsAdminUser]
@@ -1093,6 +1167,18 @@ class AdminReleaseActionView(APIView):
             if release.status not in transitions[action]:
                 return Response({
                     'detail': f"انجام این عملیات در وضعیت فعلی انتشار مجاز نیست."
+                }, status=status.HTTP_409_CONFLICT)
+
+            removal = release_removal_state(release)
+            if removal['artist_deleted'] and action in {'publish', 'schedule', 'reopen', 'return_to_review'}:
+                return Response({
+                    'detail': 'این انتشار توسط هنرمند حذف شده است و از پنل مدیریت قابل بازگردانی یا انتشار مجدد نیست.',
+                    'code': 'artist_deleted_release',
+                }, status=status.HTTP_409_CONFLICT)
+            if release.status == ArtistRelease.STATUS_TAKEN_DOWN and action in {'publish', 'reopen'} and not removal['can_restore']:
+                return Response({
+                    'detail': 'این انتشار رکورد فعال و سالمی برای بازگردانی ندارد. در صورت نیاز از حذف دائمی استفاده کنید.',
+                    'code': 'release_not_restorable',
                 }, status=status.HTTP_409_CONFLICT)
 
             if action in {'approve', 'schedule', 'publish'}:
