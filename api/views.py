@@ -5719,6 +5719,14 @@ def _merge_active_song_promotions(songs, limit):
     promoted_ids = set(strongest)
     merged = [song for song in songs if song.id not in promoted_ids]
 
+    # Keep promotion identity as transient response metadata. This does not alter
+    # recommendation ranking or persist anything on Song; serializers expose it
+    # only for the current recommendation response.
+    for song in merged:
+        song._is_admin_promoted = False
+    for promotion in promotions:
+        promotion.song._is_admin_promoted = True
+
     # Insert weaker boosts first so the strongest/newest boost is applied last and
     # therefore remains ahead when target positions overlap (100 always stays first).
     for promotion in reversed(promotions):

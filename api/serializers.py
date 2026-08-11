@@ -319,6 +319,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
     tag_ids = serializers.SerializerMethodField()
     mood_ids = serializers.SerializerMethodField()
     sub_genre_ids = serializers.SerializerMethodField()
+    is_promoted = serializers.SerializerMethodField()
 
     class Meta:
         model = Song
@@ -328,7 +329,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
             'album_id', 'album_title', 'cover_image', 'stream_url', 'preview_url', 'is_preview',
             'preview_duration_seconds', 'duration_seconds', 'is_liked', 'genres', 'genre_names', 'tag_names',
             'mood_names', 'sub_genre_names', 'play_count', 'genre_ids', 'tag_ids', 'mood_ids',
-            'sub_genre_ids',
+            'sub_genre_ids', 'is_promoted',
         ]
 
     def get_featured_artists(self, obj):
@@ -365,6 +366,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
     def get_tag_ids(self, obj): return [x.id for x in self._items(obj, 'tags')]
     def get_mood_ids(self, obj): return [x.id for x in self._items(obj, 'moods')]
     def get_sub_genre_ids(self, obj): return [x.id for x in self._items(obj, 'sub_genres')]
+    def get_is_promoted(self, obj): return bool(getattr(obj, '_is_admin_promoted', False))
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
@@ -1622,6 +1624,7 @@ class SongSerializer(LocalizedModelSerializer):
     genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     similar_songs = serializers.SerializerMethodField()
+    is_promoted = serializers.SerializerMethodField()
 
     class Meta:
         model = Song
@@ -1634,7 +1637,7 @@ class SongSerializer(LocalizedModelSerializer):
                   'mood_ids', 'tag_ids', 'genres', 'genre_names', 'description', 'description_en', 'lyrics', 'lyrics_en', 'tempo', 'energy', 'danceability', 'valence',
                   'acousticness', 'instrumentalness', 'live_performed', 'speechiness', 'label', 'label_en', 'producers', 'producers_en',
                   'composers', 'composers_en', 'lyricists', 'lyricists_en', 'credits', 'credits_en', 'uploader', 'uploader_phone', 'uploader_unique_id', 'created_at',
-                  'updated_at', 'display_title', 'similar_songs', 'genre_ids_write', 'sub_genre_ids_write',
+                  'updated_at', 'display_title', 'similar_songs', 'is_promoted', 'genre_ids_write', 'sub_genre_ids_write',
                   'mood_ids_write', 'tag_ids_write']
         read_only_fields = ['id', 'plays', 'likes_count', 'added_to_playlists_count', 'added_to_playlist', 'is_liked',
                             'created_at', 'updated_at', 'duration_display', 'display_title']
@@ -1661,6 +1664,7 @@ class SongSerializer(LocalizedModelSerializer):
             for genre in _relation_items(obj, 'genres')
         ]
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
+    def get_is_promoted(self, obj): return bool(getattr(obj, '_is_admin_promoted', False))
     def get_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'genres')]
     def get_sub_genre_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'sub_genres')]
     def get_mood_ids(self, obj): return [{'id': x.id, 'title': localized_value(x, 'name', self.context.get('request'))} for x in _relation_items(obj, 'moods')]
@@ -2004,13 +2008,14 @@ class SongStreamSerializer(LocalizedModelSerializer):
     genres = serializers.SerializerMethodField()
     genre_names = serializers.SerializerMethodField()
     genre_ids = serializers.SerializerMethodField()
+    is_promoted = serializers.SerializerMethodField()
 
     class Meta:
         model = Song
         list_serializer_class = SongMetricsListSerializer
         fields = ['id','title','artist_id','artist_name','artist_unique_id','featured_artists','album','album_title',
                   'is_single','stream_url','preview_url','is_preview','preview_duration_seconds','cover_image','duration_seconds',
-                  'duration_display','plays','likes_count','is_liked','genres','genre_names','genre_ids',
+                  'duration_display','plays','likes_count','is_liked','genres','genre_names','genre_ids','is_promoted',
                   'status','release_date','language','description','created_at','display_title','uploader_unique_id']
         read_only_fields = fields
 
@@ -2037,6 +2042,7 @@ class SongStreamSerializer(LocalizedModelSerializer):
         ]
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
     def get_genre_ids(self, obj): return [genre.id for genre in _relation_items(obj, 'genres')]
+    def get_is_promoted(self, obj): return bool(getattr(obj, '_is_admin_promoted', False))
     def get_likes_count(self,obj):
         _ensure_song_metrics(obj, self.context.get('request')); return int(getattr(obj,'_likes_count',0) or 0)
     def get_is_liked(self,obj):
