@@ -9,7 +9,7 @@ from .models import (
     UserPlaylist, RecommendedPlaylist, EventPlaylist, SearchSection,
     ArtistMonthlyListener, UserHistory, NotificationSetting, Follow, Rules, PlayConfiguration,
     InitialCheck,
-    PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform, Report,
+    PlayCount, PaymentTransaction, BannerAd, AudioAd, ArtistSocialAccount, SocialPlatform, Report,
     UserImageProfile
 )
 from .models import OtpCode
@@ -628,6 +628,55 @@ class RulesAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+
+@admin.register(PlayCount)
+class PlayCountAdmin(admin.ModelAdmin):
+    """Read/delete-only ledger for submitted song plays."""
+
+    list_display = (
+        'id', 'user', 'song_titles', 'country', 'city', 'ip', 'pay', 'created_at'
+    )
+    list_filter = ('country', 'city', 'created_at')
+    search_fields = (
+        'user__phone_number', 'user__unique_id',
+        'songs__title', 'songs__title_en',
+        'country', 'city', 'ip',
+    )
+    readonly_fields = ('id', 'user', 'song_titles', 'country', 'city', 'ip', 'pay', 'created_at')
+    date_hierarchy = 'created_at'
+    ordering = ('-created_at', '-id')
+    list_per_page = 100
+
+    fieldsets = (
+        ('Submitted play', {
+            'fields': ('id', 'user', 'song_titles', 'country', 'city', 'ip', 'pay', 'created_at')
+        }),
+    )
+
+    def get_queryset(self, request):
+        return (
+            super().get_queryset(request)
+            .select_related('user')
+            .prefetch_related('songs')
+        )
+
+    @admin.display(description='Song(s)')
+    def song_titles(self, obj):
+        songs = list(obj.songs.all())
+        if not songs:
+            return '—'
+        titles = [song.title or song.title_en or f'Song #{song.pk}' for song in songs[:3]]
+        if len(songs) > 3:
+            titles.append(f'+{len(songs) - 3} more')
+        return ', '.join(titles)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        # Preserve submitted play rows as an immutable ledger. Cleanup is deletion-only.
+        return False
 
 
 @admin.register(PlayConfiguration)
