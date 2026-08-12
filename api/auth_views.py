@@ -41,6 +41,7 @@ import hashlib
 import re
 from .recommendation_runtime import redis_delete, redis_get, redis_set
 from .auth_errors import AuthAPIView, auth_error, validation_error
+from .utils import MediaPipelineError
 
 _SMS_SESSION = requests.Session()
 _SMS_ADAPTER = HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=0)
@@ -776,7 +777,13 @@ class ArtistAuthView(AuthAPIView):
         serializer = ArtistAuthSerializer(data=request.data, context={'request': request})
         if not serializer.is_valid():
             return validation_error(serializer.errors)
-        serializer.save(user=request.user)
+        try:
+            serializer.save(user=request.user)
+        except MediaPipelineError as exc:
+            return Response(
+                {'error': str(exc), 'code': exc.code},
+                status=exc.status_code,
+            )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
@@ -797,7 +804,13 @@ class ArtistAuthView(AuthAPIView):
         serializer = ArtistAuthSerializer(auth, data=request.data, partial=True, context={'request': request})
         if not serializer.is_valid():
             return validation_error(serializer.errors)
-        serializer.save()
+        try:
+            serializer.save()
+        except MediaPipelineError as exc:
+            return Response(
+                {'error': str(exc), 'code': exc.code},
+                status=exc.status_code,
+            )
         return Response(serializer.data)
 
 

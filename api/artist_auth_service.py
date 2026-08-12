@@ -8,7 +8,7 @@ import os
 from django.db import transaction
 
 from .models import Artist, ArtistAuth, User
-from .utils import upload_file_to_r2
+from .utils import r2_object_key, upload_file_to_r2
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,13 @@ def _unique_name(value: str, auth_id: int, *, exclude_id: int | None = None) -> 
 def _profile_image_url(auth: ArtistAuth, user: User) -> str:
     if not auth.profile_image:
         return ""
+    raw = str(getattr(auth.profile_image, "name", "") or "").strip()
+    # New verification submissions are already private R2 objects. Reuse the
+    # same durable reference instead of downloading/re-uploading it.
+    if raw and r2_object_key(raw, allow_key=False):
+        return raw
     try:
-        extension = os.path.splitext(auth.profile_image.name or "profile.jpg")[1] or ".jpg"
+        extension = os.path.splitext(raw or "profile.jpg")[1] or ".jpg"
         filename = f"artist-{user.unique_id or user.pk}-profile{extension.lower()}"
         auth.profile_image.open("rb")
         url, _ = upload_file_to_r2(

@@ -7,8 +7,10 @@ from .models import (
     DepositRequest, SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.db import transaction
 from .song_play_metrics import hydrate_song_play_counts
+from .utils import generate_signed_r2_url, public_media_url, r2_object_key
 
 User = get_user_model()
 
@@ -108,6 +110,28 @@ class AdminArtistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTrans
         return obj.user is not None
 
 class AdminArtistAuthSerializer(AdminSignedMediaSerializerMixin, serializers.ModelSerializer):
+    profile_image = serializers.SerializerMethodField()
+    national_id_image = serializers.SerializerMethodField()
+
+    def _verification_media(self, obj, field_name):
+        value = getattr(obj, field_name, None)
+        if not value:
+            return None
+        raw = str(getattr(value, 'name', '') or '').strip()
+        if not raw:
+            return None
+        if r2_object_key(raw, allow_key=False):
+            return generate_signed_r2_url(
+                raw, expiration=getattr(settings, 'ADMIN_R2_SIGNED_URL_TTL', 3600)
+            ) or raw
+        return public_media_url(self.context.get('request'), value) or raw
+
+    def get_profile_image(self, obj):
+        return self._verification_media(obj, 'profile_image')
+
+    def get_national_id_image(self, obj):
+        return self._verification_media(obj, 'national_id_image')
+
     class Meta:
         model = ArtistAuth
         fields = [

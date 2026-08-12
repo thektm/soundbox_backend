@@ -1,5 +1,11 @@
+import os
+import uuid
+
 from rest_framework import serializers
-from .utils import absolute_api_url, generate_signed_r2_url, public_media_url, user_profile_image_url
+from .utils import (
+    absolute_api_url, cleanup_r2_urls, generate_signed_r2_url, public_media_url,
+    r2_object_key, upload_file_to_r2, user_profile_image_url,
+)
 from .models import (
     User, UserPlaylist, Artist, ArtistSocialAccount , ArtistAuth, RefreshToken, EventPlaylist, Album, Genre, Mood, Tag, 
     SubGenre, Song, Playlist, StreamAccess, RecommendedPlaylist, SearchSection,
@@ -1407,13 +1413,31 @@ class PopularArtistSerializer(ArtistSummarySerializer):
 
 
 
+class ArtistAuthR2ImageField(serializers.ImageField):
+    """Accept an uploaded image but represent stored verification media with a signed R2 URL."""
+
+    def to_representation(self, value):
+        if not value:
+            return None
+        raw = str(getattr(value, 'name', '') or '').strip()
+        if not raw:
+            return None
+        if r2_object_key(raw, allow_key=False):
+            return generate_signed_r2_url(
+                raw, expiration=getattr(settings, 'ARTIST_R2_SIGNED_URL_TTL', 3600)
+            ) or raw
+        # Legacy local-media submission: keep it viewable while migration is pending.
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        return public_media_url(request, value) or raw
+
+
 class ArtistAuthSerializer(LocalizedModelSerializer):
-    """Serializer for ArtistAuth verification submissions."""
+    """Serializer for ArtistAuth verification submissions backed by private R2 media."""
     user_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), source='user', required=False, allow_null=True
     )
-    national_id_image = serializers.ImageField(required=True)
-    profile_image = serializers.ImageField(required=False, allow_null=True)
+    national_id_image = ArtistAuthR2ImageField(required=True)
+    profile_image = ArtistAuthR2ImageField(required=False, allow_null=True)
     artist_claimed = serializers.PrimaryKeyRelatedField(
         queryset=Artist.objects.all(), required=False, allow_null=True
     )
@@ -1430,11 +1454,75 @@ class ArtistAuthSerializer(LocalizedModelSerializer):
         ]
         read_only_fields = ['id', 'status', 'is_verified', 'created_at', 'updated_at']
 
-    def create(self, validated_data):
+    @staticmethod
+    def _upload_image(upload, *, user, kind):
+        if not upload:
+            return None
+        extension = os.path.splitext(str(getattr(upload, 'name', '') or ''))[1].lower()
+        if extension not in {'.jpg', '.jpeg', '.png'}:
+            extension = '.jpg'
+        user_part = getattr(user, 'unique_id', None) or getattr(user, 'pk', None) or 'unknown'
+        filename = f"u{user_part}-{kind}-{uuid.uuid4().hex[:12]}{extension}"
+        folder = 'artist-auth/profiles' if kind == 'profile' else 'artist-auth/national-ids'
+        url, _ = upload_file_to_r2(
+            upload, folder=folder, custom_filename=filename, check_existing=False
+        )
+        return url
+
+    def _save_with_r2_media(self, instance, validated_data):
         request = self.context.get('request')
+        user = validated_data.get('user') or getattr(instance, 'user', None)
         if request and getattr(request, 'user', None) and request.user.is_authenticated:
+            user = request.user
             validated_data['user'] = request.user
-        return super().create(validated_data)
+
+        supplied_profile = 'profile_image' in validated_data
+        supplied_national = 'national_id_image' in validated_data
+        profile_upload = validated_data.pop('profile_image', None) if supplied_profile else None
+        national_upload = validated_data.pop('national_id_image', None) if supplied_national else None
+
+        old_profile = str(getattr(getattr(instance, 'profile_image', None), 'name', '') or '') if instance else ''
+        old_national = str(getattr(getattr(instance, 'national_id_image', None), 'name', '') or '') if instance else ''
+        uploaded = {}
+        try:
+            if profile_upload:
+                uploaded['profile_image'] = self._upload_image(profile_upload, user=user, kind='profile')
+            elif supplied_profile:
+                uploaded['profile_image'] = None
+            if national_upload:
+                uploaded['national_id_image'] = self._upload_image(national_upload, user=user, kind='national-id')
+
+            with transaction.atomic():
+                if instance is None:
+                    instance = super().create(validated_data)
+                else:
+                    instance = super().update(instance, validated_data)
+
+                changed_fields = []
+                for field, value in uploaded.items():
+                    setattr(instance, field, value)
+                    changed_fields.append(field)
+                if changed_fields:
+                    instance.save(update_fields=changed_fields)
+        except Exception:
+            cleanup_r2_urls([value for value in uploaded.values() if value])
+            raise
+
+        replaced = []
+        if 'profile_image' in uploaded and old_profile and old_profile != uploaded.get('profile_image'):
+            if r2_object_key(old_profile, allow_key=False):
+                replaced.append(old_profile)
+        if 'national_id_image' in uploaded and old_national and old_national != uploaded.get('national_id_image'):
+            if r2_object_key(old_national, allow_key=False):
+                replaced.append(old_national)
+        cleanup_r2_urls(replaced)
+        return instance
+
+    def create(self, validated_data):
+        return self._save_with_r2_media(None, validated_data)
+
+    def update(self, instance, validated_data):
+        return self._save_with_r2_media(instance, validated_data)
 
     def validate(self, data):
         auth_type = data.get('auth_type') or getattr(self.instance, 'auth_type', None)
