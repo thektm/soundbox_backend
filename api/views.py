@@ -3991,6 +3991,49 @@ def get_client_ip(request):
     return ip
 
 
+def get_client_ip_diagnostics(request):
+    """Resolve the browser-facing client IP and report which proxy header supplied it."""
+    candidates = [
+        ('cf-connecting-ip', request.META.get('HTTP_CF_CONNECTING_IP')),
+        ('true-client-ip', request.META.get('HTTP_TRUE_CLIENT_IP')),
+        ('x-real-ip', request.META.get('HTTP_X_REAL_IP')),
+        ('x-forwarded-for', request.META.get('HTTP_X_FORWARDED_FOR')),
+        ('remote-addr', request.META.get('REMOTE_ADDR')),
+    ]
+    for source, raw in candidates:
+        if not raw:
+            continue
+        value = str(raw).split(',')[0].strip()
+        if value:
+            return value, source
+    return None, 'none'
+
+
+@extend_schema(
+    tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'],
+    summary='نمایش آی‌پی عمومی درخواست‌کننده',
+    responses={
+        200: inline_serializer(
+            name='ClientIpResponse',
+            fields={
+                'ip': serializers.CharField(allow_null=True),
+                'source': serializers.CharField(),
+            },
+        )
+    },
+)
+class ClientIpView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        ip, source = get_client_ip_diagnostics(request)
+        response = Response({'ip': ip, 'source': source})
+        response['Cache-Control'] = 'no-store, no-cache, must-revalidate, proxy-revalidate'
+        response['Pragma'] = 'no-cache'
+        return response
+
+
 @extend_schema(tags=['Utility , DetailScreens & action Endpoints اندپوینت های ابزار و صفحات جزئیات و عملیات'])
 class PlayCountView(APIView):
     """Endpoint to record play counts for songs."""
