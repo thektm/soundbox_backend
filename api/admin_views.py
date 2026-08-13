@@ -1603,7 +1603,10 @@ class AdminArtistEarningsListView(APIView):
     def get(self, request):
         queryset = Artist.objects.select_related('user').annotate(
             stream_count=Count('songs__play_counts', distinct=True),
-            earned_total=Sum('songs__play_counts__pay'),
+            # PostgreSQL puts NULLs first for DESC ordering. Without a database-level
+            # zero default, artists with no plays could appear ahead of artists with
+            # real earnings when sorting by "most income".
+            earned_total=Sum('songs__play_counts__pay', default=Decimal('0.000000')),
         )
         query = str(request.query_params.get('q') or '').strip()
         if query:
