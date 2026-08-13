@@ -4488,6 +4488,12 @@ def _sedabox_unique_id():
     return value
 
 
+def _playlist_title_key(value):
+    """Normalize a visible playlist title for cheap output deduplication."""
+    text = str(value or '').replace('ي', 'ی').replace('ك', 'ک')
+    return re.sub(r'[\s\u200c\u200e\u200f]+', ' ', text).strip().casefold()
+
+
 def _sedabox_normal_playlist_queryset(request):
     authenticated = request.user.is_authenticated
     song_filter = Q(songs__status=Song.STATUS_PUBLISHED)
@@ -4505,10 +4511,11 @@ def _sedabox_normal_playlist_queryset(request):
 def _sedabox_preview_payload(request, user, page_size=10):
     generated_all = _dynamic_playlist_items(request.user)
     generated = generated_all[:min(2, page_size)]
-    remaining = max(0, page_size - len(generated))
 
     normal_qs = _sedabox_normal_playlist_queryset(request)
-    normal = list(normal_qs[:remaining]) if remaining else []
+    # Pull at most one preview page so duplicate titles can be skipped without
+    # leaving obvious holes in the small profile preview.
+    normal = list(normal_qs[:page_size])
     hydrate_playlist_metrics(normal, request.user if request.user.is_authenticated else None)
     for playlist in normal:
         playlist._songs_count = playlist.songs_count_value
@@ -4532,17 +4539,29 @@ def _sedabox_preview_payload(request, user, page_size=10):
     results.extend(SimplePlaylistSerializer(
         normal, many=True, context={'request': request}
     ).data)
-    persisted_ids = {
-        str(value)
-        for value in _home_playlist_queryset(request.user).values_list('unique_id', flat=True)
-        if value is not None
+    seen_titles = set()
+    unique_results = []
+    for item in results:
+        title_key = _playlist_title_key(item.get('title'))
+        if not title_key or title_key in seen_titles:
+            continue
+        seen_titles.add(title_key)
+        unique_results.append(item)
+    results = unique_results[:page_size]
+
+    all_title_keys = {
+        key for title in normal_qs.values_list('title', flat=True)
+        if (key := _playlist_title_key(title))
     }
-    generated_ids = {
-        str(item.unique_id)
-        for item in generated_all
-        if getattr(item, 'unique_id', None) is not None
-    }
-    total = normal_qs.count() + len(persisted_ids | generated_ids)
+    all_title_keys.update(
+        key for title in _home_playlist_queryset(request.user).values_list('title', flat=True)
+        if (key := _playlist_title_key(title))
+    )
+    all_title_keys.update(
+        key for item in generated_all
+        if (key := _playlist_title_key(getattr(item, 'title', '')))
+    )
+    total = len(all_title_keys)
     return {
         'id': user.id,
         'unique_id': 'sedabox',
@@ -4584,7 +4603,7 @@ class SedaBoxProfileView(APIView):
                 page_size = 10
             key = stable_cache_key(
                 'sedabox-profile-preview', get_request_language(request), not request.user.is_authenticated, page_size,
-                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v4',
+                cache_version(CATALOG_VERSION_KEY), cache_version(USER_DIRECTORY_VERSION_KEY), 'v5',
             )
             cached = cache_get(key) if not request.user.is_authenticated else None
             if cached is not None:
@@ -4606,7 +4625,6 @@ class SedaBoxProfileView(APIView):
         end = page * page_size
 
         normal_qs = _sedabox_normal_playlist_queryset(request)
-        normal_total = normal_qs.count()
         normal = list(normal_qs[:end])
         hydrate_playlist_metrics(normal, request.user if request.user.is_authenticated else None)
         for playlist in normal:
@@ -4615,7 +4633,6 @@ class SedaBoxProfileView(APIView):
 
         generated = _dynamic_playlist_items(request.user)
         recommended_qs = _home_playlist_queryset(request.user).order_by('-updated_at', '-created_at')
-        recommended_total = recommended_qs.count()
         recommended = generated + list(recommended_qs[:end])
         _attach_recommended_metrics(recommended, request.user)
 
@@ -4628,14 +4645,17 @@ class SedaBoxProfileView(APIView):
         records.extend(('recommended', item, sort_time(item)) for item in recommended)
         records.sort(key=lambda item: item[2], reverse=True)
 
-        seen = set()
+        seen_ids = set()
+        seen_titles = set()
         unique_records = []
         for kind, item, timestamp in records:
-            identity = item.unique_id if kind == 'recommended' else item.pk
-            key = (kind, str(identity))
-            if key in seen:
+            identity = (kind, str(item.unique_id if kind == 'recommended' else item.pk))
+            title_key = _playlist_title_key(getattr(item, 'title', ''))
+            if identity in seen_ids or (title_key and title_key in seen_titles):
                 continue
-            seen.add(key)
+            seen_ids.add(identity)
+            if title_key:
+                seen_titles.add(title_key)
             unique_records.append((kind, item, timestamp))
 
         page_records = unique_records[(page - 1) * page_size:end]
@@ -4658,21 +4678,21 @@ class SedaBoxProfileView(APIView):
             for kind, item, _ in page_records
         ]
 
-        # Generated recommendations can also exist in the persisted recommended
-        # queryset. Count unique public identities so pagination never advertises
-        # phantom pages or stops after the first 20 visible records.
-        generated_ids = {
-            str(item.unique_id)
-            for item in generated
-            if getattr(item, 'unique_id', None) is not None
+        # Count the same title identities the client can actually see. This also
+        # keeps pagination honest when normal and generated sources share a name.
+        all_title_keys = {
+            key for title in normal_qs.values_list('title', flat=True)
+            if (key := _playlist_title_key(title))
         }
-        persisted_recommended_ids = set(
-            str(value)
-            for value in recommended_qs.values_list('unique_id', flat=True)
-            if value is not None
+        all_title_keys.update(
+            key for title in recommended_qs.values_list('title', flat=True)
+            if (key := _playlist_title_key(title))
         )
-        recommended_unique_total = len(generated_ids | persisted_recommended_ids)
-        total = normal_total + recommended_unique_total
+        all_title_keys.update(
+            key for item in generated
+            if (key := _playlist_title_key(getattr(item, 'title', '')))
+        )
+        total = len(all_title_keys)
         has_next = total > end
         next_url = None
         if has_next:
@@ -5429,42 +5449,70 @@ def _playlist_recommendation_refs(user=None, limit=80):
 
     def persisted_refs(queryset):
         return [
-            (str(unique_id), int(pk), None)
-            for unique_id, pk in queryset.values_list('unique_id', 'pk')[:limit]
+            (
+                str(unique_id), int(pk), None, _playlist_title_key(title),
+                updated_at or created_at,
+            )
+            for unique_id, pk, title, updated_at, created_at in queryset.values_list(
+                'unique_id', 'pk', 'title', 'updated_at', 'created_at'
+            )[:limit]
             if unique_id is not None
         ]
 
     dynamic_refs = [
-        (str(item.unique_id), None, item)
+        (
+            str(item.unique_id), None, item, _playlist_title_key(item.title),
+            item.updated_at or item.created_at,
+        )
         for item in dynamic
         if getattr(item, 'unique_id', None) is not None
     ]
+
+    def newest_per_title(items):
+        latest = {}
+        for ref in items:
+            title_key = ref[3] or f'uid:{ref[0]}'
+            current = latest.get(title_key)
+            if current is None or ref[4] > current[4]:
+                latest[title_key] = ref
+        winner_ids = {ref[0] for ref in latest.values()}
+        return [ref for ref in items if ref[0] in winner_ids]
+
+    dynamic_refs = newest_per_title(dynamic_refs)
     if authenticated:
-        personal = persisted_refs(
+        personal = newest_per_title(persisted_refs(
             base.filter(user=user).filter(
                 Q(expires_at__isnull=True)
                 | Q(updated_at__gte=timezone.now() - timedelta(minutes=20))
             ).order_by('-relevance_score', '-created_at')
-        )
-        global_items = persisted_refs(
+        ))
+        global_items = newest_per_title(persisted_refs(
             base.filter(user__isnull=True).order_by('-relevance_score', '-created_at')
-        )
+        ))
         ordered = (
             personal + dynamic_refs + global_items
             if personal and _user_has_music_activity(user)
             else dynamic_refs + global_items + personal
         )
     else:
-        global_items = persisted_refs(base.order_by('-relevance_score', '-created_at'))
+        global_items = newest_per_title(
+            persisted_refs(base.order_by('-relevance_score', '-created_at'))
+        )
         ordered = dynamic_refs + global_items
 
-    seen = set()
+    # Preserve the existing personal/dynamic/global priority between sources;
+    # duplicates inside each source already resolve to its newest generation.
+    # No renaming or numeric suffixes are introduced.
+    seen_ids = set()
+    seen_titles = set()
     refs = []
     for ref in ordered:
         unique_id = ref[0]
-        if unique_id in seen:
+        title_key = ref[3] or f'uid:{unique_id}'
+        if unique_id in seen_ids or title_key in seen_titles:
             continue
-        seen.add(unique_id)
+        seen_ids.add(unique_id)
+        seen_titles.add(title_key)
         refs.append(ref)
 
     if authenticated and refs:
@@ -5483,7 +5531,8 @@ def _hydrate_playlist_recommendation_refs(user, refs):
     if persisted_ids:
         persisted = _home_playlist_queryset(user).filter(pk__in=persisted_ids).in_bulk()
     items = []
-    for _unique_id, pk, dynamic in refs:
+    for ref in refs:
+        _unique_id, pk, dynamic = ref[:3]
         item = dynamic if dynamic is not None else persisted.get(pk)
         if item is not None:
             items.append(item)
