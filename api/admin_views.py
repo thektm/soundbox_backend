@@ -8,7 +8,7 @@ from .models import (
     User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, 
     PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest,
     SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion,
-    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory
+    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory, ArtistSocialAccount, SocialPlatform
 )
 from .models import PlayCount
 from django.utils import timezone
@@ -26,10 +26,14 @@ from .admin_serializers import (
     AdminTaxonomySerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
-from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage
+from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage, cleanup_r2_urls
 from .song_play_metrics import apply_annotated_song_play_counts, hydrate_song_play_counts
 from .performance import CATALOG_VERSION_KEY, cache_increment
 import os
+import json
+from PIL import Image
+from django.core.validators import URLValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -486,11 +490,12 @@ class AdminTaxonomyDetailView(APIView):
             'impact_before_delete': impact,
         })
 
-
-def _admin_song_detail_queryset():
+def _admin_song_detail_queryset(include_drafts=False):
+    queryset = Song.objects.select_related('artist', 'album')
+    if not include_drafts:
+        queryset = queryset.exclude(status=Song.STATUS_DRAFT)
     return (
-        Song.objects.select_related('artist', 'album')
-        .exclude(status=Song.STATUS_DRAFT)
+        queryset
         .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
         .annotate(likes_count=Count('liked_by', distinct=True))
     )
@@ -793,12 +798,101 @@ class AdminUserBanView(APIView):
         })
 
 
+def _admin_artist_upload(request, field_name, folder):
+    upload = request.FILES.get(field_name)
+    if not upload:
+        return None
+    max_size = 5 * 1024 * 1024 if field_name == 'profile_image_upload' else 10 * 1024 * 1024
+    if getattr(upload, 'size', 0) > max_size:
+        raise serializers.ValidationError({field_name: f'حجم تصویر باید حداکثر {max_size // (1024 * 1024)} مگابایت باشد.'})
+    content_type = str(getattr(upload, 'content_type', '') or '').lower()
+    extension = os.path.splitext(str(getattr(upload, 'name', '') or ''))[1].lower()
+    if content_type not in {'image/jpeg', 'image/png', 'image/webp'} and extension not in {'.jpg', '.jpeg', '.png', '.webp'}:
+        raise serializers.ValidationError({field_name: 'فرمت تصویر باید JPG، PNG یا WEBP باشد.'})
+    try:
+        upload.seek(0)
+        with Image.open(upload) as image:
+            image.verify()
+        upload.seek(0)
+        with Image.open(upload) as image:
+            width, height = image.size
+        upload.seek(0)
+    except Exception:
+        raise serializers.ValidationError({field_name: 'فایل تصویر قابل خواندن نیست.'})
+    if field_name == 'profile_image_upload' and width != height:
+        raise serializers.ValidationError({field_name: 'تصویر پروفایل باید مربعی باشد.'})
+    url, _ = upload_file_to_r2(upload, folder=folder)
+    return url
+
+
+_ADMIN_ARTIST_SOCIALS = {
+    'instagram': ('اینستاگرام', 'Instagram'),
+    'twitter': ('توییتر', 'Twitter'),
+    'youtube': ('یوتیوب', 'YouTube'),
+    'telegram': ('تلگرام', 'Telegram'),
+}
+
+
+def _admin_artist_social_map(request):
+    raw = request.data.get('social_accounts')
+    if raw in (None, ''):
+        return None
+    try:
+        values = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(values, dict):
+            raise ValueError
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise serializers.ValidationError({'social_accounts': ['ساختار شبکه‌های اجتماعی معتبر نیست.']})
+    validator = URLValidator(schemes=['http', 'https'])
+    normalized = {}
+    for raw_slug, raw_url in values.items():
+        slug = str(raw_slug or '').strip().lower()
+        if slug not in _ADMIN_ARTIST_SOCIALS:
+            continue
+        url = str(raw_url or '').strip()
+        if url:
+            try:
+                validator(url)
+            except DjangoValidationError:
+                raise serializers.ValidationError({'social_accounts': [f'پیوند {_ADMIN_ARTIST_SOCIALS[slug][0]} معتبر نیست.']})
+        normalized[slug] = url
+    return normalized
+
+
+def _save_admin_artist_socials(artist, values):
+    if values is None:
+        return
+    for slug, url in values.items():
+        name, name_en = _ADMIN_ARTIST_SOCIALS[slug]
+        platform, _ = SocialPlatform.objects.get_or_create(slug=slug, defaults={'name': name, 'name_en': name_en})
+        if not url:
+            ArtistSocialAccount.objects.filter(artist=artist, platform=platform).delete()
+        else:
+            ArtistSocialAccount.objects.update_or_create(artist=artist, platform=platform, defaults={'url': url, 'username': ''})
+
+
+def _admin_artist_payload(request):
+    data = request.data.copy()
+    # Upload fields are transport-only and are intentionally not serializer fields.
+    for key in ('profile_image_upload', 'banner_image_upload', 'social_accounts'):
+        if key in data:
+            data.pop(key)
+    if data.get('user') in ('', 'null', 'None'):
+        data['user'] = None
+    if data.get('date_of_birth') in ('', 'null', 'None'):
+        data['date_of_birth'] = None
+    if data.get('unique_id') in ('', 'null', 'None'):
+        data['unique_id'] = None
+    return data
+
+
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request):
-        queryset = Artist.objects.select_related('user').all()
+        queryset = Artist.objects.select_related('user').prefetch_related('social_account_links__platform').all()
         query = str(request.query_params.get('q') or '').strip()
         if query:
             queryset = queryset.filter(
@@ -813,6 +907,33 @@ class AdminArtistListView(APIView):
         paginator = AdminPagination()
         page = paginator.paginate_queryset(queryset, request)
         return paginator.get_paginated_response(AdminArtistSerializer(page, many=True).data)
+
+    @extend_schema(summary="ایجاد هنرمند مستقل توسط مدیر", responses={201: AdminArtistSerializer})
+    def post(self, request):
+        uploaded = []
+        try:
+            data = _admin_artist_payload(request)
+            social_map = _admin_artist_social_map(request)
+            profile_url = _admin_artist_upload(request, 'profile_image_upload', 'artists/profile')
+            if profile_url:
+                data['profile_image'] = profile_url
+                uploaded.append(profile_url)
+            banner_url = _admin_artist_upload(request, 'banner_image_upload', 'artists/banner')
+            if banner_url:
+                data['banner_image'] = banner_url
+                uploaded.append(banner_url)
+            serializer = AdminArtistSerializer(data=data, context={'request': request})
+            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                artist = serializer.save()
+                _save_admin_artist_socials(artist, social_map)
+            return Response(AdminArtistSerializer(artist, context={'request': request}).data, status=status.HTTP_201_CREATED)
+        except serializers.ValidationError as exc:
+            cleanup_r2_urls(uploaded)
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            cleanup_r2_urls(uploaded)
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -838,11 +959,7 @@ class AdminArtistDetailView(APIView):
     )
     def put(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
-        serializer = AdminArtistSerializer(artist, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return self._update_artist(request, artist, partial=False)
 
     @extend_schema(
         summary="ویرایش جزئی هنرمند",
@@ -852,11 +969,39 @@ class AdminArtistDetailView(APIView):
     )
     def patch(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
-        serializer = AdminArtistSerializer(artist, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return self._update_artist(request, artist, partial=True)
+
+    def _update_artist(self, request, artist, partial):
+        uploaded = []
+        old_media = []
+        try:
+            data = _admin_artist_payload(request)
+            social_map = _admin_artist_social_map(request)
+            profile_url = _admin_artist_upload(request, 'profile_image_upload', 'artists/profile')
+            if profile_url:
+                data['profile_image'] = profile_url
+                uploaded.append(profile_url)
+                if artist.profile_image:
+                    old_media.append(artist.profile_image)
+            banner_url = _admin_artist_upload(request, 'banner_image_upload', 'artists/banner')
+            if banner_url:
+                data['banner_image'] = banner_url
+                uploaded.append(banner_url)
+                if artist.banner_image:
+                    old_media.append(artist.banner_image)
+            serializer = AdminArtistSerializer(artist, data=data, partial=partial, context={'request': request})
+            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                artist = serializer.save()
+                _save_admin_artist_socials(artist, social_map)
+            cleanup_r2_urls([value for value in old_media if value not in {artist.profile_image, artist.banner_image}])
+            return Response(AdminArtistSerializer(artist, context={'request': request}).data)
+        except serializers.ValidationError as exc:
+            cleanup_r2_urls(uploaded)
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            cleanup_r2_urls(uploaded)
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
         summary="حذف هنرمند",
@@ -885,7 +1030,11 @@ class AdminArtistDetailView(APIView):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
-        artist.delete()
+        media_urls = [value for value in (artist.profile_image, artist.banner_image) if value]
+        with transaction.atomic():
+            artist.delete()
+            if media_urls:
+                transaction.on_commit(lambda values=tuple(media_urls): cleanup_r2_urls(values))
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -1124,8 +1273,10 @@ class AdminSongListView(APIView):
         sort = str(request.query_params.get('sort') or 'time').strip()
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
 
+        include_drafts = str(request.query_params.get('include_drafts') or '').lower() in {'1', 'true', 'yes'}
+        base_songs = Song.objects.all() if include_drafts else Song.objects.exclude(status=Song.STATUS_DRAFT)
         songs = (
-            Song.objects.exclude(status=Song.STATUS_DRAFT)
+            base_songs
             .select_related('artist', 'album')
             .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
             .annotate(likes_count=Count('liked_by', distinct=True))
@@ -1163,6 +1314,15 @@ class AdminSongListView(APIView):
 
         if status_filter != 'all':
             songs = songs.filter(status=status_filter)
+        artist_id = str(request.query_params.get('artist_id') or '').strip()
+        if artist_id:
+            try:
+                artist_id_value = int(artist_id)
+            except (TypeError, ValueError):
+                return Response({'artist_id': ['شناسه هنرمند معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+            if artist_id_value <= 0:
+                return Response({'artist_id': ['شناسه هنرمند معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+            songs = songs.filter(artist_id=artist_id_value)
         query = str(request.query_params.get('q') or '').strip()
         if query:
             songs = songs.filter(
@@ -1322,7 +1482,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def get(self, request, pk):
-        song = get_object_or_404(_admin_song_detail_queryset(), pk=pk)
+        song = get_object_or_404(_admin_song_detail_queryset(include_drafts=True), pk=pk)
         hydrate_song_play_counts([song])
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
@@ -1334,7 +1494,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def patch(self, request, pk):
-        song = get_object_or_404(Song.objects.exclude(status=Song.STATUS_DRAFT), pk=pk)
+        song = get_object_or_404(Song.objects.all(), pk=pk)
         return self._update_song(request, song, partial=True)
 
     @extend_schema(
@@ -1344,7 +1504,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def put(self, request, pk):
-        song = get_object_or_404(Song.objects.exclude(status=Song.STATUS_DRAFT), pk=pk)
+        song = get_object_or_404(Song.objects.all(), pk=pk)
         return self._update_song(request, song, partial=False)
 
     @extend_schema(
@@ -1358,7 +1518,7 @@ class AdminSongDetailView(APIView):
             return Response({'detail': 'mode must be soft or hard.'}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             song = get_object_or_404(
-                Song.objects.select_for_update().exclude(status=Song.STATUS_DRAFT), pk=pk
+                Song.objects.select_for_update(), pk=pk
             )
             if mode == 'soft':
                 release_ids = list(song.release_track_links.values_list('release_id', flat=True))
@@ -1377,7 +1537,7 @@ class AdminSongDetailView(APIView):
         
         # Normalize repeated multipart list inputs, including explicit clears.
         list_fields = [
-            'featured_artists', 'producers', 'producers_en', 'composers', 'composers_en',
+            'featured_artist_ids', 'producers', 'producers_en', 'composers', 'composers_en',
             'lyricists', 'lyricists_en', 'genres', 'sub_genres', 'moods', 'tags',
         ]
         for field in list_fields:
@@ -1465,7 +1625,16 @@ class AdminSongDetailView(APIView):
         serializer = AdminSongSerializer(song, data=data, partial=partial)
         if serializer.is_valid():
             serializer.save()
-            updated_song = get_object_or_404(_admin_song_detail_queryset(), pk=song.pk)
+            # A cover uploaded directly for a track must remain track-owned.
+            # Otherwise the next release-level sync would treat an inherited
+            # collection cover as authoritative and overwrite this admin crop.
+            if cover_image:
+                for link in ArtistReleaseTrack.objects.filter(song=song):
+                    extras = dict(link.extras or {})
+                    if extras.get('_cover_source') != 'track':
+                        extras['_cover_source'] = 'track'
+                        ArtistReleaseTrack.objects.filter(pk=link.pk).update(extras=extras, updated_at=timezone.now())
+            updated_song = get_object_or_404(_admin_song_detail_queryset(include_drafts=True), pk=song.pk)
             hydrate_song_play_counts([updated_song])
             return Response(AdminSongSerializer(updated_song).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
