@@ -148,14 +148,13 @@ from .admin_views import (
     AdminSupportTicketDetailView,
     AdminSongPromotionListView,
     AdminSongPromotionDetailView,
+    AdminTaxonomyListView, AdminTaxonomyDetailView,
 )
 from .release_views import (
     ArtistReleaseListCreateView, ArtistReleaseDetailView, ArtistReleaseTracksView,
     ArtistReleaseBulkMetadataView, ArtistReleaseArtworkView, ArtistReleaseValidateView,
     ArtistReleaseSubmitView, ArtistReleaseCloneView, ArtistContributorListCreateView,
-    AdminReleaseListView, AdminReleaseDetailView, AdminReleaseTracksView,
-    AdminReleaseTrackUploadView, AdminReleaseArtworkView, AdminReleaseValidateView,
-    AdminReleaseActionView,
+    AdminReleaseListView, AdminReleaseDetailView, AdminReleaseActionView,
 )
 from .auth_views import (
     AuthRegisterView,
@@ -348,12 +347,10 @@ urlpatterns = [
     path('admin/reports/', AdminReportListView.as_view(), name='admin_report_list'),
     path('admin/reports/<int:pk>/', AdminReportDetailView.as_view(), name='admin_report_detail'),
     path('admin/albums/', AdminAlbumListView.as_view(), name='admin_album_list'),
+    path('admin/taxonomy/', AdminTaxonomyListView.as_view(), name='admin_taxonomy_list'),
+    path('admin/taxonomy/<str:kind>/<int:pk>/', AdminTaxonomyDetailView.as_view(), name='admin_taxonomy_detail'),
     path('admin/releases/', AdminReleaseListView.as_view(), name='admin_release_list'),
     path('admin/releases/<uuid:pk>/', AdminReleaseDetailView.as_view(), name='admin_release_detail'),
-    path('admin/releases/<uuid:pk>/tracks/', AdminReleaseTracksView.as_view(), name='admin_release_tracks'),
-    path('admin/releases/<uuid:pk>/tracks/upload/', AdminReleaseTrackUploadView.as_view(), name='admin_release_track_upload'),
-    path('admin/releases/<uuid:pk>/artwork/', AdminReleaseArtworkView.as_view(), name='admin_release_artwork'),
-    path('admin/releases/<uuid:pk>/validate/', AdminReleaseValidateView.as_view(), name='admin_release_validate'),
     path('admin/releases/<uuid:pk>/action/', AdminReleaseActionView.as_view(), name='admin_release_action'),
     path('admin/albums/<int:pk>/', AdminAlbumDetailView.as_view(), name='admin_album_detail'),
     path('admin/albums/<int:album_id>/songs/<int:song_id>/', AdminAlbumSongActionView.as_view(), name='admin_album_song_action'),

@@ -2,13 +2,14 @@ from decimal import Decimal
 
 from rest_framework import serializers
 from .models import (
-    User, Artist, ArtistAuth, ArtistSocialAccount, NotificationSetting, Song, Album, Genre, SubGenre, 
+    User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, 
     Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, 
     DepositRequest, SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.db import transaction
+from django.utils.text import slugify
 from .song_play_metrics import hydrate_song_play_counts
 from .utils import generate_signed_r2_url, public_media_url, r2_object_key
 
@@ -41,6 +42,102 @@ class RequireEnglishTranslationSerializerMixin:
         if errors:
             raise serializers.ValidationError(errors)
         return attrs
+
+class AdminTaxonomySerializer(serializers.Serializer):
+    """Strict admin writer for the four catalog taxonomy models.
+
+    Public taxonomy serializers intentionally stay permissive for backwards
+    compatibility.  The admin workspace uses this serializer so newly-authored
+    taxonomy remains bilingual, normalized and collision-free.
+    """
+
+    name = serializers.CharField(max_length=100, trim_whitespace=True)
+    name_en = serializers.CharField(max_length=100, trim_whitespace=True)
+    slug = serializers.CharField(max_length=100, required=False, allow_blank=True, trim_whitespace=True)
+    parent_genre = serializers.PrimaryKeyRelatedField(
+        queryset=Genre.objects.all(), required=False, allow_null=True
+    )
+
+    MODEL_BY_KIND = {
+        'genre': Genre,
+        'subgenre': SubGenre,
+        'mood': Mood,
+        'tag': Tag,
+    }
+
+    def _kind(self):
+        kind = str(self.context.get('kind') or '').strip().lower()
+        if kind not in self.MODEL_BY_KIND:
+            raise serializers.ValidationError({'kind': 'نوع دسته‌بندی معتبر نیست.'})
+        return kind
+
+    @staticmethod
+    def _normalized_text(value):
+        return ' '.join(str(value or '').strip().split())
+
+    def validate(self, attrs):
+        kind = self._kind()
+        model = self.MODEL_BY_KIND[kind]
+        instance = self.instance
+
+        current_name = getattr(instance, 'name', '') if instance is not None else ''
+        current_name_en = getattr(instance, 'name_en', '') if instance is not None else ''
+        current_slug = getattr(instance, 'slug', '') if instance is not None else ''
+
+        name = self._normalized_text(attrs.get('name', current_name))
+        name_en = self._normalized_text(attrs.get('name_en', current_name_en))
+        if not name:
+            raise serializers.ValidationError({'name': 'نام فارسی الزامی است.'})
+        if not name_en:
+            raise serializers.ValidationError({'name_en': 'نام انگلیسی الزامی است.'})
+
+        requested_slug = str(attrs.get('slug', '') or '').strip().lower()
+        if requested_slug:
+            clean_slug = slugify(requested_slug, allow_unicode=False)
+        elif instance is not None and 'name_en' not in attrs and current_slug:
+            clean_slug = current_slug
+        else:
+            clean_slug = slugify(name_en, allow_unicode=False)
+        if not clean_slug:
+            raise serializers.ValidationError({'slug': 'برای ساخت شناسه URL یک نام انگلیسی معتبر وارد کنید.'})
+        if len(clean_slug) > 100:
+            raise serializers.ValidationError({'slug': 'شناسه URL حداکثر ۱۰۰ کاراکتر است.'})
+
+        base = model.objects.all()
+        if instance is not None:
+            base = base.exclude(pk=instance.pk)
+        errors = {}
+        if base.filter(name__iexact=name).exists():
+            errors['name'] = 'یک مورد با این نام فارسی از قبل وجود دارد.'
+        if base.filter(name_en__iexact=name_en).exists():
+            errors['name_en'] = 'یک مورد با این نام انگلیسی از قبل وجود دارد.'
+        if base.filter(slug__iexact=clean_slug).exists():
+            errors['slug'] = 'این شناسه URL از قبل استفاده شده است.'
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        attrs['name'] = name
+        attrs['name_en'] = name_en
+        attrs['slug'] = clean_slug
+
+        if kind == 'subgenre':
+            parent = attrs.get('parent_genre', getattr(instance, 'parent_genre', None))
+            if parent is None:
+                raise serializers.ValidationError({'parent_genre': 'انتخاب ژانر مادر برای زیرژانر الزامی است.'})
+        else:
+            attrs.pop('parent_genre', None)
+        return attrs
+
+    def create(self, validated_data):
+        model = self.MODEL_BY_KIND[self._kind()]
+        return model.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save(update_fields=[*validated_data.keys()])
+        return instance
+
 
 class AdminUserSerializer(serializers.ModelSerializer):
     has_artist_profile = serializers.SerializerMethodField()
@@ -96,23 +193,18 @@ class AdminArtistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTrans
     has_user = serializers.SerializerMethodField()
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
     user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
-    social_accounts = serializers.SerializerMethodField()
 
     class Meta:
         model = Artist
         fields = [
-            'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id', 'email', 'city', 'city_en', 'date_of_birth',
+            'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'email', 'city', 'city_en', 'date_of_birth',
             'address', 'address_en', 'id_number', 'user', 'user_phone', 'user_is_banned', 'bio', 'bio_en', 'profile_image',
-            'banner_image', 'verified', 'created_at', 'has_user', 'social_accounts'
+            'banner_image', 'verified', 'created_at', 'has_user'
         ]
         read_only_fields = ['id', 'created_at']
 
     def get_has_user(self, obj):
         return obj.user is not None
-
-    def get_social_accounts(self, obj):
-        links = obj.social_account_links.select_related('platform').all()
-        return [{'id': link.id, 'platform': link.platform_id, 'platform_name': link.platform.name, 'platform_slug': link.platform.slug, 'username': link.username, 'url': link.url} for link in links]
 
 class AdminArtistAuthSerializer(AdminSignedMediaSerializerMixin, serializers.ModelSerializer):
     profile_image = serializers.SerializerMethodField()

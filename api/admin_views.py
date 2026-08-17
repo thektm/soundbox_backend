@@ -8,12 +8,12 @@ from .models import (
     User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, 
     PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest,
     SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion,
-    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory, ArtistSocialAccount, SocialPlatform
+    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory
 )
 from .models import PlayCount
 from django.utils import timezone
 from datetime import timedelta
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.db.models import Sum, Count, Q, Case, When, Value, IntegerField, F, Prefetch
 from decimal import Decimal
 from .admin_serializers import (
@@ -22,17 +22,14 @@ from .admin_serializers import (
     AdminPlayConfigurationSerializer, AdminBannerAdSerializer, AdminAudioAdSerializer,
     AdminPaymentTransactionSerializer, AdminDepositRequestSerializer,
     AdminSearchSectionSerializer, AdminEventPlaylistSerializer, AdminPlaylistSerializer,
-    AdminEmployeeSerializer, AdminSupportTicketSerializer, AdminSongPromotionSerializer
+    AdminEmployeeSerializer, AdminSupportTicketSerializer, AdminSongPromotionSerializer,
+    AdminTaxonomySerializer
 )
 from rest_framework.parsers import MultiPartParser, FormParser
-from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage, cleanup_r2_urls
+from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage
 from .song_play_metrics import apply_annotated_song_play_counts, hydrate_song_play_counts
 from .performance import CATALOG_VERSION_KEY, cache_increment
 import os
-import json
-from PIL import Image
-from django.core.validators import URLValidator
-from django.core.exceptions import ValidationError as DjangoValidationError
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -40,12 +37,460 @@ class AdminPagination(PageNumberPagination):
     max_page_size = 100
 
 
-def _admin_song_detail_queryset(include_drafts=False):
-    queryset = Song.objects.select_related('artist', 'album')
-    if not include_drafts:
-        queryset = queryset.exclude(status=Song.STATUS_DRAFT)
+_TAXONOMY_MODELS = {
+    'genre': Genre,
+    'subgenre': SubGenre,
+    'mood': Mood,
+    'tag': Tag,
+}
+_TAXONOMY_SHARED_KEYS = {
+    'genre': 'genre_ids',
+    'subgenre': 'sub_genre_ids',
+    'mood': 'mood_ids',
+    'tag': 'tag_ids',
+}
+
+
+def _taxonomy_model(kind):
+    return _TAXONOMY_MODELS.get(str(kind or '').strip().lower())
+
+
+def _taxonomy_queryset(kind):
+    model = _taxonomy_model(kind)
+    if model is None:
+        return None
+    annotations = {
+        'admin_song_count': Count('songs', distinct=True),
+    }
+    if kind != 'tag':
+        annotations['admin_album_count'] = Count('albums', distinct=True)
+    else:
+        annotations['admin_album_count'] = Value(0, output_field=IntegerField())
+    if kind == 'genre':
+        annotations['admin_child_count'] = Count('sub_genres', distinct=True)
+    else:
+        annotations['admin_child_count'] = Value(0, output_field=IntegerField())
+    queryset = model.objects.annotate(**annotations).order_by('name', 'id')
+    if kind == 'subgenre':
+        queryset = queryset.select_related('parent_genre')
+    return queryset
+
+
+def _taxonomy_item_data(item, kind):
+    parent = getattr(item, 'parent_genre', None) if kind == 'subgenre' else None
+    songs = int(getattr(item, 'admin_song_count', 0) or 0)
+    albums = int(getattr(item, 'admin_album_count', 0) or 0)
+    children = int(getattr(item, 'admin_child_count', 0) or 0)
+    return {
+        'id': item.pk,
+        'kind': kind,
+        'name': item.name,
+        'name_en': item.name_en,
+        'slug': item.slug,
+        'parent_genre': ({
+            'id': parent.pk,
+            'name': parent.name,
+            'name_en': parent.name_en,
+        } if parent is not None else None),
+        'usage': {
+            'songs': songs,
+            'albums': albums,
+            'child_subgenres': children,
+            'direct_total': songs + albums,
+        },
+    }
+
+
+def _taxonomy_release_workspace_impact(kind, item_id, child_subgenre_ids=()):
+    """Return release workspaces whose JSON metadata would be affected.
+
+    This intentionally scans the compact release metadata instead of relying on
+    PostgreSQL-only JSON containment operators, keeping maintenance commands and
+    tests portable to alternate database engines.
+    """
+    key = _TAXONOMY_SHARED_KEYS[kind]
+    item_id = int(item_id)
+    child_ids = {int(value) for value in child_subgenre_ids}
+    affected = []
+    direct = 0
+    cascading = 0
+    for release in ArtistRelease.objects.only('id', 'shared_metadata', 'status'):
+        shared = release.shared_metadata if isinstance(release.shared_metadata, dict) else {}
+        raw = shared.get(key) or []
+        values = set()
+        if isinstance(raw, (list, tuple)):
+            for value in raw:
+                try:
+                    values.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+        hit_direct = item_id in values
+        hit_child = False
+        if child_ids:
+            raw_children = shared.get('sub_genre_ids') or []
+            child_values = set()
+            if isinstance(raw_children, (list, tuple)):
+                for value in raw_children:
+                    try:
+                        child_values.add(int(value))
+                    except (TypeError, ValueError):
+                        continue
+            hit_child = bool(child_ids.intersection(child_values))
+        if hit_direct or hit_child:
+            affected.append(release.pk)
+            direct += int(hit_direct)
+            cascading += int(hit_child)
+    return {
+        'count': len(affected),
+        'direct_count': direct,
+        'cascade_count': cascading,
+        'ids': affected,
+    }
+
+
+def _taxonomy_impact(item, kind, include_internal=False):
+    song_count = item.songs.count()
+    album_count = item.albums.count() if kind != 'tag' else 0
+    child_ids = []
+    child_count = 0
+    cascade_song_count = 0
+    cascade_album_count = 0
+    if kind == 'genre':
+        child_ids = list(item.sub_genres.values_list('id', flat=True))
+        child_count = len(child_ids)
+        if child_ids:
+            cascade_song_count = Song.objects.filter(sub_genres__id__in=child_ids).distinct().count()
+            cascade_album_count = Album.objects.filter(sub_genres__id__in=child_ids).distinct().count()
+    release_impact = _taxonomy_release_workspace_impact(kind, item.pk, child_ids)
+    total_song_count = song_count
+    total_album_count = album_count
+    if kind == 'genre' and child_ids:
+        total_song_count = Song.objects.filter(
+            Q(genres=item) | Q(sub_genres__id__in=child_ids)
+        ).distinct().count()
+        total_album_count = Album.objects.filter(
+            Q(genres=item) | Q(sub_genres__id__in=child_ids)
+        ).distinct().count()
+    result = {
+        'songs': song_count,
+        'albums': album_count,
+        'child_subgenres': child_count,
+        'cascade_songs': cascade_song_count,
+        'cascade_albums': cascade_album_count,
+        'affected_songs': total_song_count,
+        'affected_albums': total_album_count,
+        'release_workspaces': release_impact['count'],
+        'release_workspaces_direct': release_impact['direct_count'],
+        'release_workspaces_cascade': release_impact['cascade_count'],
+        'has_metadata_impact': bool(total_song_count or total_album_count or child_count or release_impact['count']),
+    }
+    if include_internal:
+        result['_release_ids'] = release_impact['ids']
+    return result
+
+
+def _rewrite_id_list(values, source_id, replacement_id=None, remove_ids=()):
+    if not isinstance(values, (list, tuple)):
+        return values, False
+    source_id = int(source_id)
+    remove_ids = {int(value) for value in remove_ids}
+    changed = False
+    result = []
+    seen = set()
+    for raw in values:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = raw
+        if value == source_id:
+            changed = True
+            if replacement_id is None:
+                continue
+            value = int(replacement_id)
+        if isinstance(value, int) and value in remove_ids:
+            changed = True
+            continue
+        marker = (type(value).__name__, str(value))
+        if marker in seen:
+            changed = True
+            continue
+        seen.add(marker)
+        result.append(value)
+    return result, changed
+
+
+def _rewrite_release_workspace_taxonomy(kind, source_id, replacement_id=None, child_subgenre_ids=(), release_ids=None, replacement_parent_genre_id=None):
+    now = timezone.now()
+    changed_releases = []
+    key = _TAXONOMY_SHARED_KEYS[kind]
+    queryset = ArtistRelease.objects.all()
+    if release_ids is not None:
+        queryset = queryset.filter(pk__in=release_ids)
+    for release in queryset.select_for_update().iterator(chunk_size=200):
+        shared = dict(release.shared_metadata or {}) if isinstance(release.shared_metadata, dict) else {}
+        values, changed = _rewrite_id_list(shared.get(key) or [], source_id, replacement_id)
+        if changed:
+            shared[key] = values
+        if kind == 'subgenre' and replacement_id is not None and replacement_parent_genre_id is not None and changed:
+            genre_values = list(shared.get('genre_ids') or []) if isinstance(shared.get('genre_ids') or [], (list, tuple)) else []
+            normalized_genres = []
+            seen_genres = set()
+            for value in genre_values:
+                try:
+                    normalized = int(value)
+                except (TypeError, ValueError):
+                    normalized = value
+                marker = (type(normalized).__name__, str(normalized))
+                if marker not in seen_genres:
+                    seen_genres.add(marker)
+                    normalized_genres.append(normalized)
+            if int(replacement_parent_genre_id) not in {value for value in normalized_genres if isinstance(value, int)}:
+                normalized_genres.append(int(replacement_parent_genre_id))
+                shared['genre_ids'] = normalized_genres
+                changed = True
+
+        if kind == 'genre' and child_subgenre_ids:
+            child_ids = {int(value) for value in child_subgenre_ids}
+            raw_children = shared.get('sub_genre_ids') or []
+            selected_children = set()
+            if isinstance(raw_children, (list, tuple)):
+                for value in raw_children:
+                    try:
+                        selected_children.add(int(value))
+                    except (TypeError, ValueError):
+                        continue
+            uses_reparented_child = bool(child_ids.intersection(selected_children))
+            if replacement_id is None:
+                child_values, child_changed = _rewrite_id_list(
+                    raw_children, -1, None, remove_ids=child_subgenre_ids
+                )
+                if child_changed:
+                    shared['sub_genre_ids'] = child_values
+                    changed = True
+            elif uses_reparented_child:
+                genre_values = list(shared.get('genre_ids') or []) if isinstance(shared.get('genre_ids') or [], (list, tuple)) else []
+                normalized_genres = []
+                seen_genres = set()
+                for value in genre_values:
+                    try:
+                        normalized = int(value)
+                    except (TypeError, ValueError):
+                        normalized = value
+                    marker = (type(normalized).__name__, str(normalized))
+                    if marker not in seen_genres:
+                        seen_genres.add(marker)
+                        normalized_genres.append(normalized)
+                if int(replacement_id) not in {value for value in normalized_genres if isinstance(value, int)}:
+                    normalized_genres.append(int(replacement_id))
+                    shared['genre_ids'] = normalized_genres
+                    changed = True
+        if not changed:
+            continue
+        release.shared_metadata = shared
+        release.validation_snapshot = {}
+        release.lock_version = int(release.lock_version or 0) + 1
+        release.updated_at = now
+        changed_releases.append(release)
+    if changed_releases:
+        ArtistRelease.objects.bulk_update(
+            changed_releases,
+            ['shared_metadata', 'validation_snapshot', 'lock_version', 'updated_at'],
+            batch_size=200,
+        )
+    return len(changed_releases)
+
+
+def _add_ids_to_reverse_many_to_many(replacement, relation_name, ids, chunk_size=1000):
+    replacement_manager = getattr(replacement, relation_name)
+    batch = []
+    processed = 0
+    for pk in ids:
+        batch.append(pk)
+        if len(batch) >= chunk_size:
+            replacement_manager.add(*batch)
+            processed += len(batch)
+            batch.clear()
+    if batch:
+        replacement_manager.add(*batch)
+        processed += len(batch)
+    return processed
+
+
+def _transfer_reverse_many_to_many(source, replacement, relation_name, chunk_size=1000):
+    source_manager = getattr(source, relation_name)
+    return _add_ids_to_reverse_many_to_many(
+        replacement, relation_name, source_manager.values_list('pk', flat=True).iterator(chunk_size=chunk_size), chunk_size
+    )
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminTaxonomyListView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        items = {}
+        summary = {}
+        for kind in ('genre', 'subgenre', 'mood', 'tag'):
+            rows = list(_taxonomy_queryset(kind))
+            items[kind] = [_taxonomy_item_data(row, kind) for row in rows]
+            summary[kind] = {
+                'count': len(rows),
+                'song_links': sum(int(getattr(row, 'admin_song_count', 0) or 0) for row in rows),
+                'album_links': sum(int(getattr(row, 'admin_album_count', 0) or 0) for row in rows),
+            }
+        return Response({'items': items, 'summary': summary})
+
+    def post(self, request):
+        kind = str(request.data.get('kind') or '').strip().lower()
+        model = _taxonomy_model(kind)
+        if model is None:
+            return Response({'kind': ['نوع دسته‌بندی معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = AdminTaxonomySerializer(data=request.data, context={'kind': kind})
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                item = serializer.save()
+                _bump_catalog_after_commit()
+        except IntegrityError:
+            return Response({'detail': 'موردی با همین نام یا شناسه URL هم‌زمان ثبت شده است.'}, status=status.HTTP_409_CONFLICT)
+        row = _taxonomy_queryset(kind).get(pk=item.pk)
+        return Response(_taxonomy_item_data(row, kind), status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminTaxonomyDetailView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def _get(self, kind, pk):
+        model = _taxonomy_model(kind)
+        if model is None:
+            return None
+        return get_object_or_404(model, pk=pk)
+
+    def get(self, request, kind, pk):
+        kind = str(kind or '').strip().lower()
+        item = self._get(kind, pk)
+        if item is None:
+            return Response({'detail': 'نوع دسته‌بندی معتبر نیست.'}, status=status.HTTP_404_NOT_FOUND)
+        row = _taxonomy_queryset(kind).get(pk=item.pk)
+        data = _taxonomy_item_data(row, kind)
+        data['impact'] = _taxonomy_impact(item, kind)
+        return Response(data)
+
+    def patch(self, request, kind, pk):
+        kind = str(kind or '').strip().lower()
+        item = self._get(kind, pk)
+        if item is None:
+            return Response({'detail': 'نوع دسته‌بندی معتبر نیست.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AdminTaxonomySerializer(item, data=request.data, partial=True, context={'kind': kind})
+        serializer.is_valid(raise_exception=True)
+        try:
+            with transaction.atomic():
+                serializer.save()
+                _bump_catalog_after_commit()
+        except IntegrityError:
+            return Response({'detail': 'موردی با همین نام یا شناسه URL هم‌زمان ثبت شده است.'}, status=status.HTTP_409_CONFLICT)
+        row = _taxonomy_queryset(kind).get(pk=item.pk)
+        return Response(_taxonomy_item_data(row, kind))
+
+    def delete(self, request, kind, pk):
+        kind = str(kind or '').strip().lower()
+        model = _taxonomy_model(kind)
+        if model is None:
+            return Response({'detail': 'نوع دسته‌بندی معتبر نیست.'}, status=status.HTTP_404_NOT_FOUND)
+
+        replacement_id = request.data.get('replacement_id')
+        if replacement_id not in (None, ''):
+            try:
+                replacement_id = int(replacement_id)
+            except (TypeError, ValueError):
+                return Response({'replacement_id': ['جایگزین انتخاب‌شده معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+            if replacement_id == pk:
+                return Response({'replacement_id': ['یک مورد نمی‌تواند جایگزین خودش باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            replacement_id = None
+
+        with transaction.atomic():
+            # Lock source/replacement in deterministic PK order. This prevents
+            # opposite concurrent merges (A→B and B→A) from deadlocking.
+            lock_ids = sorted({pk, *([replacement_id] if replacement_id is not None else [])})
+            locked = {obj.pk: obj for obj in model.objects.select_for_update().filter(pk__in=lock_ids).order_by('pk')}
+            item = locked.get(pk)
+            if item is None:
+                return Response({'detail': 'مورد موردنظر پیدا نشد.'}, status=status.HTTP_404_NOT_FOUND)
+            replacement = locked.get(replacement_id) if replacement_id is not None else None
+            if replacement_id is not None and replacement is None:
+                return Response({'replacement_id': ['مورد جایگزین پیدا نشد.']}, status=status.HTTP_404_NOT_FOUND)
+
+            impact = _taxonomy_impact(item, kind, include_internal=True)
+            release_ids = impact.pop('_release_ids', [])
+            confirm_name = str(request.data.get('confirm_name') or '').strip()
+            if impact['has_metadata_impact'] and confirm_name != item.name:
+                return Response({'confirm_name': ['برای تأیید این حذف اثرگذار، نام فارسی را دقیق وارد کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+
+            acknowledged = request.data.get('allow_metadata_loss') is True
+            if replacement is None and impact['has_metadata_impact'] and not acknowledged:
+                return Response({
+                    'detail': 'این مورد در متادیتا استفاده شده است. برای حذف بدون جایگزین باید آسیب متادیتا را صریحاً تأیید کنید.',
+                    'impact': impact,
+                    'requires_acknowledgement': True,
+                }, status=status.HTTP_409_CONFLICT)
+
+            child_ids = list(item.sub_genres.values_list('id', flat=True)) if kind == 'genre' else []
+            moved_songs = 0
+            moved_albums = 0
+            reparented_subgenres = 0
+            if replacement is not None:
+                moved_songs = _transfer_reverse_many_to_many(item, replacement, 'songs')
+                if kind != 'tag':
+                    moved_albums = _transfer_reverse_many_to_many(item, replacement, 'albums')
+                if kind == 'subgenre' and getattr(replacement, 'parent_genre_id', None):
+                    # The source relation still exists until item.delete(), so stream
+                    # ids directly instead of materializing large catalogs in memory.
+                    parent = replacement.parent_genre
+                    _add_ids_to_reverse_many_to_many(parent, 'songs', item.songs.values_list('pk', flat=True).iterator(chunk_size=1000))
+                    _add_ids_to_reverse_many_to_many(parent, 'albums', item.albums.values_list('pk', flat=True).iterator(chunk_size=1000))
+                if kind == 'genre' and child_ids:
+                    # Content can legitimately carry a subgenre without the parent
+                    # genre M2M.  Once children are re-parented, attach the new parent
+                    # to that content as well so hierarchy remains coherent.
+                    child_song_ids = Song.objects.filter(sub_genres__id__in=child_ids).values_list('pk', flat=True).distinct().iterator(chunk_size=1000)
+                    child_album_ids = Album.objects.filter(sub_genres__id__in=child_ids).values_list('pk', flat=True).distinct().iterator(chunk_size=1000)
+                    _add_ids_to_reverse_many_to_many(replacement, 'songs', child_song_ids)
+                    _add_ids_to_reverse_many_to_many(replacement, 'albums', child_album_ids)
+                    moved_songs = impact['affected_songs']
+                    moved_albums = impact['affected_albums']
+                    reparented_subgenres = SubGenre.objects.filter(parent_genre=item).update(parent_genre=replacement)
+
+            rewritten_releases = _rewrite_release_workspace_taxonomy(
+                kind,
+                item.pk,
+                replacement.pk if replacement is not None else None,
+                child_subgenre_ids=child_ids,
+                release_ids=release_ids,
+                replacement_parent_genre_id=(replacement.parent_genre_id if kind == 'subgenre' and replacement is not None else None),
+            )
+            deleted_name = item.name
+            item.delete()
+            _bump_catalog_after_commit()
+
+        return Response({
+            'deleted': True,
+            'kind': kind,
+            'name': deleted_name,
+            'replacement_id': replacement.pk if replacement is not None else None,
+            'moved_songs': moved_songs,
+            'moved_albums': moved_albums,
+            'reparented_subgenres': reparented_subgenres,
+            'rewritten_release_workspaces': rewritten_releases,
+            'impact_before_delete': impact,
+        })
+
+
+def _admin_song_detail_queryset():
     return (
-        queryset
+        Song.objects.select_related('artist', 'album')
+        .exclude(status=Song.STATUS_DRAFT)
         .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods', 'tags')
         .annotate(likes_count=Count('liked_by', distinct=True))
     )
@@ -348,101 +793,12 @@ class AdminUserBanView(APIView):
         })
 
 
-def _admin_artist_upload(request, field_name, folder):
-    upload = request.FILES.get(field_name)
-    if not upload:
-        return None
-    max_size = 5 * 1024 * 1024 if field_name == 'profile_image_upload' else 10 * 1024 * 1024
-    if getattr(upload, 'size', 0) > max_size:
-        raise serializers.ValidationError({field_name: f'حجم تصویر باید حداکثر {max_size // (1024 * 1024)} مگابایت باشد.'})
-    content_type = str(getattr(upload, 'content_type', '') or '').lower()
-    extension = os.path.splitext(str(getattr(upload, 'name', '') or ''))[1].lower()
-    if content_type not in {'image/jpeg', 'image/png', 'image/webp'} and extension not in {'.jpg', '.jpeg', '.png', '.webp'}:
-        raise serializers.ValidationError({field_name: 'فرمت تصویر باید JPG، PNG یا WEBP باشد.'})
-    try:
-        upload.seek(0)
-        with Image.open(upload) as image:
-            image.verify()
-        upload.seek(0)
-        with Image.open(upload) as image:
-            width, height = image.size
-        upload.seek(0)
-    except Exception:
-        raise serializers.ValidationError({field_name: 'فایل تصویر قابل خواندن نیست.'})
-    if field_name == 'profile_image_upload' and width != height:
-        raise serializers.ValidationError({field_name: 'تصویر پروفایل باید مربعی باشد.'})
-    url, _ = upload_file_to_r2(upload, folder=folder)
-    return url
-
-
-_ADMIN_ARTIST_SOCIALS = {
-    'instagram': ('اینستاگرام', 'Instagram'),
-    'twitter': ('توییتر', 'Twitter'),
-    'youtube': ('یوتیوب', 'YouTube'),
-    'telegram': ('تلگرام', 'Telegram'),
-}
-
-
-def _admin_artist_social_map(request):
-    raw = request.data.get('social_accounts')
-    if raw in (None, ''):
-        return None
-    try:
-        values = json.loads(raw) if isinstance(raw, str) else raw
-        if not isinstance(values, dict):
-            raise ValueError
-    except (ValueError, TypeError, json.JSONDecodeError):
-        raise serializers.ValidationError({'social_accounts': ['ساختار شبکه‌های اجتماعی معتبر نیست.']})
-    validator = URLValidator(schemes=['http', 'https'])
-    normalized = {}
-    for raw_slug, raw_url in values.items():
-        slug = str(raw_slug or '').strip().lower()
-        if slug not in _ADMIN_ARTIST_SOCIALS:
-            continue
-        url = str(raw_url or '').strip()
-        if url:
-            try:
-                validator(url)
-            except DjangoValidationError:
-                raise serializers.ValidationError({'social_accounts': [f'پیوند {_ADMIN_ARTIST_SOCIALS[slug][0]} معتبر نیست.']})
-        normalized[slug] = url
-    return normalized
-
-
-def _save_admin_artist_socials(artist, values):
-    if values is None:
-        return
-    for slug, url in values.items():
-        name, name_en = _ADMIN_ARTIST_SOCIALS[slug]
-        platform, _ = SocialPlatform.objects.get_or_create(slug=slug, defaults={'name': name, 'name_en': name_en})
-        if not url:
-            ArtistSocialAccount.objects.filter(artist=artist, platform=platform).delete()
-        else:
-            ArtistSocialAccount.objects.update_or_create(artist=artist, platform=platform, defaults={'url': url, 'username': ''})
-
-
-def _admin_artist_payload(request):
-    data = request.data.copy()
-    # Upload fields are transport-only and are intentionally not serializer fields.
-    for key in ('profile_image_upload', 'banner_image_upload', 'social_accounts'):
-        if key in data:
-            data.pop(key)
-    if data.get('user') in ('', 'null', 'None'):
-        data['user'] = None
-    if data.get('date_of_birth') in ('', 'null', 'None'):
-        data['date_of_birth'] = None
-    if data.get('unique_id') in ('', 'null', 'None'):
-        data['unique_id'] = None
-    return data
-
-
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistListView(APIView):
     permission_classes = [permissions.IsAdminUser]
-    parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request):
-        queryset = Artist.objects.select_related('user').prefetch_related('social_account_links__platform').all()
+        queryset = Artist.objects.select_related('user').all()
         query = str(request.query_params.get('q') or '').strip()
         if query:
             queryset = queryset.filter(
@@ -457,33 +813,6 @@ class AdminArtistListView(APIView):
         paginator = AdminPagination()
         page = paginator.paginate_queryset(queryset, request)
         return paginator.get_paginated_response(AdminArtistSerializer(page, many=True).data)
-
-    @extend_schema(summary="ایجاد هنرمند مستقل توسط مدیر", responses={201: AdminArtistSerializer})
-    def post(self, request):
-        uploaded = []
-        try:
-            data = _admin_artist_payload(request)
-            social_map = _admin_artist_social_map(request)
-            profile_url = _admin_artist_upload(request, 'profile_image_upload', 'artists/profile')
-            if profile_url:
-                data['profile_image'] = profile_url
-                uploaded.append(profile_url)
-            banner_url = _admin_artist_upload(request, 'banner_image_upload', 'artists/banner')
-            if banner_url:
-                data['banner_image'] = banner_url
-                uploaded.append(banner_url)
-            serializer = AdminArtistSerializer(data=data, context={'request': request})
-            serializer.is_valid(raise_exception=True)
-            with transaction.atomic():
-                artist = serializer.save()
-                _save_admin_artist_socials(artist, social_map)
-            return Response(AdminArtistSerializer(artist, context={'request': request}).data, status=status.HTTP_201_CREATED)
-        except serializers.ValidationError as exc:
-            cleanup_r2_urls(uploaded)
-            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as exc:
-            cleanup_r2_urls(uploaded)
-            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -509,7 +838,11 @@ class AdminArtistDetailView(APIView):
     )
     def put(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
-        return self._update_artist(request, artist, partial=False)
+        serializer = AdminArtistSerializer(artist, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
         summary="ویرایش جزئی هنرمند",
@@ -519,39 +852,11 @@ class AdminArtistDetailView(APIView):
     )
     def patch(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
-        return self._update_artist(request, artist, partial=True)
-
-    def _update_artist(self, request, artist, partial):
-        uploaded = []
-        old_media = []
-        try:
-            data = _admin_artist_payload(request)
-            social_map = _admin_artist_social_map(request)
-            profile_url = _admin_artist_upload(request, 'profile_image_upload', 'artists/profile')
-            if profile_url:
-                data['profile_image'] = profile_url
-                uploaded.append(profile_url)
-                if artist.profile_image:
-                    old_media.append(artist.profile_image)
-            banner_url = _admin_artist_upload(request, 'banner_image_upload', 'artists/banner')
-            if banner_url:
-                data['banner_image'] = banner_url
-                uploaded.append(banner_url)
-                if artist.banner_image:
-                    old_media.append(artist.banner_image)
-            serializer = AdminArtistSerializer(artist, data=data, partial=partial, context={'request': request})
-            serializer.is_valid(raise_exception=True)
-            with transaction.atomic():
-                artist = serializer.save()
-                _save_admin_artist_socials(artist, social_map)
-            cleanup_r2_urls([value for value in old_media if value not in {artist.profile_image, artist.banner_image}])
-            return Response(AdminArtistSerializer(artist, context={'request': request}).data)
-        except serializers.ValidationError as exc:
-            cleanup_r2_urls(uploaded)
-            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as exc:
-            cleanup_r2_urls(uploaded)
-            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        serializer = AdminArtistSerializer(artist, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(
         summary="حذف هنرمند",
@@ -580,11 +885,7 @@ class AdminArtistDetailView(APIView):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
-        media_urls = [value for value in (artist.profile_image, artist.banner_image) if value]
-        with transaction.atomic():
-            artist.delete()
-            if media_urls:
-                transaction.on_commit(lambda values=tuple(media_urls): cleanup_r2_urls(values))
+        artist.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
@@ -823,10 +1124,8 @@ class AdminSongListView(APIView):
         sort = str(request.query_params.get('sort') or 'time').strip()
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
 
-        include_drafts = str(request.query_params.get('include_drafts') or '').lower() in {'1', 'true', 'yes'}
-        base_songs = Song.objects.all() if include_drafts else Song.objects.exclude(status=Song.STATUS_DRAFT)
         songs = (
-            base_songs
+            Song.objects.exclude(status=Song.STATUS_DRAFT)
             .select_related('artist', 'album')
             .prefetch_related('featured_artists', 'genres', 'sub_genres', 'moods')
             .annotate(likes_count=Count('liked_by', distinct=True))
@@ -864,15 +1163,6 @@ class AdminSongListView(APIView):
 
         if status_filter != 'all':
             songs = songs.filter(status=status_filter)
-        artist_id = str(request.query_params.get('artist_id') or '').strip()
-        if artist_id:
-            try:
-                artist_id_value = int(artist_id)
-            except (TypeError, ValueError):
-                return Response({'artist_id': ['شناسه هنرمند معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
-            if artist_id_value <= 0:
-                return Response({'artist_id': ['شناسه هنرمند معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
-            songs = songs.filter(artist_id=artist_id_value)
         query = str(request.query_params.get('q') or '').strip()
         if query:
             songs = songs.filter(
@@ -1032,7 +1322,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def get(self, request, pk):
-        song = get_object_or_404(_admin_song_detail_queryset(include_drafts=True), pk=pk)
+        song = get_object_or_404(_admin_song_detail_queryset(), pk=pk)
         hydrate_song_play_counts([song])
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
@@ -1044,7 +1334,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def patch(self, request, pk):
-        song = get_object_or_404(Song.objects.all(), pk=pk)
+        song = get_object_or_404(Song.objects.exclude(status=Song.STATUS_DRAFT), pk=pk)
         return self._update_song(request, song, partial=True)
 
     @extend_schema(
@@ -1054,7 +1344,7 @@ class AdminSongDetailView(APIView):
         responses={200: AdminSongSerializer}
     )
     def put(self, request, pk):
-        song = get_object_or_404(Song.objects.all(), pk=pk)
+        song = get_object_or_404(Song.objects.exclude(status=Song.STATUS_DRAFT), pk=pk)
         return self._update_song(request, song, partial=False)
 
     @extend_schema(
@@ -1068,7 +1358,7 @@ class AdminSongDetailView(APIView):
             return Response({'detail': 'mode must be soft or hard.'}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             song = get_object_or_404(
-                Song.objects.select_for_update(), pk=pk
+                Song.objects.select_for_update().exclude(status=Song.STATUS_DRAFT), pk=pk
             )
             if mode == 'soft':
                 release_ids = list(song.release_track_links.values_list('release_id', flat=True))
@@ -1087,7 +1377,7 @@ class AdminSongDetailView(APIView):
         
         # Normalize repeated multipart list inputs, including explicit clears.
         list_fields = [
-            'featured_artist_ids', 'producers', 'producers_en', 'composers', 'composers_en',
+            'featured_artists', 'producers', 'producers_en', 'composers', 'composers_en',
             'lyricists', 'lyricists_en', 'genres', 'sub_genres', 'moods', 'tags',
         ]
         for field in list_fields:
@@ -1175,16 +1465,7 @@ class AdminSongDetailView(APIView):
         serializer = AdminSongSerializer(song, data=data, partial=partial)
         if serializer.is_valid():
             serializer.save()
-            # A cover uploaded directly for a track must remain track-owned.
-            # Otherwise the next release-level sync would treat an inherited
-            # collection cover as authoritative and overwrite this admin crop.
-            if cover_image:
-                for link in ArtistReleaseTrack.objects.filter(song=song):
-                    extras = dict(link.extras or {})
-                    if extras.get('_cover_source') != 'track':
-                        extras['_cover_source'] = 'track'
-                        ArtistReleaseTrack.objects.filter(pk=link.pk).update(extras=extras, updated_at=timezone.now())
-            updated_song = get_object_or_404(_admin_song_detail_queryset(include_drafts=True), pk=song.pk)
+            updated_song = get_object_or_404(_admin_song_detail_queryset(), pk=song.pk)
             hydrate_song_play_counts([updated_song])
             return Response(AdminSongSerializer(updated_song).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
