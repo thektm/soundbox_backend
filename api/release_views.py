@@ -1557,15 +1557,11 @@ class AdminReleaseActionView(APIView):
                         release.validation_snapshot = {}
                         release.save(update_fields=['release_metadata', 'validation_snapshot', 'updated_at'])
             elif action == 'publish':
-                # "Publish" means live now. Original release history is preserved
-                # separately in original_release_date for previously released work.
-                metadata = merged_release_metadata(release.release_metadata, release.artist_id)
-                live_day = timezone.localdate().isoformat()
-                if metadata.get('release_date') != live_day:
-                    metadata['release_date'] = live_day
-                    release.release_metadata = metadata
-                    release.validation_snapshot = {}
-                    release.save(update_fields=['release_metadata', 'validation_snapshot', 'updated_at'])
+                # Publishing immediately must not rewrite catalog metadata between
+                # the explicit validation request and the final action. ``published_at``
+                # is the authoritative instant the release became live; release_date
+                # remains the metadata date the admin already reviewed and validated.
+                pass
 
             if action in {'approve', 'schedule', 'publish'}:
                 sync_release_tracks(release)
