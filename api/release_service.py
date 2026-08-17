@@ -334,8 +334,8 @@ def validation_payload(release: ArtistRelease) -> dict:
             warning('tracks', 'ترک دیگری با همین عنوان و نسخه وجود دارد.', song.id)
         seen_title_versions.add(title_version)
         isrc = str(extras.get('isrc') or '').replace('-', '').replace(' ', '').upper()
-        if release.previously_released and not isrc:
-            error('rights', 'برای فایل‌های قبلاً منتشرشده وارد کردن ISRC الزامی است.', song.id)
+        # ISRC is optional for every release, including previously released material.
+        # When supplied, it still receives the normal format, duplicate, and reuse checks below.
         if isrc:
             if not re.fullmatch(r'[A-Z]{2}[A-Z0-9]{3}[0-9]{7}', isrc):
                 error('rights', 'کد ISRC باید مطابق ساختار ۱۲ کاراکتری کشور، ثبت‌کننده، سال و شناسه اثر باشد.', song.id)
