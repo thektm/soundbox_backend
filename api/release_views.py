@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from PIL import Image
 from django.db import transaction
 from django.db.models import Prefetch, Q
@@ -48,7 +49,7 @@ from .release_service import (
     take_down_release,
     validation_payload,
 )
-from .utils import MediaPipelineError, cleanup_r2_urls, upload_file_to_r2
+from .utils import MediaPipelineError, cleanup_r2_urls, upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename
 
 logger = logging.getLogger(__name__)
 
@@ -1000,16 +1001,24 @@ class AdminReleaseListView(APIView):
 
     def get(self, request):
         publish_due_releases()
-        queryset = release_queryset().exclude(status=ArtistRelease.STATUS_DRAFT)
+        queryset = release_queryset()
         query = str(request.query_params.get('q') or '').strip()
         status_filter = str(request.query_params.get('status') or '').strip()
+        if not status_filter:
+            queryset = queryset.exclude(status=ArtistRelease.STATUS_DRAFT)
         artist_id = request.query_params.get('artist_id')
         if query:
             queryset = queryset.filter(Q(title__icontains=query) | Q(title_en__icontains=query) | Q(artist__name__icontains=query) | Q(artist__artistic_name__icontains=query))
         if status_filter:
             queryset = queryset.filter(status__in=[item.strip() for item in status_filter.split(',') if item.strip()])
         if artist_id:
-            queryset = queryset.filter(artist_id=artist_id)
+            try:
+                artist_id_value = int(artist_id)
+            except (TypeError, ValueError):
+                return Response({'artist_id': ['شناسه هنرمند معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+            if artist_id_value <= 0:
+                return Response({'artist_id': ['شناسه هنرمند معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+            queryset = queryset.filter(artist_id=artist_id_value)
         try:
             page = max(1, int(request.query_params.get('page', 1)))
             page_size = max(1, min(100, int(request.query_params.get('page_size', 20))))
@@ -1020,47 +1029,137 @@ class AdminReleaseListView(APIView):
         rows = queryset[start:start + page_size]
         return Response({'count': count, 'page': page, 'page_size': page_size, 'results': [serialize_release(item, request) for item in rows]})
 
+    def post(self, request):
+        try:
+            artist_id = int(request.data.get('artist_id') or 0)
+        except (TypeError, ValueError):
+            artist_id = 0
+        artist = Artist.objects.filter(pk=artist_id).first()
+        if not artist:
+            return Response({'artist_id': ['هنرمند معتبر انتخاب کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+        release_type = str(request.data.get('release_type') or ArtistRelease.TYPE_SINGLE).strip()
+        if release_type not in dict(ArtistRelease.TYPE_CHOICES):
+            return Response({'release_type': ['نوع انتشار معتبر انتخاب کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+        title = str(request.data.get('title') or '').strip()
+        title_en = str(request.data.get('title_en') or '').strip()
+        if not title:
+            return Response({'title': ['عنوان فارسی انتشار الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
+        if len(title) > 400 or len(title_en) > 400:
+            return Response({'title': ['عنوان انتشار نباید بیشتر از ۴۰۰ کاراکتر باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        shared = request.data.get('shared_metadata') or {}
+        metadata = request.data.get('release_metadata') or {}
+        if not isinstance(shared, dict) or not isinstance(metadata, dict):
+            return Response({'detail': 'متادیتای انتشار باید به‌صورت شیء معتبر ارسال شود.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            release = ArtistRelease.objects.create(
+                artist=artist,
+                title=title,
+                title_en=title_en,
+                release_type=release_type,
+                previously_released=str(request.data.get('previously_released') or '').strip().lower() in {'1','true','yes','on'},
+                shared_metadata=merged_shared(shared),
+                release_metadata=merged_release_metadata(metadata, artist.id),
+                current_step=1,
+            )
+            release.release_metadata['cover_url'] = ''
+            release.save(update_fields=['release_metadata', 'updated_at'])
+            ArtistReleaseStatusHistory.objects.create(
+                release=release, from_status='', to_status=ArtistRelease.STATUS_DRAFT,
+                note='پیش‌نویس انتشار توسط مدیر ایجاد شد.', actor=request.user,
+            )
+        return Response(serialize_release(release_queryset().get(pk=release.pk), request, include_history=True), status=status.HTTP_201_CREATED)
+
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseDetailView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request, pk):
-        release = get_object_or_404(release_queryset().exclude(status=ArtistRelease.STATUS_DRAFT), pk=pk)
+        release = get_object_or_404(release_queryset(), pk=pk)
         return Response(serialize_release(release, request, include_history=True))
 
     def patch(self, request, pk):
         with transaction.atomic():
-            release = get_object_or_404(ArtistRelease.objects.select_for_update().exclude(status=ArtistRelease.STATUS_DRAFT), pk=pk)
-            changed_fields = []
-            if 'admin_note' in request.data:
-                release.admin_note = str(request.data.get('admin_note') or '')
-                changed_fields.append('admin_note')
-            if 'review_note' in request.data:
-                release.review_note = str(request.data.get('review_note') or '')
-                changed_fields.append('review_note')
+            release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            conflict = _lock_version_error(release, request.data)
+            if conflict:
+                return conflict
+            editable = {
+                ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW,
+                ArtistRelease.STATUS_CHANGES_REQUESTED, ArtistRelease.STATUS_APPROVED,
+            }
+            content_fields = {'title','title_en','release_type','previously_released','current_step','shared_metadata','release_metadata','track_extras'}
+            if any(field in request.data for field in content_fields) and release.status not in editable:
+                return Response(
+                    {'detail': 'این انتشار در وضعیت فعلی برای ویرایش محتوایی قفل است. ابتدا آن را بازگشایی کنید.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            for field in ('title','title_en','release_type','previously_released','current_step'):
+                if field not in request.data:
+                    continue
+                value = request.data.get(field)
+                if field == 'release_type':
+                    if value not in dict(ArtistRelease.TYPE_CHOICES):
+                        return Response({'release_type': ['نوع انتشار معتبر انتخاب کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+                elif field in {'title','title_en'}:
+                    value = str(value or '').strip()
+                    if field == 'title' and not value:
+                        return Response({'title': ['عنوان فارسی انتشار الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
+                    if len(value) > 400:
+                        return Response({field: ['عنوان را حداکثر در ۴۰۰ کاراکتر وارد کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+                elif field == 'current_step':
+                    try:
+                        value = max(1, min(5, int(value)))
+                    except (TypeError, ValueError):
+                        value = release.current_step
+                elif field == 'previously_released':
+                    value = value.strip().lower() in {'1','true','yes','on'} if isinstance(value,str) else bool(value)
+                setattr(release, field, value)
+
+            if 'shared_metadata' in request.data:
+                incoming = request.data.get('shared_metadata')
+                if not isinstance(incoming, dict):
+                    return Response({'shared_metadata': ['اطلاعات باید به‌صورت یک شیء معتبر ارسال شوند.']}, status=status.HTTP_400_BAD_REQUEST)
+                shared = dict(release.shared_metadata or {})
+                shared.update(incoming)
+                release.shared_metadata = merged_shared(shared)
+
             if 'release_metadata' in request.data:
-                if release.status not in {
-                    ArtistRelease.STATUS_IN_REVIEW,
-                    ArtistRelease.STATUS_CHANGES_REQUESTED,
-                    ArtistRelease.STATUS_APPROVED,
-                }:
-                    return Response(
-                        {'detail': 'اطلاعات انتشار در این وضعیت قفل است. ابتدا آن را دوباره باز کنید یا یک ویرایش جدید بسازید.'},
-                        status=status.HTTP_409_CONFLICT,
-                    )
                 incoming = request.data.get('release_metadata')
                 if not isinstance(incoming, dict):
                     return Response({'release_metadata': ['اطلاعات باید به‌صورت یک شیء معتبر ارسال شوند.']}, status=status.HTTP_400_BAD_REQUEST)
+                old_cover = str((release.release_metadata or {}).get('cover_url') or '')
                 metadata = dict(release.release_metadata or {})
                 metadata.update(incoming)
-                release.release_metadata = merged_release_metadata(metadata, release.artist_id)
-                release.validation_snapshot = {}
-                changed_fields.extend(['release_metadata', 'validation_snapshot'])
-            if changed_fields:
-                release.lock_version += 1
-                changed_fields.extend(['lock_version', 'updated_at'])
-                release.save(update_fields=list(dict.fromkeys(changed_fields)))
+                metadata = merged_release_metadata(metadata, release.artist_id)
+                metadata['cover_url'] = old_cover
+                release.release_metadata = metadata
+
+            if 'track_extras' in request.data:
+                extras_map = request.data.get('track_extras')
+                if not isinstance(extras_map, dict):
+                    return Response({'track_extras': ['اطلاعات ترک باید به‌صورت شیء معتبر ارسال شود.']}, status=status.HTTP_400_BAD_REQUEST)
+                for link in ArtistReleaseTrack.objects.select_for_update().filter(release=release):
+                    incoming = extras_map.get(str(link.song_id), extras_map.get(link.song_id))
+                    if isinstance(incoming, dict):
+                        combined = dict(link.extras or {})
+                        combined.update(incoming)
+                        link.extras = normalize_track_extras(combined, link.position)
+                        link.save(update_fields=['extras','updated_at'])
+
+            if 'admin_note' in request.data:
+                release.admin_note = str(request.data.get('admin_note') or '')
+            if 'review_note' in request.data:
+                release.review_note = str(request.data.get('review_note') or '')
+
+            release.validation_snapshot = {}
+            release.lock_version += 1
+            release.save()
+            sync_release_tracks(release)
+            if release.status in {ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_CHANGES_REQUESTED}:
+                Song.objects.filter(release_track_links__release=release).exclude(status=Song.STATUS_DELETED).update(status=Song.STATUS_PENDING)
+
         return Response(serialize_release(release_queryset().get(pk=release.pk), request, include_history=True))
 
 
@@ -1136,6 +1235,253 @@ class AdminReleaseDetailView(APIView):
         })
 
 
+
+@extend_schema(tags=['Admin Releases'])
+class AdminReleaseTracksView(APIView):
+    """Admin-owned tracklist editor using the same release workspace semantics as artists."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        with transaction.atomic():
+            release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            if release.status != ArtistRelease.STATUS_DRAFT:
+                return Response({'detail': 'برای تغییر ترک‌لیست، انتشار باید در وضعیت پیش‌نویس باشد.'}, status=status.HTTP_409_CONFLICT)
+            conflict = _lock_version_error(release, request.data)
+            if conflict:
+                return conflict
+            action = str(request.data.get('action') or 'add').strip()
+            if action == 'reorder':
+                ordered_ids = _id_list(request.data.get('ordered_song_ids'))
+                links = list(ArtistReleaseTrack.objects.select_for_update().filter(release=release).order_by('position','id'))
+                current_ids = [link.song_id for link in links]
+                if len(ordered_ids) != len(current_ids) or set(ordered_ids) != set(current_ids):
+                    return Response({'ordered_song_ids': ['ترتیب ارسالی باید همه ترک‌های انتشار را دقیقاً یک‌بار شامل شود.']}, status=status.HTTP_400_BAD_REQUEST)
+                link_map = {link.song_id: link for link in links}
+                for offset, song_id in enumerate(ordered_ids, 1):
+                    ArtistReleaseTrack.objects.filter(pk=link_map[song_id].pk).update(position=1000 + offset)
+                for offset, song_id in enumerate(ordered_ids, 1):
+                    ArtistReleaseTrack.objects.filter(pk=link_map[song_id].pk).update(position=offset)
+                sync_release_tracks(release)
+                _touch_release(release)
+            elif action == 'add':
+                song_ids = _id_list(request.data.get('song_ids'))
+                if not song_ids:
+                    return Response({'song_ids': ['حداقل یک ضبط انتخاب کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+                songs = {song.id: song for song in Song.objects.filter(id__in=song_ids, artist=release.artist).exclude(status=Song.STATUS_DELETED)}
+                missing = [song_id for song_id in song_ids if song_id not in songs]
+                if missing:
+                    return Response({'song_ids': [f'برخی ضبط‌ها در دسترس نیستند یا متعلق به این هنرمند نیستند: {missing}']}, status=status.HTTP_400_BAD_REQUEST)
+                links = list(ArtistReleaseTrack.objects.select_for_update().filter(release=release))
+                existing_ids = {link.song_id for link in links}
+                existing_source_ids = {link.source_song_id for link in links if link.source_song_id}
+                candidates = [song_id for song_id in song_ids if song_id not in existing_ids and song_id not in existing_source_ids]
+                next_count = len(links) + len(candidates)
+                if release.release_type == ArtistRelease.TYPE_SINGLE and next_count > 1:
+                    return Response({'song_ids': ['تک‌آهنگ فقط می‌تواند یک ترک داشته باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+                if release.release_type == ArtistRelease.TYPE_EP and next_count > 7:
+                    return Response({'song_ids': ['مینی‌آلبوم می‌تواند حداکثر ۷ ترک داشته باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+                if next_count > 100:
+                    return Response({'song_ids': ['هر انتشار می‌تواند حداکثر ۱۰۰ ترک داشته باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+                position = len(links)
+                for song_id in candidates:
+                    editable, source = ensure_editable_song(release, songs[song_id], uploader=request.user)
+                    position += 1
+                    ArtistReleaseTrack.objects.create(release=release, song=editable, source_song=source, position=position, extras={})
+                if candidates:
+                    sync_release_tracks(release)
+                    _touch_release(release)
+            else:
+                return Response({'action': ['عملیات ترک‌لیست معتبر نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serialize_release(release_queryset().get(pk=release.pk), request, include_history=True))
+
+    def delete(self, request, pk):
+        song_ids = _id_list(request.data.get('song_ids'))
+        if not song_ids:
+            return Response({'song_ids': ['حداقل یک ترک انتخاب کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            if release.status != ArtistRelease.STATUS_DRAFT:
+                return Response({'detail': 'برای حذف ترک، انتشار باید در وضعیت پیش‌نویس باشد.'}, status=status.HTTP_409_CONFLICT)
+            conflict = _lock_version_error(release, request.data)
+            if conflict:
+                return conflict
+            links = list(ArtistReleaseTrack.objects.select_for_update().filter(release=release, song_id__in=song_ids))
+            if links:
+                ArtistReleaseTrack.objects.filter(pk__in=[link.pk for link in links]).delete()
+                _renumber_release_links(release)
+                _touch_release(release)
+        result = serialize_release(release_queryset().get(pk=release.pk), request, include_history=True)
+        result['removed_ids'] = [link.song_id for link in links]
+        return Response(result)
+
+
+@extend_schema(tags=['Admin Releases'])
+class AdminReleaseTrackUploadView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        release = get_object_or_404(ArtistRelease.objects.select_related('artist'), pk=pk)
+        if release.status != ArtistRelease.STATUS_DRAFT:
+            return Response({'detail': 'بارگذاری ترک جدید فقط برای پیش‌نویس انتشار مجاز است.'}, status=status.HTTP_409_CONFLICT)
+        audio_file = request.FILES.get('audio_file')
+        if not audio_file:
+            return Response({'audio_file': ['فایل صوتی الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
+        title = str(request.data.get('title') or '').strip()
+        title_en = str(request.data.get('title_en') or '').strip()
+        if not title and not title_en:
+            return Response({'title': ['حداقل عنوان فارسی یا انگلیسی ترک را وارد کنید.']}, status=status.HTTP_400_BAD_REQUEST)
+        title = title or title_en
+        if len(title) > 400 or len(title_en) > 400:
+            return Response({'title': ['عنوان ترک نباید بیشتر از ۴۰۰ کاراکتر باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        if audio_file.size <= 0 or audio_file.size > 500 * 1024 * 1024:
+            return Response({'audio_file': ['حجم فایل صوتی باید بیشتر از صفر و کمتر از ۵۰۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        extension = os.path.splitext(audio_file.name or '')[1].lower()
+        if extension not in {'.mp3','.wav'}:
+            return Response({'audio_file': ['فقط فایل MP3 یا WAV پشتیبانی می‌شود.']}, status=status.HTTP_400_BAD_REQUEST)
+        active_track_count = release.release_tracks.exclude(song__status=Song.STATUS_DELETED).count()
+        if release.release_type == ArtistRelease.TYPE_SINGLE and active_track_count >= 1:
+            return Response({'detail': 'تک‌آهنگ فقط می‌تواند یک ترک داشته باشد.'}, status=status.HTTP_409_CONFLICT)
+        if release.release_type == ArtistRelease.TYPE_EP and active_track_count >= 7:
+            return Response({'detail': 'مینی‌آلبوم می‌تواند حداکثر ۷ ترک داشته باشد.'}, status=status.HTTP_400_BAD_REQUEST)
+        if active_track_count >= 100:
+            return Response({'detail': 'حداکثر ۱۰۰ ترک برای هر انتشار مجاز است.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        uploaded_urls = []
+        try:
+            duration, bitrate, detected_format = get_audio_info(audio_file)
+            if hasattr(audio_file, 'seek'):
+                audio_file.seek(0)
+            original_format = (detected_format or extension.lstrip('.')).lower()
+            artist_label = release.artist.artistic_name or release.artist.name
+            safe_base = make_safe_filename(f'{artist_label} - {title_en or title}')
+            audio_url, _ = upload_file_to_r2(audio_file, folder='songs', custom_filename=f'{safe_base}.{original_format}')
+            uploaded_urls.append(audio_url)
+            converted_url = None
+            if original_format != 'mp3' or bitrate is None or bitrate > 128:
+                try:
+                    if hasattr(audio_file, 'seek'):
+                        audio_file.seek(0)
+                    converted_file = convert_to_128kbps(audio_file)
+                    converted_url, _ = upload_file_to_r2(converted_file, folder='songs/128', custom_filename=f'{safe_base}_128.mp3')
+                    uploaded_urls.append(converted_url)
+                except Exception:
+                    logger.exception('Admin release 128kbps conversion failed release=%s file=%s', pk, getattr(audio_file, 'name', ''))
+
+            with transaction.atomic():
+                locked = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+                if locked.status != ArtistRelease.STATUS_DRAFT:
+                    raise ValueError('release_not_draft')
+                conflict = _lock_version_error(locked, request.data)
+                if conflict:
+                    transaction.on_commit(lambda values=tuple(uploaded_urls): cleanup_r2_urls(values))
+                    return conflict
+                locked_count = locked.release_tracks.exclude(song__status=Song.STATUS_DELETED).count()
+                if locked.release_type == ArtistRelease.TYPE_SINGLE and locked_count >= 1:
+                    transaction.on_commit(lambda values=tuple(uploaded_urls): cleanup_r2_urls(values))
+                    return Response({'detail': 'تک‌آهنگ فقط می‌تواند یک ترک داشته باشد.'}, status=status.HTTP_409_CONFLICT)
+                if locked.release_type == ArtistRelease.TYPE_EP and locked_count >= 7:
+                    transaction.on_commit(lambda values=tuple(uploaded_urls): cleanup_r2_urls(values))
+                    return Response({'detail': 'مینی‌آلبوم می‌تواند حداکثر ۷ ترک داشته باشد.'}, status=status.HTTP_400_BAD_REQUEST)
+                if locked_count >= 100:
+                    transaction.on_commit(lambda values=tuple(uploaded_urls): cleanup_r2_urls(values))
+                    return Response({'detail': 'حداکثر ۱۰۰ ترک برای هر انتشار مجاز است.'}, status=status.HTTP_400_BAD_REQUEST)
+                position = locked.release_tracks.count() + 1
+                song = Song.objects.create(
+                    title=title, title_en=title_en, artist=locked.artist,
+                    audio_file=audio_url, converted_audio_url=converted_url,
+                    original_format=original_format, duration_seconds=duration,
+                    status=Song.STATUS_DRAFT, uploader=request.user,
+                    language=str(request.data.get('language') or 'fa').strip() or 'fa',
+                    is_single=False, album_disc_number=1, album_track_number=position,
+                )
+                ArtistReleaseTrack.objects.create(release=locked, song=song, position=position, extras={})
+                sync_release_tracks(locked)
+                _touch_release(locked)
+            return Response(serialize_release(release_queryset().get(pk=pk), request, include_history=True), status=status.HTTP_201_CREATED)
+        except ValueError as exc:
+            cleanup_r2_urls(uploaded_urls)
+            if str(exc) == 'release_not_draft':
+                return Response({'detail': 'انتشار در حین بارگذاری از حالت پیش‌نویس خارج شد؛ فایل‌های بارگذاری‌شده پاک شدند.'}, status=status.HTTP_409_CONFLICT)
+            raise
+        except MediaPipelineError as exc:
+            cleanup_r2_urls(uploaded_urls)
+            return Response({'detail': str(exc), 'code': exc.code}, status=exc.status_code)
+        except Exception:
+            cleanup_r2_urls(uploaded_urls)
+            logger.exception('Admin release track upload failed release=%s', pk)
+            return Response({'detail': 'بارگذاری ترک کامل نشد و فایل‌های نیمه‌کاره پاک شدند.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@extend_schema(tags=['Admin Releases'])
+class AdminReleaseArtworkView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        image_file = request.FILES.get('cover_image')
+        if not image_file:
+            return Response({'cover_image': ['انتخاب تصویر کاور الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
+        if image_file.size <= 0 or image_file.size > 10 * 1024 * 1024:
+            return Response({'cover_image': ['حجم تصویر کاور باید بیشتر از صفر و کمتر از ۱۰ مگابایت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        if getattr(image_file, 'content_type', '') not in {'image/jpeg','image/png','image/webp'}:
+            return Response({'cover_image': ['فرمت تصویر باید JPG، PNG یا WEBP باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            image_file.seek(0)
+            with Image.open(image_file) as image:
+                width, height = image.size
+            image_file.seek(0)
+        except Exception:
+            return Response({'cover_image': ['تصویر قابل خواندن نیست.']}, status=status.HTTP_400_BAD_REQUEST)
+        if width != height:
+            return Response({'cover_image': ['کاور انتشار باید مربعی باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            url, _ = upload_file_to_r2(image_file, folder='covers/releases')
+        except MediaPipelineError as exc:
+            return Response({'detail': str(exc), 'code': exc.code}, status=exc.status_code)
+        old_url = ''
+        with transaction.atomic():
+            release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            if release.status != ArtistRelease.STATUS_DRAFT:
+                cleanup_r2_urls([url])
+                return Response({'detail': 'تغییر کاور در این صفحه فقط برای پیش‌نویس مجاز است.'}, status=status.HTTP_409_CONFLICT)
+            conflict = _lock_version_error(release, request.data)
+            if conflict:
+                cleanup_r2_urls([url])
+                return conflict
+            metadata = merged_release_metadata(release.release_metadata, release.artist_id)
+            old_url = str(metadata.get('cover_url') or '')
+            metadata['cover_url'] = url
+            release.release_metadata = metadata
+            release.validation_snapshot = {}
+            release.lock_version += 1
+            release.save(update_fields=['release_metadata','validation_snapshot','lock_version','updated_at'])
+            sync_release_artwork(release, previous_cover=old_url)
+        if old_url and old_url != url:
+            transaction.on_commit(lambda old=old_url: _cleanup_unreferenced_release_media([old]))
+        return Response(serialize_release(release_queryset().get(pk=pk), request, include_history=True))
+
+
+@extend_schema(tags=['Admin Releases'])
+class AdminReleaseValidateView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        with transaction.atomic():
+            locked = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk)
+            release = release_queryset().get(pk=locked.pk)
+            conflict = _lock_version_error(release, request.data)
+            if conflict:
+                return conflict
+            sync_release_tracks(release)
+            release = release_queryset().get(pk=release.pk)
+            validation = validation_payload(release)
+            release.validation_snapshot = validation
+            release.save(update_fields=['validation_snapshot','updated_at'])
+            response_payload = dict(validation)
+            response_payload['lock_version'] = release.lock_version
+        return Response(response_payload)
+
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseActionView(APIView):
     permission_classes = [permissions.IsAdminUser]
@@ -1154,16 +1500,19 @@ class AdminReleaseActionView(APIView):
             'request_changes': {ArtistRelease.STATUS_IN_REVIEW},
             'reject': {ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_CHANGES_REQUESTED},
             'approve': {ArtistRelease.STATUS_IN_REVIEW},
-            'schedule': {ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_APPROVED},
-            'publish': {ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_APPROVED, ArtistRelease.STATUS_SCHEDULED, ArtistRelease.STATUS_TAKEN_DOWN},
+            'schedule': {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_APPROVED},
+            'publish': {ArtistRelease.STATUS_DRAFT, ArtistRelease.STATUS_IN_REVIEW, ArtistRelease.STATUS_APPROVED, ArtistRelease.STATUS_SCHEDULED, ArtistRelease.STATUS_TAKEN_DOWN},
             'take_down': {ArtistRelease.STATUS_LIVE},
             'reopen': {ArtistRelease.STATUS_CHANGES_REQUESTED, ArtistRelease.STATUS_REJECTED, ArtistRelease.STATUS_TAKEN_DOWN},
             'return_to_review': {ArtistRelease.STATUS_CHANGES_REQUESTED, ArtistRelease.STATUS_REJECTED, ArtistRelease.STATUS_APPROVED},
         }
 
         with transaction.atomic():
-            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().exclude(status=ArtistRelease.STATUS_DRAFT).only('pk'), pk=pk)
+            locked_release = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk)
             release = release_queryset().get(pk=locked_release.pk)
+            conflict = _lock_version_error(release, request.data)
+            if conflict:
+                return conflict
             if release.status not in transitions[action]:
                 return Response({
                     'detail': f"انجام این عملیات در وضعیت فعلی انتشار مجاز نیست."
@@ -1180,6 +1529,43 @@ class AdminReleaseActionView(APIView):
                     'detail': 'این انتشار رکورد فعال و سالمی برای بازگردانی ندارد. در صورت نیاز از حذف دائمی استفاده کنید.',
                     'code': 'release_not_restorable',
                 }, status=status.HTTP_409_CONFLICT)
+
+            requested_scheduled_at = None
+            if action == 'schedule':
+                raw_scheduled_at = str(request.data.get('scheduled_at') or '').strip()
+                if raw_scheduled_at:
+                    requested_scheduled_at = parse_datetime(raw_scheduled_at)
+                    if not requested_scheduled_at:
+                        return Response(
+                            {'scheduled_at': ['تاریخ و ساعت انتخاب‌شده معتبر نیست.']},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    if timezone.is_naive(requested_scheduled_at):
+                        requested_scheduled_at = timezone.make_aware(requested_scheduled_at, timezone.get_current_timezone())
+                    if requested_scheduled_at <= timezone.now():
+                        return Response(
+                            {'scheduled_at': ['زمان انتشار باید در آینده باشد.']},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    # Exact admin scheduling is authoritative. Keep the catalog
+                    # release date synchronized with the actual publication day.
+                    metadata = merged_release_metadata(release.release_metadata, release.artist_id)
+                    scheduled_day = timezone.localtime(requested_scheduled_at, timezone.get_current_timezone()).date().isoformat()
+                    if metadata.get('release_date') != scheduled_day:
+                        metadata['release_date'] = scheduled_day
+                        release.release_metadata = metadata
+                        release.validation_snapshot = {}
+                        release.save(update_fields=['release_metadata', 'validation_snapshot', 'updated_at'])
+            elif action == 'publish':
+                # "Publish" means live now. Original release history is preserved
+                # separately in original_release_date for previously released work.
+                metadata = merged_release_metadata(release.release_metadata, release.artist_id)
+                live_day = timezone.localdate().isoformat()
+                if metadata.get('release_date') != live_day:
+                    metadata['release_date'] = live_day
+                    release.release_metadata = metadata
+                    release.validation_snapshot = {}
+                    release.save(update_fields=['release_metadata', 'validation_snapshot', 'updated_at'])
 
             if action in {'approve', 'schedule', 'publish'}:
                 sync_release_tracks(release)
@@ -1200,19 +1586,9 @@ class AdminReleaseActionView(APIView):
             elif action == 'approve':
                 release = approve_release(release, actor=request.user, note=note)
             elif action == 'schedule':
-                raw_scheduled_at = str(request.data.get('scheduled_at') or '').strip()
-                if raw_scheduled_at:
-                    scheduled_at = parse_datetime(raw_scheduled_at)
-                    if not scheduled_at:
-                        return Response(
-                            {'scheduled_at': ['تاریخ و ساعت انتخاب‌شده معتبر نیست.']},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    if timezone.is_naive(scheduled_at):
-                        scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
-                else:
-                    # Backward-compatible fallback for older clients.
-                    scheduled_at = scheduled_datetime(release)
+                # Older clients may omit an exact time and continue to use the
+                # release-date-at-midnight behavior; new admin clients send ISO.
+                scheduled_at = requested_scheduled_at or scheduled_datetime(release)
                 if not scheduled_at or scheduled_at <= timezone.now():
                     return Response(
                         {'scheduled_at': ['زمان انتشار باید در آینده باشد.']},

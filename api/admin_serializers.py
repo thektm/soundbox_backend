@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 from .models import (
-    User, Artist, ArtistAuth, NotificationSetting, Song, Album, Genre, SubGenre, 
+    User, Artist, ArtistAuth, ArtistSocialAccount, NotificationSetting, Song, Album, Genre, SubGenre, 
     Mood, Tag, Report, PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, 
     DepositRequest, SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion
 )
@@ -96,18 +96,23 @@ class AdminArtistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTrans
     has_user = serializers.SerializerMethodField()
     user_phone = serializers.CharField(source='user.phone_number', read_only=True)
     user_is_banned = serializers.BooleanField(source='user.is_banned', read_only=True, allow_null=True)
+    social_accounts = serializers.SerializerMethodField()
 
     class Meta:
         model = Artist
         fields = [
-            'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'email', 'city', 'city_en', 'date_of_birth',
+            'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id', 'email', 'city', 'city_en', 'date_of_birth',
             'address', 'address_en', 'id_number', 'user', 'user_phone', 'user_is_banned', 'bio', 'bio_en', 'profile_image',
-            'banner_image', 'verified', 'created_at', 'has_user'
+            'banner_image', 'verified', 'created_at', 'has_user', 'social_accounts'
         ]
         read_only_fields = ['id', 'created_at']
 
     def get_has_user(self, obj):
         return obj.user is not None
+
+    def get_social_accounts(self, obj):
+        links = obj.social_account_links.select_related('platform').all()
+        return [{'id': link.id, 'platform': link.platform_id, 'platform_name': link.platform.name, 'platform_slug': link.platform.slug, 'username': link.username, 'url': link.url} for link in links]
 
 class AdminArtistAuthSerializer(AdminSignedMediaSerializerMixin, serializers.ModelSerializer):
     profile_image = serializers.SerializerMethodField()
