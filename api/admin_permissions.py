@@ -75,21 +75,38 @@ def normalize_employee_permissions(value) -> dict[str, bool]:
     raw = value if isinstance(value, dict) else {}
     normalized = {key: bool(raw.get(key, False)) for key in ALLOWED_PERMISSION_KEYS}
 
-    # Master screen switch is authoritative; hidden stale action bits cannot live
-    # behind a disabled screen.
-    for screen, actions in SCREEN_PERMISSIONS.items():
-        view_key = f'{screen}.view'
-        if not normalized[view_key]:
-            for action in actions:
-                normalized[f'{screen}.{action}'] = False
-
-    # Logical dependencies.
+    # A few screens have no useful read-only/empty state. Keep their shape
+    # coherent even for legacy or manually-crafted permission payloads.
+    if normalized.get('release_add.view'):
+        normalized['release_add.edit'] = True
     if normalized.get('artists.verify'):
         normalized['artists.kyc'] = True
     if normalized.get('release_add.publish'):
         normalized['release_add.edit'] = True
     if normalized.get('finance.payout_review') or normalized.get('finance.payout_pay'):
         normalized['finance.payouts'] = True
+
+    if normalized.get('finance.view') and not any(normalized.get(key) for key in (
+        'finance.payments', 'finance.earnings', 'finance.payouts'
+    )):
+        normalized['finance.view'] = False
+    if normalized.get('content.view') and not any(normalized.get(key) for key in (
+        'content.promotions', 'content.banners', 'content.audio_ads'
+    )):
+        normalized['content.view'] = False
+    if normalized.get('support.view') and not any(normalized.get(key) for key in (
+        'support.tickets', 'support.reports'
+    )):
+        normalized['support.view'] = False
+
+    # Master screen switch is authoritative; hidden stale action bits cannot live
+    # behind a disabled screen. Run this last so structural normalization above
+    # cannot leave orphaned action permissions behind.
+    for screen, actions in SCREEN_PERMISSIONS.items():
+        view_key = f'{screen}.view'
+        if not normalized[view_key]:
+            for action in actions:
+                normalized[f'{screen}.{action}'] = False
     return normalized
 
 
@@ -155,12 +172,12 @@ def _groups_for_request(request, view) -> tuple[tuple[str, ...], ...] | None:
         },
         'AdminUserBanView': {'POST': (('users.ban', 'artists.ban'),)},
         'AdminArtistListView': {'GET': (('artists.view', 'release_add.view'),), 'POST': (('artists.edit',),)},
-        'AdminArtistDetailView': {'GET': (('artists.view', 'release_add.view'),), 'DELETE': (('artists.delete',),)},
+        'AdminArtistDetailView': {'GET': (('artists.view',),), 'DELETE': (('artists.delete',),)},
         'AdminPendingArtistListView': {'GET': (('artists.view',),)},
         'AdminPendingArtistDetailView': {'GET': (('artists.view',),), 'PATCH': (('artists.verify',),)},
-        'AdminSongListView': {'GET': (('songs.view', 'release_add.view', 'content.view', 'playlists.view'),), 'POST': (('songs.edit',),)},
-        'AdminAlbumListView': {'GET': (('albums.view', 'playlists.view'),)},
-        'AdminAlbumDetailView': {'GET': (('albums.view', 'playlists.view'),), 'PATCH': (('albums.edit',),), 'PUT': (('albums.edit',),)},
+        'AdminSongListView': {'GET': (('songs.view', 'release_add.view', 'content.promotions', 'playlists.playlists', 'playlists.sections'),)},
+        'AdminAlbumListView': {'GET': (('albums.view', 'playlists.sections'),)},
+        'AdminAlbumDetailView': {'GET': (('albums.view',),), 'PATCH': (('albums.edit',),), 'PUT': (('albums.edit',),)},
         'AdminTaxonomyListView': {'GET': (('tags.view', 'release_add.view'),), 'POST': (('tags.edit',),)},
         'AdminTaxonomyDetailView': {'GET': (('tags.view',),), 'PATCH': (('tags.edit',),), 'DELETE': (('tags.delete',),)},
         'AdminFinanceSummaryView': {'GET': (('finance.view',),)},
@@ -171,19 +188,19 @@ def _groups_for_request(request, view) -> tuple[tuple[str, ...], ...] | None:
         'AdminSearchSectionDetailView': {'GET': (('playlists.view',),), 'PATCH': (('playlists.sections',),), 'DELETE': (('playlists.sections',),)},
         'AdminEventPlaylistListView': {'GET': (('playlists.view',),), 'POST': (('playlists.sections',),)},
         'AdminEventPlaylistDetailView': {'GET': (('playlists.view',),), 'PATCH': (('playlists.sections',),), 'DELETE': (('playlists.sections',),)},
-        'AdminPlaylistBuilderView': {'GET': (('playlists.view',),), 'POST': (('playlists.playlists',),)},
+        'AdminPlaylistBuilderView': {'GET': (('playlists.playlists',),), 'POST': (('playlists.playlists',),)},
         'AdminPlaylistListView': {'GET': (('playlists.view',),), 'POST': (('playlists.playlists',),)},
         'AdminPlaylistDetailView': {'GET': (('playlists.view',),), 'PATCH': (('playlists.playlists',),), 'DELETE': (('playlists.playlists',),)},
         'AdminSupportTicketListView': {'GET': (('support.tickets',),)},
         'AdminSupportTicketDetailView': {'GET': (('support.tickets',),), 'PATCH': (('support.tickets',),)},
         'AdminReportListView': {'GET': (('support.reports',),)},
         'AdminReportDetailView': {'GET': (('support.reports',),), 'PUT': (('support.reports',),)},
-        'AdminSongPromotionListView': {'GET': (('content.view',),), 'POST': (('content.promotions',),)},
-        'AdminSongPromotionDetailView': {'GET': (('content.view',),), 'PATCH': (('content.promotions',),), 'DELETE': (('content.promotions',),)},
-        'AdminBannerAdListView': {'GET': (('content.view',),), 'POST': (('content.banners',),)},
-        'AdminBannerAdDetailView': {'GET': (('content.view',),), 'PATCH': (('content.banners',),), 'DELETE': (('content.banners',),)},
-        'AdminAudioAdListView': {'GET': (('content.view',),), 'POST': (('content.audio_ads',),)},
-        'AdminAudioAdDetailView': {'GET': (('content.view',),), 'PATCH': (('content.audio_ads',),), 'DELETE': (('content.audio_ads',),)},
+        'AdminSongPromotionListView': {'GET': (('content.promotions',),), 'POST': (('content.promotions',),)},
+        'AdminSongPromotionDetailView': {'GET': (('content.promotions',),), 'PATCH': (('content.promotions',),), 'DELETE': (('content.promotions',),)},
+        'AdminBannerAdListView': {'GET': (('content.banners',),), 'POST': (('content.banners',),)},
+        'AdminBannerAdDetailView': {'GET': (('content.banners',),), 'PATCH': (('content.banners',),), 'DELETE': (('content.banners',),)},
+        'AdminAudioAdListView': {'GET': (('content.audio_ads',),), 'POST': (('content.audio_ads',),)},
+        'AdminAudioAdDetailView': {'GET': (('content.audio_ads',),), 'PATCH': (('content.audio_ads',),), 'DELETE': (('content.audio_ads',),)},
         'AdminReleaseListView': {'GET': (('release_add.view', 'releases.view'),), 'POST': (('release_add.edit',),)},
         'AdminReleaseDetailView': {'GET': (('release_add.view', 'releases.view'),), 'PATCH': (('release_add.edit',),), 'DELETE': (('releases.delete',),)},
         'AdminReleaseTracksView': {'POST': (('release_add.edit',),), 'DELETE': (('release_add.edit',),)},
@@ -199,7 +216,7 @@ def _groups_for_request(request, view) -> tuple[tuple[str, ...], ...] | None:
         if typ == 'audience':
             return (('users.view',),)
         if typ == 'artist':
-            return (('artists.view', 'release_add.view'),)
+            return (('artists.view',),)
         if typ == 'pend_artist':
             return (('artists.view',),)
         return None
@@ -250,14 +267,6 @@ def _groups_for_request(request, view) -> tuple[tuple[str, ...], ...] | None:
     if name == 'AdminAlbumDetailView' and method == 'DELETE':
         mode = str(request.query_params.get('mode') or 'hard').strip().lower()
         return (('albums.takedown',),) if mode == 'soft' else (('albums.delete',),)
-
-    if name == 'AdminAlbumSongActionView' and method == 'POST':
-        action = str(getattr(request, 'data', {}).get('action') or '').strip()
-        if action == 'remove':
-            return (('albums.edit',),)
-        if action == 'delete':
-            return (('songs.delete',),)
-        return None
 
     if name == 'AdminReleaseActionView' and method == 'POST':
         action = str(getattr(request, 'data', {}).get('action') or '').strip()

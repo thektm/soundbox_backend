@@ -160,16 +160,14 @@ class AdminUserSerializer(serializers.ModelSerializer):
         user = getattr(request, 'user', None) if request is not None else None
         if is_employee(user):
             submitted = set(getattr(self, 'initial_data', {}) or {})
-            owner_only = submitted & {'roles', 'is_staff'}
-            if owner_only:
+            # Employee user editing is deliberately narrower than the owner serializer.
+            # Account roles, plan/verification and security state are owner workflows;
+            # ban/unban is handled only by the dedicated, object-checked endpoint.
+            editable = {'first_name', 'last_name', 'email', 'stream_quality'}
+            forbidden = submitted - editable
+            if forbidden:
                 raise serializers.ValidationError({
-                    field: 'این فیلد فقط توسط مدیر اصلی قابل تغییر است.' for field in owner_only
-                })
-            ban_fields = submitted & {'is_active', 'is_banned'}
-            if ban_fields and not has_employee_permission(user, 'users.ban'):
-                raise serializers.ValidationError({
-                    field: 'برای تغییر وضعیت حساب، دسترسی مسدودسازی کاربران لازم است.'
-                    for field in ban_fields
+                    field: 'این فیلد از بخش ویرایش کاربر قابل تغییر نیست.' for field in forbidden
                 })
         return attrs
 
@@ -732,7 +730,9 @@ class AdminSearchSectionSerializer(AdminSignedMediaSerializerMixin, RequireEngli
         if instance.type == SearchSection.TYPE_SONG:
             instance.songs.set(Song.objects.filter(id__in=ids, status=Song.STATUS_PUBLISHED))
         elif instance.type == SearchSection.TYPE_ALBUM:
-            instance.albums.set(Album.objects.filter(id__in=ids))
+            instance.albums.set(
+                Album.objects.filter(id__in=ids, songs__status=Song.STATUS_PUBLISHED).distinct()
+            )
         elif instance.type == SearchSection.TYPE_PLAYLIST:
             instance.playlists.set(Playlist.objects.filter(id__in=ids))
 

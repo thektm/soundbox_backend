@@ -1040,14 +1040,16 @@ class AdminReleaseListView(APIView):
     def get(self, request):
         publish_due_releases()
         queryset = release_queryset()
+        admin_created = Q(
+            status_history__from_status='',
+            status_history__to_status=ArtistRelease.STATUS_DRAFT,
+            status_history__note=ADMIN_CREATED_HISTORY_NOTE,
+        )
+        if str(request.query_params.get('scope') or '').strip() == 'admin_created':
+            queryset = queryset.filter(admin_created).distinct()
         if is_employee(request.user):
             can_add = has_employee_permission(request.user, 'release_add.view')
             can_review = has_employee_permission(request.user, 'releases.view')
-            admin_created = Q(
-                status_history__from_status='',
-                status_history__to_status=ArtistRelease.STATUS_DRAFT,
-                status_history__note=ADMIN_CREATED_HISTORY_NOTE,
-            )
             if can_add and can_review:
                 queryset = queryset.filter(~Q(status=ArtistRelease.STATUS_DRAFT) | admin_created).distinct()
             elif can_add:

@@ -959,26 +959,45 @@ class AdminArtistListView(APIView):
 
     def get(self, request):
         queryset = Artist.objects.select_related('user').prefetch_related('social_account_links__platform').all()
+        picker_only = is_employee(request.user) and not has_employee_permission(request.user, 'artists.view')
         query = str(request.query_params.get('q') or '').strip()
         if query:
-            queryset = queryset.filter(
+            artist_query = (
                 Q(name__icontains=query) | Q(artistic_name__icontains=query)
                 | Q(name_en__icontains=query) | Q(artistic_name_en__icontains=query)
-                | Q(user__phone_number__icontains=query) | Q(email__icontains=query)
             )
+            if not picker_only:
+                artist_query |= Q(user__phone_number__icontains=query) | Q(email__icontains=query)
+            queryset = queryset.filter(artist_query)
         verified = request.query_params.get('verified')
         if verified in {'true', 'false'}:
             queryset = queryset.filter(verified=verified == 'true')
         queryset = queryset.order_by('-created_at', '-id')
         paginator = AdminPagination()
         page = paginator.paginate_queryset(queryset, request)
-        return paginator.get_paginated_response(AdminArtistSerializer(page, many=True, context={'request': request}).data)
+        serialized = AdminArtistSerializer(page, many=True, context={'request': request}).data
+        if picker_only:
+            picker_fields = {'id', 'name', 'name_en', 'artistic_name', 'artistic_name_en', 'profile_image', 'verified'}
+            serialized = [{key: row.get(key) for key in picker_fields} for row in serialized]
+        return paginator.get_paginated_response(serialized)
 
     @extend_schema(summary="ایجاد هنرمند مستقل توسط مدیر", responses={201: AdminArtistSerializer})
     def post(self, request):
         uploaded = []
         try:
             data = _admin_artist_payload(request)
+            if is_employee(request.user):
+                employee_artist_fields = {
+                    'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id',
+                    'email', 'city', 'city_en', 'date_of_birth', 'address', 'address_en',
+                    'id_number', 'bio', 'bio_en', 'verified',
+                }
+                forbidden = set(data.keys()) - employee_artist_fields
+                if forbidden:
+                    return Response(
+                        {field: ['این فیلد از بخش مدیریت هنرمند قابل تغییر نیست.'] for field in forbidden},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             if is_employee(request.user) and any(str(data.get(field) or '').strip() for field in ('date_of_birth', 'address', 'address_en', 'id_number')):
                 require_employee_permission(request.user, 'artists.kyc')
             social_map = _admin_artist_social_map(request)
@@ -1046,6 +1065,18 @@ class AdminArtistDetailView(APIView):
         old_media = []
         try:
             data = _admin_artist_payload(request)
+            if is_employee(request.user):
+                employee_artist_fields = {
+                    'name', 'name_en', 'artistic_name', 'artistic_name_en', 'unique_id',
+                    'email', 'city', 'city_en', 'date_of_birth', 'address', 'address_en',
+                    'id_number', 'bio', 'bio_en', 'verified',
+                }
+                forbidden = set(data.keys()) - employee_artist_fields
+                if forbidden:
+                    return Response(
+                        {field: ['این فیلد از بخش مدیریت هنرمند قابل تغییر نیست.'] for field in forbidden},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             if is_employee(request.user) and any(field in data for field in ('date_of_birth', 'address', 'address_en', 'id_number')):
                 require_employee_permission(request.user, 'artists.kyc')
             if is_employee(request.user) and 'verified' in data and bool(data.get('verified')) != bool(artist.verified):
@@ -1167,6 +1198,19 @@ class AdminPendingArtistDetailView(APIView):
     )
     def patch(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
+        if is_employee(request.user):
+            submitted = set(request.data.keys())
+            if not submitted or submitted - {'status', 'is_verified'}:
+                return Response({'detail': 'فقط نتیجه بررسی درخواست قابل ثبت است.'}, status=status.HTTP_400_BAD_REQUEST)
+            requested_status = str(request.data.get('status') or '').strip()
+            if requested_status not in {ArtistAuth.STATUS_ACCEPTED, ArtistAuth.STATUS_REJECTED}:
+                return Response({'status': ['نتیجه بررسی باید تأیید یا رد باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+            expected_verified = requested_status == ArtistAuth.STATUS_ACCEPTED
+            raw_verified = request.data.get('is_verified', expected_verified)
+            if isinstance(raw_verified, str):
+                raw_verified = raw_verified.strip().lower() in {'1', 'true', 'yes', 'on'}
+            if bool(raw_verified) != expected_verified:
+                return Response({'is_verified': ['وضعیت تأیید با نتیجه بررسی هماهنگ نیست.']}, status=status.HTTP_400_BAD_REQUEST)
         serializer = AdminArtistAuthSerializer(auth, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
@@ -1348,7 +1392,13 @@ class AdminSongListView(APIView):
         sort = str(request.query_params.get('sort') or 'time').strip()
         direction = 'asc' if request.query_params.get('direction') == 'asc' else 'desc'
 
-        include_drafts = str(request.query_params.get('include_drafts') or '').lower() in {'1', 'true', 'yes'}
+        picker_only = is_employee(request.user) and not (
+            has_employee_permission(request.user, 'songs.view')
+            or has_employee_permission(request.user, 'release_add.view')
+        )
+        if picker_only:
+            status_filter = Song.STATUS_PUBLISHED
+        include_drafts = False if picker_only else str(request.query_params.get('include_drafts') or '').lower() in {'1', 'true', 'yes'}
         base_songs = Song.objects.all() if include_drafts else Song.objects.exclude(status=Song.STATUS_DRAFT)
         songs = (
             base_songs
@@ -1417,7 +1467,11 @@ class AdminSongListView(APIView):
             apply_annotated_song_play_counts(page)
         else:
             hydrate_song_play_counts(page)
-        return paginator.get_paginated_response(AdminSongSerializer(page, many=True).data)
+        serialized = AdminSongSerializer(page, many=True).data
+        if picker_only:
+            picker_fields = {'id', 'title', 'title_en', 'artist', 'artist_name', 'cover_image', 'status'}
+            serialized = [{key: row.get(key) for key in picker_fields} for row in serialized]
+        return paginator.get_paginated_response(serialized)
 
 
     @extend_schema(
@@ -1558,6 +1612,10 @@ class AdminSongDetailView(APIView):
     )
     def get(self, request, pk):
         song = get_object_or_404(_admin_song_detail_queryset(include_drafts=True), pk=pk)
+        if is_employee(request.user) and not has_employee_permission(request.user, 'songs.view'):
+            if not _employee_can_edit_song_via_admin_release(request.user, song):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('این آهنگ در پیش‌نویس انتشار مدیریتی قابل مشاهده نیست.')
         hydrate_song_play_counts([song])
         serializer = AdminSongSerializer(song)
         return Response(serializer.data)
@@ -1616,6 +1674,27 @@ class AdminSongDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _update_song(self, request, song, partial=False):
+        submitted_fields = set(request.data.keys())
+        if is_employee(request.user):
+            # Keep employee song editing at the metadata/media surface exposed by the
+            # product. Workflow state, ownership and storage URLs remain server/owner
+            # controlled even if a custom request is crafted manually.
+            employee_editable_fields = {
+                'title', 'title_en', 'featured_artist_ids', 'is_single',
+                'album_disc_number', 'album_track_number', 'cover_image_upload',
+                'release_date', 'language', 'genres', 'sub_genres', 'moods', 'tags',
+                'description', 'description_en', 'lyrics', 'lyrics_en', 'tempo',
+                'energy', 'danceability', 'valence', 'acousticness',
+                'instrumentalness', 'live_performed', 'speechiness', 'label',
+                'label_en', 'producers', 'producers_en', 'composers', 'composers_en',
+                'lyricists', 'lyricists_en', 'credits', 'credits_en',
+            }
+            forbidden = submitted_fields - employee_editable_fields
+            if forbidden:
+                return Response(
+                    {field: ['این فیلد از بخش ویرایش متادیتا قابل تغییر نیست.'] for field in forbidden},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         data = request.data.copy()
         
         # Normalize repeated multipart list inputs, including explicit clears.
@@ -1781,6 +1860,12 @@ class AdminReportDetailView(APIView):
     )
     def put(self, request, pk):
         report = get_object_or_404(Report.objects.select_related('user', 'song', 'artist', 'reported_user'), pk=pk)
+        if is_employee(request.user):
+            if set(request.data.keys()) - {'has_reviewed'}:
+                return Response({'detail': 'فقط وضعیت بررسی گزارش قابل تغییر است.'}, status=status.HTTP_400_BAD_REQUEST)
+            reviewed_value = request.data.get('has_reviewed')
+            if reviewed_value not in {True, 'true', 'True', '1', 1}:
+                return Response({'detail': 'گزارش فقط می‌تواند به‌عنوان بررسی‌شده ثبت شود.'}, status=status.HTTP_400_BAD_REQUEST)
         data = request.data.copy()
         
         # If has_reviewed is being set to true, set reviewed_at
@@ -2072,7 +2157,12 @@ class AdminAlbumListView(APIView):
         responses={200: AdminAlbumSerializer(many=True)}
     )
     def get(self, request):
-        visible_song_filter = ~Q(songs__status=Song.STATUS_DRAFT)
+        picker_only = is_employee(request.user) and not has_employee_permission(request.user, 'albums.view')
+        visible_song_filter = Q(songs__status=Song.STATUS_PUBLISHED) if picker_only else ~Q(songs__status=Song.STATUS_DRAFT)
+        visible_song_queryset = (
+            _admin_song_detail_queryset().filter(status=Song.STATUS_PUBLISHED)
+            if picker_only else _admin_song_detail_queryset()
+        )
         qs = Album.objects.annotate(
             song_count=Count('songs', filter=visible_song_filter, distinct=True),
             active_song_count=Count(
@@ -2083,7 +2173,7 @@ class AdminAlbumListView(APIView):
             ),
         ).filter(song_count__gt=0)
         qs = qs.exclude(song_count=1, visible_single_count=1).prefetch_related(
-            Prefetch('songs', queryset=_admin_song_detail_queryset(), to_attr='_admin_visible_songs')
+            Prefetch('songs', queryset=visible_song_queryset, to_attr='_admin_visible_songs')
         )
         query = str(request.query_params.get('q') or '').strip()
         if query:
@@ -2098,7 +2188,11 @@ class AdminAlbumListView(APIView):
         qs = qs.order_by(field if direction == 'asc' else f'-{field}', '-id')
         paginator = AdminPagination()
         page = paginator.paginate_queryset(qs, request)
-        return paginator.get_paginated_response(AdminAlbumSerializer(page, many=True).data)
+        serialized = AdminAlbumSerializer(page, many=True).data
+        if picker_only:
+            picker_fields = {'id', 'title', 'title_en', 'artist', 'artist_name', 'cover_image', 'release_date'}
+            serialized = [{key: row.get(key) for key in picker_fields} for row in serialized]
+        return paginator.get_paginated_response(serialized)
 
 
 
@@ -2176,6 +2270,14 @@ class AdminAlbumDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _update_album(self, request, album, partial=False):
+        if is_employee(request.user):
+            editable = {'title', 'title_en', 'release_date', 'description', 'description_en'}
+            forbidden = set(request.data.keys()) - editable
+            if forbidden:
+                return Response(
+                    {field: ['این فیلد از بخش ویرایش آلبوم قابل تغییر نیست.'] for field in forbidden},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         data = request.data.copy()
         
         # Handle cover image upload
@@ -2431,6 +2533,13 @@ class AdminSearchSectionListView(APIView):
         responses={201: AdminSearchSectionSerializer}
     )
     def post(self, request):
+        if is_employee(request.user):
+            direct_relations = {'songs', 'albums', 'playlists'} & set(request.data.keys())
+            if direct_relations:
+                return Response(
+                    {field: ['محتوای بخش باید از انتخاب‌گر همین صفحه ثبت شود.'] for field in direct_relations},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         data = request.data.copy()
         icon_file = request.FILES.get('icon_logo_upload')
         if icon_file:
@@ -2470,6 +2579,13 @@ class AdminSearchSectionDetailView(APIView):
     )
     def patch(self, request, pk):
         section = get_object_or_404(SearchSection, pk=pk)
+        if is_employee(request.user):
+            direct_relations = {'songs', 'albums', 'playlists'} & set(request.data.keys())
+            if direct_relations:
+                return Response(
+                    {field: ['محتوای بخش باید از انتخاب‌گر همین صفحه ثبت شود.'] for field in direct_relations},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         data = request.data.copy()
         icon_file = request.FILES.get('icon_logo_upload')
         if icon_file:
@@ -2957,6 +3073,13 @@ class AdminSupportTicketDetailView(APIView):
 
     def patch(self, request, pk):
         ticket = get_object_or_404(SupportTicket, pk=pk)
+        if is_employee(request.user):
+            forbidden = set(request.data.keys()) - {'status', 'admin_response'}
+            if forbidden:
+                return Response(
+                    {field: ['این فیلد از بخش رسیدگی به تیکت قابل تغییر نیست.'] for field in forbidden},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         serializer = AdminSupportTicketSerializer(ticket, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
