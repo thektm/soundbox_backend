@@ -15,6 +15,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .admin_permissions import IsAdminPanelUser, has_employee_permission, is_employee, require_employee_permission
 from .models import (
     Album,
     Artist,
@@ -52,6 +53,43 @@ from .release_service import (
 from .utils import MediaPipelineError, cleanup_r2_urls, upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename
 
 logger = logging.getLogger(__name__)
+
+
+ADMIN_CREATED_HISTORY_NOTE = 'پیش‌نویس انتشار توسط مدیر ایجاد شد.'
+
+
+def _admin_created_release(release: ArtistRelease) -> bool:
+    # No schema change is needed: the baseline already records an immutable first
+    # status-history row for each workflow. This survives creator deactivation/deletion.
+    return release.status_history.filter(
+        from_status='',
+        to_status=ArtistRelease.STATUS_DRAFT,
+        note=ADMIN_CREATED_HISTORY_NOTE,
+    ).exists()
+
+
+def _require_employee_release_read(user, release: ArtistRelease) -> None:
+    if not is_employee(user):
+        return
+    admin_created = _admin_created_release(release)
+    if release.status == ArtistRelease.STATUS_DRAFT:
+        if admin_created and has_employee_permission(user, 'release_add.view'):
+            return
+    elif has_employee_permission(user, 'releases.view'):
+        return
+    elif admin_created and has_employee_permission(user, 'release_add.view'):
+        return
+    from rest_framework.exceptions import PermissionDenied
+    raise PermissionDenied('شما اجازه مشاهده این انتشار را ندارید.')
+
+
+def _require_employee_admin_release(user, release: ArtistRelease, permission: str = 'release_add.edit') -> None:
+    if not is_employee(user):
+        return
+    require_employee_permission(user, permission)
+    if not _admin_created_release(release):
+        from rest_framework.exceptions import PermissionDenied
+        raise PermissionDenied('این انتشار متعلق به جریان افزودن انتشار مدیریت نیست.')
 
 
 def _artist_for_user(user):
@@ -997,11 +1035,27 @@ class ArtistContributorListCreateView(APIView):
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         publish_due_releases()
         queryset = release_queryset()
+        if is_employee(request.user):
+            can_add = has_employee_permission(request.user, 'release_add.view')
+            can_review = has_employee_permission(request.user, 'releases.view')
+            admin_created = Q(
+                status_history__from_status='',
+                status_history__to_status=ArtistRelease.STATUS_DRAFT,
+                status_history__note=ADMIN_CREATED_HISTORY_NOTE,
+            )
+            if can_add and can_review:
+                queryset = queryset.filter(~Q(status=ArtistRelease.STATUS_DRAFT) | admin_created).distinct()
+            elif can_add:
+                queryset = queryset.filter(admin_created).distinct()
+            elif can_review:
+                queryset = queryset.exclude(status=ArtistRelease.STATUS_DRAFT)
+            else:
+                queryset = queryset.none()
         query = str(request.query_params.get('q') or '').strip()
         status_filter = str(request.query_params.get('status') or '').strip()
         if not status_filter:
@@ -1065,22 +1119,24 @@ class AdminReleaseListView(APIView):
             release.save(update_fields=['release_metadata', 'updated_at'])
             ArtistReleaseStatusHistory.objects.create(
                 release=release, from_status='', to_status=ArtistRelease.STATUS_DRAFT,
-                note='پیش‌نویس انتشار توسط مدیر ایجاد شد.', actor=request.user,
+                note=ADMIN_CREATED_HISTORY_NOTE, actor=request.user,
             )
         return Response(serialize_release(release_queryset().get(pk=release.pk), request, include_history=True), status=status.HTTP_201_CREATED)
 
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request, pk):
         release = get_object_or_404(release_queryset(), pk=pk)
+        _require_employee_release_read(request.user, release)
         return Response(serialize_release(release, request, include_history=True))
 
     def patch(self, request, pk):
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            _require_employee_admin_release(request.user, release, 'release_add.edit')
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
@@ -1178,6 +1234,9 @@ class AdminReleaseDetailView(APIView):
                 ArtistRelease.objects.select_for_update().select_related('album'),
                 pk=pk,
             )
+            if is_employee(request.user) and release.status == ArtistRelease.STATUS_DRAFT:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('حذف دائمی پیش‌نویس از جریان بررسی انتشارها مجاز نیست.')
             links = list(
                 ArtistReleaseTrack.objects.select_for_update()
                 .select_related('song')
@@ -1239,11 +1298,12 @@ class AdminReleaseDetailView(APIView):
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseTracksView(APIView):
     """Admin-owned tracklist editor using the same release workspace semantics as artists."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def post(self, request, pk):
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            _require_employee_admin_release(request.user, release, 'release_add.edit')
             if release.status != ArtistRelease.STATUS_DRAFT:
                 return Response({'detail': 'برای تغییر ترک‌لیست، انتشار باید در وضعیت پیش‌نویس باشد.'}, status=status.HTTP_409_CONFLICT)
             conflict = _lock_version_error(release, request.data)
@@ -1300,6 +1360,7 @@ class AdminReleaseTracksView(APIView):
             return Response({'song_ids': ['حداقل یک ترک انتخاب کنید.']}, status=status.HTTP_400_BAD_REQUEST)
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            _require_employee_admin_release(request.user, release, 'release_add.edit')
             if release.status != ArtistRelease.STATUS_DRAFT:
                 return Response({'detail': 'برای حذف ترک، انتشار باید در وضعیت پیش‌نویس باشد.'}, status=status.HTTP_409_CONFLICT)
             conflict = _lock_version_error(release, request.data)
@@ -1317,11 +1378,12 @@ class AdminReleaseTracksView(APIView):
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseTrackUploadView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, pk):
         release = get_object_or_404(ArtistRelease.objects.select_related('artist'), pk=pk)
+        _require_employee_admin_release(request.user, release, 'release_add.edit')
         if release.status != ArtistRelease.STATUS_DRAFT:
             return Response({'detail': 'بارگذاری ترک جدید فقط برای پیش‌نویس انتشار مجاز است.'}, status=status.HTTP_409_CONFLICT)
         audio_file = request.FILES.get('audio_file')
@@ -1370,6 +1432,7 @@ class AdminReleaseTrackUploadView(APIView):
 
             with transaction.atomic():
                 locked = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+                _require_employee_admin_release(request.user, locked, 'release_add.edit')
                 if locked.status != ArtistRelease.STATUS_DRAFT:
                     raise ValueError('release_not_draft')
                 conflict = _lock_version_error(locked, request.data)
@@ -1415,10 +1478,14 @@ class AdminReleaseTrackUploadView(APIView):
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseArtworkView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, pk):
+        release_scope = get_object_or_404(ArtistRelease.objects.only('pk', 'status'), pk=pk)
+        _require_employee_admin_release(request.user, release_scope, 'release_add.edit')
+        if release_scope.status != ArtistRelease.STATUS_DRAFT:
+            return Response({'detail': 'تغییر کاور در این صفحه فقط برای پیش‌نویس مجاز است.'}, status=status.HTTP_409_CONFLICT)
         image_file = request.FILES.get('cover_image')
         if not image_file:
             return Response({'cover_image': ['انتخاب تصویر کاور الزامی است.']}, status=status.HTTP_400_BAD_REQUEST)
@@ -1442,6 +1509,7 @@ class AdminReleaseArtworkView(APIView):
         old_url = ''
         with transaction.atomic():
             release = get_object_or_404(ArtistRelease.objects.select_for_update(), pk=pk)
+            _require_employee_admin_release(request.user, release, 'release_add.edit')
             if release.status != ArtistRelease.STATUS_DRAFT:
                 cleanup_r2_urls([url])
                 return Response({'detail': 'تغییر کاور در این صفحه فقط برای پیش‌نویس مجاز است.'}, status=status.HTTP_409_CONFLICT)
@@ -1464,12 +1532,18 @@ class AdminReleaseArtworkView(APIView):
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseValidateView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def post(self, request, pk):
         with transaction.atomic():
             locked = get_object_or_404(ArtistRelease.objects.select_for_update().only('pk'), pk=pk)
             release = release_queryset().get(pk=locked.pk)
+            if is_employee(request.user):
+                if release.status == ArtistRelease.STATUS_DRAFT:
+                    _require_employee_admin_release(request.user, release, 'release_add.edit')
+                elif not (has_employee_permission(request.user, 'releases.review') or has_employee_permission(request.user, 'releases.publish')):
+                    from rest_framework.exceptions import PermissionDenied
+                    raise PermissionDenied('شما اجازه اعتبارسنجی این انتشار را ندارید.')
             conflict = _lock_version_error(release, request.data)
             if conflict:
                 return conflict
@@ -1484,7 +1558,7 @@ class AdminReleaseValidateView(APIView):
 
 @extend_schema(tags=['Admin Releases'])
 class AdminReleaseActionView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def post(self, request, pk):
         action = str(request.data.get('action') or '').strip()
@@ -1517,6 +1591,21 @@ class AdminReleaseActionView(APIView):
                 return Response({
                     'detail': f"انجام این عملیات در وضعیت فعلی انتشار مجاز نیست."
                 }, status=status.HTTP_409_CONFLICT)
+
+            if is_employee(request.user):
+                # The same action endpoint handles both admin-authored drafts and
+                # artist review submissions; enforce the responsibility after the
+                # actual release state is loaded, not only by the button shown.
+                if action in {'publish', 'schedule'}:
+                    if release.status == ArtistRelease.STATUS_DRAFT:
+                        _require_employee_admin_release(request.user, release, 'release_add.publish')
+                    else:
+                        require_employee_permission(request.user, 'releases.publish')
+                elif action == 'reopen':
+                    require_employee_permission(
+                        request.user,
+                        'releases.takedown' if release.status == ArtistRelease.STATUS_TAKEN_DOWN else 'releases.review',
+                    )
 
             removal = release_removal_state(release)
             if removal['artist_deleted'] and action in {'publish', 'schedule', 'reopen', 'return_to_review'}:

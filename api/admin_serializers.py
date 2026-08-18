@@ -12,6 +12,10 @@ from django.db import transaction
 from django.utils.text import slugify
 from .song_play_metrics import hydrate_song_play_counts
 from .utils import generate_signed_r2_url, public_media_url, r2_object_key
+from .admin_permissions import (
+    ALLOWED_PERMISSION_KEYS, employee_permissions_payload, employee_session_version,
+    has_employee_permission, is_employee, normalize_employee_permissions,
+)
 
 User = get_user_model()
 
@@ -150,6 +154,25 @@ class AdminUserSerializer(serializers.ModelSerializer):
         profile = getattr(obj, 'artist_profile', None)
         return profile.verified if profile is not None else None
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        if is_employee(user):
+            submitted = set(getattr(self, 'initial_data', {}) or {})
+            owner_only = submitted & {'roles', 'is_staff'}
+            if owner_only:
+                raise serializers.ValidationError({
+                    field: 'این فیلد فقط توسط مدیر اصلی قابل تغییر است.' for field in owner_only
+                })
+            ban_fields = submitted & {'is_active', 'is_banned'}
+            if ban_fields and not has_employee_permission(user, 'users.ban'):
+                raise serializers.ValidationError({
+                    field: 'برای تغییر وضعیت حساب، دسترسی مسدودسازی کاربران لازم است.'
+                    for field in ban_fields
+                })
+        return attrs
+
     class Meta:
         model = User
         fields = [
@@ -161,32 +184,118 @@ class AdminUserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'unique_id', 'date_joined', 'last_login_at']
 
 class AdminEmployeeSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=False)
+    role = serializers.ChoiceField(
+        choices=[User.ROLE_MANAGER, User.ROLE_SUPERVISOR], required=False
+    )
+    password = serializers.CharField(
+        write_only=True, required=False, min_length=8, trim_whitespace=False
+    )
 
     class Meta:
         model = User
         fields = [
             'id', 'phone_number', 'first_name', 'last_name', 'email',
-            'roles', 'is_active', 'is_verified', 'date_joined',
+            'role', 'roles', 'is_active', 'date_joined', 'last_login_at',
             'permissions', 'password'
         ]
-        read_only_fields = ['id', 'date_joined']
+        read_only_fields = ['id', 'roles', 'date_joined', 'last_login_at']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        roles = list(instance.roles or [])
+        if User.ROLE_MANAGER in roles:
+            data['role'] = User.ROLE_MANAGER
+        elif User.ROLE_SUPERVISOR in roles:
+            data['role'] = User.ROLE_SUPERVISOR
+        else:
+            data['role'] = None
+        data['permissions'] = normalize_employee_permissions(instance.permissions)
+        return data
+
+    @staticmethod
+    def _ascii_digits(value):
+        import unicodedata
+        output = []
+        for char in str(value or ''):
+            try:
+                output.append(str(unicodedata.digit(char)))
+            except (TypeError, ValueError):
+                if char.isascii() and char.isdigit():
+                    output.append(char)
+        return ''.join(output)
+
+    def validate_phone_number(self, value):
+        digits = self._ascii_digits(value)
+        if digits.startswith('0098') and len(digits) == 14:
+            digits = '0' + digits[4:]
+        elif digits.startswith('98') and len(digits) == 12:
+            digits = '0' + digits[2:]
+        if len(digits) != 11 or not digits.startswith('09'):
+            raise serializers.ValidationError('شماره همراه را به‌صورت 09xxxxxxxxx وارد کنید.')
+        qs = User.objects.filter(phone_number=digits)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('این شماره همراه قبلاً در سیستم ثبت شده است.')
+        return digits
+
+    def validate_permissions(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('ساختار دسترسی‌ها معتبر نیست.')
+        unknown = set(value) - ALLOWED_PERMISSION_KEYS
+        if unknown:
+            raise serializers.ValidationError('یک یا چند دسترسی ناشناخته ارسال شده است.')
+        return normalize_employee_permissions(value)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None:
+            if not attrs.get('password'):
+                raise serializers.ValidationError({'password': 'رمز عبور اولیه الزامی است.'})
+            attrs.setdefault('role', User.ROLE_SUPERVISOR)
+            attrs['permissions'] = normalize_employee_permissions(attrs.get('permissions', {}))
+        elif 'password' in attrs:
+            raise serializers.ValidationError({
+                'password': 'برای تغییر رمز عبور از بخش مخصوص تغییر رمز استفاده کنید.'
+            })
+        return attrs
 
     def create(self, validated_data):
-        password = validated_data.pop('password', None)
-        user = super().create(validated_data)
-        if password:
-            user.set_password(password)
-            user.save()
-        return user
+        password = validated_data.pop('password')
+        role = validated_data.pop('role', User.ROLE_SUPERVISOR)
+        permissions_value = employee_permissions_payload(
+            validated_data.pop('permissions', {}), session_version=1
+        )
+        return User.objects.create_user(
+            password=password,
+            roles=[role],
+            permissions=permissions_value,
+            is_staff=False,
+            is_superuser=False,
+            is_verified=True,
+            is_banned=False,
+            **validated_data,
+        )
 
     def update(self, instance, validated_data):
-        password = validated_data.pop('password', None)
-        user = super().update(instance, validated_data)
-        if password:
-            user.set_password(password)
-            user.save()
-        return user
+        role = validated_data.pop('role', None)
+        permissions_present = 'permissions' in validated_data
+        permissions_value = validated_data.pop('permissions', None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if role is not None:
+            instance.roles = [role]
+        if permissions_present:
+            instance.permissions = employee_permissions_payload(
+                permissions_value,
+                session_version=employee_session_version(instance),
+            )
+        instance.is_staff = False
+        instance.is_superuser = False
+        instance.is_banned = False
+        instance.is_verified = True
+        instance.save()
+        return instance
 
 class AdminArtistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):
     translation_pairs = (('name', 'name_en'), ('artistic_name', 'artistic_name_en'), ('city', 'city_en'), ('address', 'address_en'), ('bio', 'bio_en'))
@@ -211,6 +320,18 @@ class AdminArtistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTrans
         links = obj.social_account_links.select_related('platform').all()
         return [{'id': link.id, 'platform': link.platform_id, 'platform_name': link.platform.name, 'platform_slug': link.platform.slug, 'username': link.username, 'url': link.url} for link in links]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        if is_employee(user) and not has_employee_permission(user, 'artists.kyc'):
+            for field in ('date_of_birth', 'address', 'address_en', 'id_number'):
+                data[field] = None
+            data['kyc_hidden'] = True
+        else:
+            data['kyc_hidden'] = False
+        return data
+
 class AdminArtistAuthSerializer(AdminSignedMediaSerializerMixin, serializers.ModelSerializer):
     profile_image = serializers.SerializerMethodField()
     national_id_image = serializers.SerializerMethodField()
@@ -233,6 +354,18 @@ class AdminArtistAuthSerializer(AdminSignedMediaSerializerMixin, serializers.Mod
 
     def get_national_id_image(self, obj):
         return self._verification_media(obj, 'national_id_image')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request is not None else None
+        if is_employee(user) and not has_employee_permission(user, 'artists.kyc'):
+            for field in ('national_id', 'national_id_image', 'birth_date', 'address', 'address_en'):
+                data[field] = None
+            data['kyc_hidden'] = True
+        else:
+            data['kyc_hidden'] = False
+        return data
 
     class Meta:
         model = ArtistAuth

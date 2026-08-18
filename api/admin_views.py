@@ -8,7 +8,7 @@ from .models import (
     User, Artist, ArtistAuth, Song, Album, Genre, SubGenre, Mood, Tag, Report, 
     PlayConfiguration, BannerAd, AudioAd, PaymentTransaction, DepositRequest,
     SearchSection, EventPlaylist, Playlist, SupportTicket, SongPromotion,
-    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory, ArtistSocialAccount, SocialPlatform
+    ArtistRelease, ArtistReleaseTrack, ArtistReleaseStatusHistory, ArtistSocialAccount, SocialPlatform, RefreshToken
 )
 from .models import PlayCount
 from django.utils import timezone
@@ -28,12 +28,20 @@ from .admin_serializers import (
 from rest_framework.parsers import MultiPartParser, FormParser
 from .utils import upload_file_to_r2, convert_to_128kbps, get_audio_info, make_safe_filename, generate_signed_r2_url, check_r2_storage, cleanup_r2_urls
 from .song_play_metrics import apply_annotated_song_play_counts, hydrate_song_play_counts
+from .admin_permissions import (
+    IsAdminPanelSession, IsAdminPanelUser, IsOwnerAdmin, bump_employee_session_version,
+    employee_role, has_employee_permission, is_employee, is_employee_account, is_platform_admin,
+    panel_identity, require_employee_permission, normalize_employee_permissions,
+)
 from .performance import CATALOG_VERSION_KEY, cache_increment
 import os
 import json
+import logging
 from PIL import Image
 from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
+
+logger = logging.getLogger(__name__)
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
@@ -329,7 +337,7 @@ def _transfer_reverse_many_to_many(source, replacement, relation_name, chunk_siz
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminTaxonomyListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         items = {}
@@ -363,7 +371,7 @@ class AdminTaxonomyListView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminTaxonomyDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def _get(self, kind, pk):
         model = _taxonomy_model(kind)
@@ -686,13 +694,66 @@ def _set_playlist_song_order(playlist, songs):
     for song in unique_songs:
         through.objects.create(playlist_id=playlist.pk, song_id=song.pk)
 
+def _exclude_employee_accounts_for_employee(queryset, request):
+    if is_employee(request.user):
+        # Employee sessions must never receive peer employee accounts or owner/staff
+        # accounts from the Users surface, even when probing filters manually.
+        return queryset.exclude(
+            Q(roles__contains=User.ROLE_MANAGER)
+            | Q(roles__contains=User.ROLE_SUPERVISOR)
+            | Q(roles__contains=User.ROLE_ADMIN)
+            | Q(is_staff=True)
+            | Q(is_superuser=True)
+        )
+    return queryset
+
+
+def _visible_admin_user_or_404(request, pk):
+    user = get_object_or_404(User.objects.select_related('artist_profile'), pk=pk)
+    if is_employee(request.user):
+        roles = set(user.roles or [])
+        if is_employee_account(user) or user.is_staff or user.is_superuser or User.ROLE_ADMIN in roles:
+            from django.http import Http404
+            raise Http404
+    return user
+
+
+def _employee_queryset():
+    return User.objects.filter(is_staff=False, is_superuser=False).filter(
+        Q(roles=[User.ROLE_MANAGER]) | Q(roles=[User.ROLE_SUPERVISOR])
+    )
+
+
+def _revoke_employee_sessions(user):
+    RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
+
+
+def _employee_can_edit_song_via_admin_release(user, song) -> bool:
+    if not is_employee(user) or not has_employee_permission(user, 'release_add.edit'):
+        return False
+    return ArtistReleaseTrack.objects.filter(
+        song=song,
+        release__status=ArtistRelease.STATUS_DRAFT,
+        release__status_history__from_status='',
+        release__status_history__to_status=ArtistRelease.STATUS_DRAFT,
+        release__status_history__note='پیش‌نویس انتشار توسط مدیر ایجاد شد.',
+    ).exists()
+
+
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         role = str(request.query_params.get('role') or User.ROLE_AUDIENCE).strip()
-        queryset = User.objects.filter(roles__contains=role).select_related('artist_profile')
+        if role == 'employee':
+            if not is_platform_admin(request.user):
+                queryset = User.objects.none()
+            else:
+                queryset = _employee_queryset().select_related('artist_profile')
+        else:
+            queryset = User.objects.filter(roles__contains=role).select_related('artist_profile')
+            queryset = _exclude_employee_accounts_for_employee(queryset, request)
         query = str(request.query_params.get('q') or '').strip()
         if query:
             queryset = queryset.filter(
@@ -703,6 +764,8 @@ class AdminUserListView(APIView):
         state = str(request.query_params.get('state') or '').strip()
         if state == 'active':
             queryset = queryset.filter(is_active=True, is_banned=False)
+        elif state == 'inactive':
+            queryset = queryset.filter(is_active=False)
         elif state == 'banned':
             queryset = queryset.filter(is_banned=True)
         plan = str(request.query_params.get('plan') or '').strip()
@@ -715,12 +778,12 @@ class AdminUserListView(APIView):
 
         paginator = AdminPagination()
         page = paginator.paginate_queryset(queryset, request)
-        return paginator.get_paginated_response(AdminUserSerializer(page, many=True).data)
+        return paginator.get_paginated_response(AdminUserSerializer(page, many=True, context={'request': request}).data)
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="جزئیات کاربر",
@@ -728,8 +791,8 @@ class AdminUserDetailView(APIView):
         responses={200: AdminUserSerializer}
     )
     def get(self, request, pk):
-        user = get_object_or_404(User.objects.select_related('artist_profile'), pk=pk)
-        serializer = AdminUserSerializer(user)
+        user = _visible_admin_user_or_404(request, pk)
+        serializer = AdminUserSerializer(user, context={'request': request})
         return Response(serializer.data)
 
     @extend_schema(
@@ -739,8 +802,8 @@ class AdminUserDetailView(APIView):
         responses={200: AdminUserSerializer}
     )
     def put(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
-        serializer = AdminUserSerializer(user, data=request.data)
+        user = _visible_admin_user_or_404(request, pk)
+        serializer = AdminUserSerializer(user, data=request.data, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -753,8 +816,8 @@ class AdminUserDetailView(APIView):
         responses={200: AdminUserSerializer}
     )
     def patch(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
-        serializer = AdminUserSerializer(user, data=request.data, partial=True)
+        user = _visible_admin_user_or_404(request, pk)
+        serializer = AdminUserSerializer(user, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -766,7 +829,7 @@ class AdminUserDetailView(APIView):
         responses={204: None}
     )
     def delete(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
+        user = _visible_admin_user_or_404(request, pk)
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -774,7 +837,7 @@ class AdminUserDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserBanView(APIView):
     """Soft, reversible account blocking. User content is never deleted here."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def post(self, request):
         user_id = request.data.get('user_id')
@@ -783,7 +846,10 @@ class AdminUserBanView(APIView):
             return Response({'detail': 'شناسه کاربر الزامی است.'}, status=status.HTTP_400_BAD_REQUEST)
         if isinstance(banned, str):
             banned = banned.strip().lower() in {'1', 'true', 'yes', 'on'}
-        user = get_object_or_404(User, pk=user_id)
+        user = _visible_admin_user_or_404(request, user_id)
+        if is_employee(request.user):
+            required = 'artists.ban' if User.ROLE_ARTIST in set(user.roles or []) else 'users.ban'
+            require_employee_permission(request.user, required)
         if user.pk == request.user.pk:
             return Response({'detail': 'امکان مسدود کردن حساب مدیر فعلی وجود ندارد.'}, status=status.HTTP_400_BAD_REQUEST)
         if user.is_staff:
@@ -794,7 +860,7 @@ class AdminUserBanView(APIView):
         user.save(update_fields=['is_banned', 'is_active'])
         return Response({
             'message': 'کاربر با موفقیت مسدود شد.' if banned else 'مسدودی کاربر با موفقیت برداشته شد.',
-            'user': AdminUserSerializer(user).data,
+            'user': AdminUserSerializer(user, context={'request': request}).data,
         })
 
 
@@ -888,7 +954,7 @@ def _admin_artist_payload(request):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     def get(self, request):
@@ -906,13 +972,15 @@ class AdminArtistListView(APIView):
         queryset = queryset.order_by('-created_at', '-id')
         paginator = AdminPagination()
         page = paginator.paginate_queryset(queryset, request)
-        return paginator.get_paginated_response(AdminArtistSerializer(page, many=True).data)
+        return paginator.get_paginated_response(AdminArtistSerializer(page, many=True, context={'request': request}).data)
 
     @extend_schema(summary="ایجاد هنرمند مستقل توسط مدیر", responses={201: AdminArtistSerializer})
     def post(self, request):
         uploaded = []
         try:
             data = _admin_artist_payload(request)
+            if is_employee(request.user) and any(str(data.get(field) or '').strip() for field in ('date_of_birth', 'address', 'address_en', 'id_number')):
+                require_employee_permission(request.user, 'artists.kyc')
             social_map = _admin_artist_social_map(request)
             profile_url = _admin_artist_upload(request, 'profile_image_upload', 'artists/profile')
             if profile_url:
@@ -922,6 +990,8 @@ class AdminArtistListView(APIView):
             if banner_url:
                 data['banner_image'] = banner_url
                 uploaded.append(banner_url)
+            if is_employee(request.user) and bool(data.get('verified')):
+                require_employee_permission(request.user, 'artists.verify')
             serializer = AdminArtistSerializer(data=data, context={'request': request})
             serializer.is_valid(raise_exception=True)
             with transaction.atomic():
@@ -938,7 +1008,7 @@ class AdminArtistListView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -948,7 +1018,7 @@ class AdminArtistDetailView(APIView):
     )
     def get(self, request, pk):
         artist = get_object_or_404(Artist, pk=pk)
-        serializer = AdminArtistSerializer(artist)
+        serializer = AdminArtistSerializer(artist, context={'request': request})
         return Response(serializer.data)
 
     @extend_schema(
@@ -976,6 +1046,10 @@ class AdminArtistDetailView(APIView):
         old_media = []
         try:
             data = _admin_artist_payload(request)
+            if is_employee(request.user) and any(field in data for field in ('date_of_birth', 'address', 'address_en', 'id_number')):
+                require_employee_permission(request.user, 'artists.kyc')
+            if is_employee(request.user) and 'verified' in data and bool(data.get('verified')) != bool(artist.verified):
+                require_employee_permission(request.user, 'artists.verify')
             social_map = _admin_artist_social_map(request)
             profile_url = _admin_artist_upload(request, 'profile_image_upload', 'artists/profile')
             if profile_url:
@@ -1039,7 +1113,7 @@ class AdminArtistDetailView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPendingArtistListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="لیست درخواست‌های هنرمند",
@@ -1054,12 +1128,12 @@ class AdminPendingArtistListView(APIView):
         
         paginator = AdminPagination()
         result_page = paginator.paginate_queryset(pending_auths, request)
-        serializer = AdminArtistAuthSerializer(result_page, many=True)
+        serializer = AdminArtistAuthSerializer(result_page, many=True, context={'request': request})
         return paginator.get_paginated_response(serializer.data)
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPendingArtistDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="جزئیات درخواست هنرمند",
@@ -1068,7 +1142,7 @@ class AdminPendingArtistDetailView(APIView):
     )
     def get(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
-        serializer = AdminArtistAuthSerializer(auth)
+        serializer = AdminArtistAuthSerializer(auth, context={'request': request})
         return Response(serializer.data)
 
     @extend_schema(
@@ -1079,7 +1153,7 @@ class AdminPendingArtistDetailView(APIView):
     )
     def put(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
-        serializer = AdminArtistAuthSerializer(auth, data=request.data)
+        serializer = AdminArtistAuthSerializer(auth, data=request.data, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -1093,7 +1167,7 @@ class AdminPendingArtistDetailView(APIView):
     )
     def patch(self, request, pk):
         auth = get_object_or_404(ArtistAuth, pk=pk)
-        serializer = AdminArtistAuthSerializer(auth, data=request.data, partial=True)
+        serializer = AdminArtistAuthSerializer(auth, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -1113,7 +1187,7 @@ class AdminPendingArtistDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminHomeSummaryView(APIView):
     """Structured product dashboard: audience, artists, streams and money."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsOwnerAdmin]
 
     @staticmethod
     def _decimal_total(queryset, field='amount'):
@@ -1212,7 +1286,7 @@ class AdminHomeSummaryView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminUserSearchView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         typ = str(request.query_params.get('type') or 'audience').strip()
@@ -1220,6 +1294,7 @@ class AdminUserSearchView(APIView):
         paginator = AdminPagination()
         if typ == 'audience':
             qs = User.objects.filter(roles__contains=User.ROLE_AUDIENCE)
+            qs = _exclude_employee_accounts_for_employee(qs, request)
             if query:
                 qs = qs.filter(
                     Q(phone_number__icontains=query) | Q(unique_id__icontains=query)
@@ -1250,14 +1325,14 @@ class AdminUserSearchView(APIView):
         else:
             return Response({'detail': 'نوع جستجو معتبر نیست.'}, status=status.HTTP_400_BAD_REQUEST)
         page = paginator.paginate_queryset(qs, request)
-        return paginator.get_paginated_response(serializer_cls(page, many=True).data)
+        return paginator.get_paginated_response(serializer_cls(page, many=True, context={'request': request}).data)
 
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSongListView(APIView):
     """List songs for admin with status filtering."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -1473,7 +1548,7 @@ class AdminSongListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSongDetailView(APIView):
     """Retrieve, update or delete a song for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -1495,6 +1570,10 @@ class AdminSongDetailView(APIView):
     )
     def patch(self, request, pk):
         song = get_object_or_404(Song.objects.all(), pk=pk)
+        if is_employee(request.user) and not has_employee_permission(request.user, 'songs.edit'):
+            if not _employee_can_edit_song_via_admin_release(request.user, song):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('این آهنگ در پیش‌نویس انتشار مدیریتی قابل ویرایش نیست.')
         return self._update_song(request, song, partial=True)
 
     @extend_schema(
@@ -1505,6 +1584,10 @@ class AdminSongDetailView(APIView):
     )
     def put(self, request, pk):
         song = get_object_or_404(Song.objects.all(), pk=pk)
+        if is_employee(request.user) and not has_employee_permission(request.user, 'songs.edit'):
+            if not _employee_can_edit_song_via_admin_release(request.user, song):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('این آهنگ در پیش‌نویس انتشار مدیریتی قابل ویرایش نیست.')
         return self._update_song(request, song, partial=False)
 
     @extend_schema(
@@ -1643,7 +1726,7 @@ class AdminSongDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminReportListView(APIView):
     """List reports for admin with filtering."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="لیست گزارش‌ها",
@@ -1678,7 +1761,7 @@ class AdminReportListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminReportDetailView(APIView):
     """Retrieve or update a report for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="جزئیات گزارش",
@@ -1725,7 +1808,7 @@ class AdminReportDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPlayConfigurationView(APIView):
     """View for admin to manage global play and price settings."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="تنظیمات پخش و قیمت‌گذاری",
@@ -1760,7 +1843,7 @@ class AdminPlayConfigurationView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminBannerAdListView(APIView):
     """List and create banner ads for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -1800,7 +1883,7 @@ class AdminBannerAdListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminBannerAdDetailView(APIView):
     """Retrieve, update or delete a banner ad for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -1849,7 +1932,7 @@ class AdminBannerAdDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminAudioAdListView(APIView):
     """List and create audio ads for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -1917,7 +2000,7 @@ class AdminAudioAdListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminAudioAdDetailView(APIView):
     """Retrieve, update or delete an audio ad for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -1981,7 +2064,7 @@ class AdminAudioAdDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminAlbumListView(APIView):
     """List albums for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="لیست آلبوم‌ها",
@@ -2022,7 +2105,7 @@ class AdminAlbumListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminAlbumDetailView(APIView):
     """Retrieve, update or delete an album for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2112,7 +2195,7 @@ class AdminAlbumDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminAlbumSongActionView(APIView):
     """Actions on songs within an album: remove from album or delete song."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @extend_schema(
         summary="عملیات روی آهنگ‌های آلبوم",
@@ -2146,79 +2229,65 @@ class AdminAlbumSongActionView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminFinanceSummaryView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     @staticmethod
     def _total(qs, field='amount'):
         return float(qs.aggregate(total=Sum(field))['total'] or 0)
 
     def get(self, request):
+        show_payments = is_platform_admin(request.user) or has_employee_permission(request.user, 'finance.payments')
+        show_payouts = is_platform_admin(request.user) or has_employee_permission(request.user, 'finance.payouts')
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         last_7 = now - timedelta(days=7)
         last_30 = now - timedelta(days=30)
 
         def period(start_date, end_date=None):
-            payments = PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_SUCCESS, created_at__gte=start_date)
-            payouts_done = DepositRequest.objects.filter(status=DepositRequest.STATUS_DONE, submission_date__gte=start_date)
-            payouts_open = DepositRequest.objects.filter(
-                status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED], submission_date__gte=start_date
-            )
-            if end_date:
-                payments = payments.filter(created_at__lte=end_date)
-                payouts_done = payouts_done.filter(submission_date__lte=end_date)
-                payouts_open = payouts_open.filter(submission_date__lte=end_date)
-            return {
-                'revenue': self._total(payments),
-                'successful_payment_count': payments.count(),
-                'paid_to_artists': self._total(payouts_done),
-                'paid_to_artists_count': payouts_done.count(),
-                'pending_artist_payouts': self._total(payouts_open),
-                'pending_artist_payout_count': payouts_open.count(),
-                'total_payments': self._total(payments),
-                'total_deposits': self._total(payouts_done),
-                'count_payments': payments.count(),
-                'count_deposits': payouts_done.count(),
-            }
+            data = {}
+            if show_payments:
+                payments = PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_SUCCESS, created_at__gte=start_date)
+                if end_date:
+                    payments = payments.filter(created_at__lte=end_date)
+                total = self._total(payments)
+                data.update({'revenue': total, 'successful_payment_count': payments.count(), 'total_payments': total, 'count_payments': payments.count()})
+            if show_payouts:
+                done = DepositRequest.objects.filter(status=DepositRequest.STATUS_DONE, submission_date__gte=start_date)
+                opened = DepositRequest.objects.filter(status__in=[DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED], submission_date__gte=start_date)
+                if end_date:
+                    done = done.filter(submission_date__lte=end_date)
+                    opened = opened.filter(submission_date__lte=end_date)
+                total = self._total(done)
+                data.update({'paid_to_artists': total, 'paid_to_artists_count': done.count(), 'pending_artist_payouts': self._total(opened), 'pending_artist_payout_count': opened.count(), 'total_deposits': total, 'count_deposits': done.count()})
+            return data
 
         all_start = timezone.make_aware(timezone.datetime(2000, 1, 1))
-        result = {
-            'today': period(today_start),
-            'last_7_days': period(last_7),
-            'last_30_days': period(last_30),
-            'all_time': period(all_start),
-            'payment_status': {
+        result = {'today': period(today_start), 'last_7_days': period(last_7), 'last_30_days': period(last_30), 'all_time': period(all_start)}
+        if show_payments:
+            result['payment_status'] = {
                 'pending': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_PENDING).count(),
                 'success': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_SUCCESS).count(),
                 'failed': PaymentTransaction.objects.filter(status=PaymentTransaction.STATUS_FAILED).count(),
-            },
-            'payout_status': {
-                value: DepositRequest.objects.filter(status=value).count()
-                for value in [DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_REJECTED, DepositRequest.STATUS_DONE]
-            },
-        }
+            }
+        if show_payouts:
+            result['payout_status'] = {value: DepositRequest.objects.filter(status=value).count() for value in [DepositRequest.STATUS_PENDING, DepositRequest.STATUS_APPROVED, DepositRequest.STATUS_REJECTED, DepositRequest.STATUS_DONE]}
         start_param = request.query_params.get('start')
         end_param = request.query_params.get('end')
         if start_param and end_param:
             try:
-                start_dt = timezone.datetime.fromisoformat(start_param)
-                end_dt = timezone.datetime.fromisoformat(end_param)
-                if timezone.is_naive(start_dt):
-                    start_dt = timezone.make_aware(start_dt)
-                if timezone.is_naive(end_dt):
-                    end_dt = timezone.make_aware(end_dt)
-                if len(end_param) == 10:
-                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                start_dt = timezone.datetime.fromisoformat(start_param); end_dt = timezone.datetime.fromisoformat(end_param)
+                if timezone.is_naive(start_dt): start_dt = timezone.make_aware(start_dt)
+                if timezone.is_naive(end_dt): end_dt = timezone.make_aware(end_dt)
+                if len(end_param) == 10: end_dt = end_dt.replace(hour=23, minute=59, second=59)
                 result['custom_period'] = period(start_dt, end_dt)
             except (TypeError, ValueError):
                 result['custom_period_error'] = 'فرمت تاریخ معتبر نیست.'
         return Response(result)
 
 
-
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminArtistEarningsListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         queryset = Artist.objects.select_related('user').annotate(
@@ -2277,7 +2346,7 @@ class AdminArtistEarningsListView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPaymentTransactionListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         queryset = PaymentTransaction.objects.select_related('user').all()
@@ -2305,7 +2374,7 @@ class AdminPaymentTransactionListView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminDepositRequestListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         queryset = DepositRequest.objects.select_related('artist', 'artist__user').all()
@@ -2337,7 +2406,7 @@ class AdminDepositRequestListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSearchSectionListView(APIView):
     """List and create search sections for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2380,7 +2449,7 @@ class AdminSearchSectionListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSearchSectionDetailView(APIView):
     """Retrieve, update or delete a search section for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2429,7 +2498,7 @@ class AdminSearchSectionDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminEventPlaylistListView(APIView):
     """List and create event playlist groups for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2469,7 +2538,7 @@ class AdminEventPlaylistListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminEventPlaylistDetailView(APIView):
     """Retrieve, update or delete an event playlist group for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2517,7 +2586,7 @@ class AdminEventPlaylistDetailView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPlaylistBuilderView(APIView):
     """Fast song discovery + deterministic smart fill for official playlists."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         songs, source = _playlist_builder_queryset(request.query_params)
@@ -2588,7 +2657,7 @@ class AdminPlaylistBuilderView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPlaylistListView(APIView):
     """List and create playlists for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2637,7 +2706,7 @@ class AdminPlaylistListView(APIView):
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminPlaylistDetailView(APIView):
     """Retrieve, update or delete a playlist for admin."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
@@ -2688,110 +2757,113 @@ class AdminPlaylistDetailView(APIView):
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
-class AdminEmployeeListView(APIView):
-    """List and create employees (managers/supervisors)."""
-    permission_classes = [permissions.IsAdminUser]
+class AdminPanelSessionView(APIView):
+    """Authoritative custom-panel identity and employee permissions."""
+    permission_classes = [IsAdminPanelSession]
 
-    @extend_schema(
-        summary="لیست کارمندان",
-        description="دریافت لیست تمامی کارمندان (مدیران و ناظران) سیستم.",
-        responses={200: AdminEmployeeSerializer(many=True)}
-    )
     def get(self, request):
-        # Filter users with manager or supervisor roles who are not staff
-        queryset = User.objects.filter(
-            Q(roles__contains=User.ROLE_MANAGER) | Q(roles__contains=User.ROLE_SUPERVISOR),
-            is_staff=False
-        ).order_by('-date_joined')
-        
-        paginator = AdminPagination()
-        result_page = paginator.paginate_queryset(queryset, request)
-        serializer = AdminEmployeeSerializer(result_page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        return Response(panel_identity(request.user))
 
-    @extend_schema(
-        summary="ایجاد کارمند جدید",
-        description="ایجاد یک کاربر جدید با نقش مدیر یا ناظر.",
-        request=AdminEmployeeSerializer,
-        responses={201: AdminEmployeeSerializer}
-    )
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminEmployeeListView(APIView):
+    """Owner-only employee directory and creation endpoint."""
+    permission_classes = [IsOwnerAdmin]
+
+    def get(self, request):
+        queryset = _employee_queryset().order_by('-date_joined', '-id')
+        query = str(request.query_params.get('q') or '').strip()
+        if query:
+            queryset = queryset.filter(
+                Q(phone_number__icontains=query) | Q(first_name__icontains=query)
+                | Q(last_name__icontains=query) | Q(email__icontains=query)
+            )
+        role = str(request.query_params.get('role') or '').strip()
+        if role in {User.ROLE_MANAGER, User.ROLE_SUPERVISOR}:
+            queryset = queryset.filter(roles=[role])
+        state = str(request.query_params.get('state') or '').strip()
+        if state == 'active':
+            queryset = queryset.filter(is_active=True)
+        elif state == 'inactive':
+            queryset = queryset.filter(is_active=False)
+        paginator = AdminPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(AdminEmployeeSerializer(page, many=True).data)
+
     def post(self, request):
         serializer = AdminEmployeeSerializer(data=request.data)
-        if serializer.is_valid():
-            # Ensure is_staff is False and roles are restricted to manager/supervisor
-            roles = serializer.validated_data.get('roles', [])
-            if not any(role in [User.ROLE_MANAGER, User.ROLE_SUPERVISOR] for role in roles):
-                return Response({"error": "User must have manager or supervisor role."}, status=status.HTTP_400_BAD_REQUEST)
-            
-            serializer.save(is_staff=False)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
+        employee = serializer.save()
+        logger.info('Admin employee created actor=%s employee=%s role=%s', request.user.pk, employee.pk, employee_role(employee))
+        return Response(AdminEmployeeSerializer(employee).data, status=status.HTTP_201_CREATED)
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminEmployeeDetailView(APIView):
-    """Retrieve, update or delete an employee."""
-    permission_classes = [permissions.IsAdminUser]
+    """Owner-only employee read/update/delete endpoint."""
+    permission_classes = [IsOwnerAdmin]
 
-    @extend_schema(
-        summary="جزئیات کارمند",
-        description="دریافت اطلاعات کامل یک کارمند خاص.",
-        responses={200: AdminEmployeeSerializer}
-    )
-    def get(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
-        serializer = AdminEmployeeSerializer(user)
-        return Response(serializer.data)
-
-    @extend_schema(
-        summary="ویرایش کارمند",
-        description="ویرایش اطلاعات یا نقش‌های یک کارمند.",
-        request=AdminEmployeeSerializer,
-        responses={200: AdminEmployeeSerializer}
-    )
-    def patch(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
-        serializer = AdminEmployeeSerializer(user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @extend_schema(
-        summary="حذف کارمند",
-        description="حذف یک کارمند از سیستم.",
-        responses={204: None}
-    )
-    def delete(self, request, pk):
-        user = get_object_or_404(User, pk=pk)
-        user.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+    def _get(self, pk):
+        return get_object_or_404(_employee_queryset(), pk=pk)
 
     def get(self, request, pk):
-        user = get_object_or_404(User, pk=pk, is_staff=False)
-        if not any(role in [User.ROLE_MANAGER, User.ROLE_SUPERVISOR] for role in (user.roles or [])):
-            return Response({"error": "Not an employee."}, status=status.HTTP_404_NOT_FOUND)
-        serializer = AdminEmployeeSerializer(user)
-        return Response(serializer.data)
+        return Response(AdminEmployeeSerializer(self._get(pk)).data)
 
     def patch(self, request, pk):
-        user = get_object_or_404(User, pk=pk, is_staff=False)
-        serializer = AdminEmployeeSerializer(user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        employee = self._get(pk)
+        before_permissions = normalize_employee_permissions(employee.permissions)
+        before_active = employee.is_active
+        before_role = employee_role(employee)
+        serializer = AdminEmployeeSerializer(employee, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        employee = serializer.save()
+        access_changed = (
+            before_permissions != normalize_employee_permissions(employee.permissions)
+            or before_active != employee.is_active
+            or before_role != employee_role(employee)
+        )
+        if access_changed:
+            bump_employee_session_version(employee)
+            _revoke_employee_sessions(employee)
+        logger.info('Admin employee updated actor=%s employee=%s access_changed=%s', request.user.pk, employee.pk, access_changed)
+        return Response(AdminEmployeeSerializer(employee).data)
 
     def delete(self, request, pk):
-        user = get_object_or_404(User, pk=pk, is_staff=False)
-        user.delete()
+        employee = self._get(pk)
+        employee_id = employee.pk
+        _revoke_employee_sessions(employee)
+        employee.delete()
+        logger.info('Admin employee deleted actor=%s employee=%s', request.user.pk, employee_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+@extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
+class AdminEmployeePasswordView(APIView):
+    """Owner-only secure reset; existing password hashes are never reversible."""
+    permission_classes = [IsOwnerAdmin]
+
+    def post(self, request, pk):
+        employee = get_object_or_404(_employee_queryset(), pk=pk)
+        password = request.data.get('password')
+        if not isinstance(password, str) or len(password) < 8:
+            return Response({'password': ['رمز عبور باید حداقل ۸ کاراکتر باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        if len(password) > 128:
+            return Response({'password': ['رمز عبور بیش از حد طولانی است.']}, status=status.HTTP_400_BAD_REQUEST)
+        if employee.check_password(password):
+            return Response({'password': ['رمز جدید باید با رمز فعلی متفاوت باشد.']}, status=status.HTTP_400_BAD_REQUEST)
+        employee.set_password(password)
+        employee.failed_login_attempts = 0
+        employee.locked_until = None
+        bump_employee_session_version(employee, save=False)
+        employee.save(update_fields=['password', 'failed_login_attempts', 'locked_until', 'permissions'])
+        _revoke_employee_sessions(employee)
+        logger.info('Admin employee password reset actor=%s employee=%s', request.user.pk, employee.pk)
+        return Response({'detail': 'رمز عبور کارمند تغییر کرد و نشست‌های قبلی او بسته شد.'})
 
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminDepositRequestDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request, pk):
         deposit = get_object_or_404(DepositRequest.objects.select_related('artist'), pk=pk)
@@ -2832,7 +2904,7 @@ class AdminDepositRequestDetailView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSystemStatusView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsOwnerAdmin]
 
     def get(self, request):
         import time
@@ -2855,7 +2927,7 @@ class AdminSystemStatusView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSupportTicketListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         queryset = SupportTicket.objects.select_related('user', 'responded_by', 'user__artist_profile').all()
@@ -2877,7 +2949,7 @@ class AdminSupportTicketListView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSupportTicketDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request, pk):
         ticket = get_object_or_404(SupportTicket.objects.select_related('user', 'responded_by'), pk=pk)
@@ -2901,7 +2973,7 @@ class AdminSupportTicketDetailView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSongPromotionListView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request):
         now = timezone.now()
@@ -2936,7 +3008,7 @@ class AdminSongPromotionListView(APIView):
 
 @extend_schema(tags=['Admin App Endpoints اندپوینت های اپلیکیشن ادمین'])
 class AdminSongPromotionDetailView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminPanelUser]
 
     def get(self, request, pk):
         promotion = get_object_or_404(

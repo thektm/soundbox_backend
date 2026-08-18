@@ -42,6 +42,7 @@ import re
 from .recommendation_runtime import redis_delete, redis_get, redis_set
 from .auth_errors import AuthAPIView, auth_error, validation_error
 from .utils import MediaPipelineError
+from .admin_permissions import employee_session_version, is_employee
 
 _SMS_SESSION = requests.Session()
 _SMS_ADAPTER = HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=0)
@@ -420,6 +421,8 @@ def issue_tokens_for_user(user: User, request) -> dict:
     if user.is_banned:
         raise PermissionDenied("Your account has been banned.")
     refresh = SimpleRefreshToken.for_user(user)
+    if is_employee(user):
+        refresh['admin_session_version'] = employee_session_version(user)
     access = refresh.access_token
     # persist hashed refresh token for revocation / rotation tracking
     token_str = str(refresh)
@@ -623,6 +626,8 @@ class LoginPasswordView(AuthAPIView):
             return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
         if user.is_banned:
             return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
+        if not user.is_active:
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
         # lockout check
         if user.locked_until and user.locked_until > timezone.now():
             return auth_error('ACCOUNT_LOCKED', status.HTTP_423_LOCKED, retry_after_seconds=max(1, int((user.locked_until - timezone.now()).total_seconds())))
@@ -1134,6 +1139,15 @@ class TokenRefreshView(AuthAPIView):
             return auth_error('TOKEN_INVALID', status.HTTP_401_UNAUTHORIZED)
         if user.is_banned:
             return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
+        if not user.is_active:
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        if is_employee(user):
+            try:
+                token_version = int(rt.get('admin_session_version', 0))
+            except (TypeError, ValueError):
+                token_version = 0
+            if token_version != employee_session_version(user):
+                return auth_error('TOKEN_REVOKED', status.HTTP_401_UNAUTHORIZED)
 
         # HMAC hashes cannot be queried by the raw token, so inspect only active,
         # unexpired sessions and retain the matching primary key.
@@ -1166,6 +1180,8 @@ class TokenRefreshView(AuthAPIView):
                 return auth_error('TOKEN_REVOKED', status.HTTP_401_UNAUTHORIZED)
 
             new_refresh = SimpleRefreshToken.for_user(user)
+            if is_employee(user):
+                new_refresh['admin_session_version'] = employee_session_version(user)
             new_access = new_refresh.access_token
             device_name, device_type, os_info = get_device_info(request)
             valid_session.token_hash = hash_refresh_token(str(new_refresh))
