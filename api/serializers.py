@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 
 from rest_framework import serializers
@@ -22,6 +23,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.db.models.manager import BaseManager
 from django.urls import reverse
+from django.utils.text import slugify as django_slugify
 
 from .localization import get_request_language, localized_value, translate_generated_text, generated_playlist_english
 from .subscriptions import normalize_expired_premium, premium_expires_at
@@ -66,6 +68,51 @@ def _stream_wrapper(song, request):
 def _metric(obj, attr, fallback):
     value = getattr(obj, attr, None)
     return fallback() if value is None else value
+
+
+_ARABIC_SCRIPT_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
+
+
+def _strict_english_slug(value):
+    """Return an ASCII slug only when the source contains no Persian/Arabic text."""
+    text = str(value or '').strip()
+    if not text or _ARABIC_SCRIPT_RE.search(text):
+        return ''
+    return django_slugify(text, allow_unicode=False)
+
+
+def _canonical_url_slug(instance):
+    """Language-independent canonical slug sourced only from stored English copy.
+
+    ``None`` means the model has no canonical content slug contract. ``''`` means
+    the model supports canonical slugs but no real English value is stored, so
+    clients must emit the numeric/id-only URL instead of transliterating Farsi.
+    """
+    if isinstance(instance, Artist):
+        candidates = (instance.artistic_name_en, instance.name_en)
+    elif isinstance(instance, (Song, Album, Playlist, RecommendedPlaylist, EventPlaylist)):
+        candidates = (instance.title_en,)
+    elif isinstance(instance, (Genre, Mood, Tag, SubGenre)):
+        candidates = (instance.name_en,)
+    elif isinstance(instance, UserPlaylist):
+        # User playlists do not have a parallel English field. Keep a slug only
+        # when the stored title itself is already English/ASCII.
+        candidates = (instance.title,)
+    else:
+        return None
+
+    for candidate in candidates:
+        slug = _strict_english_slug(candidate)
+        if slug:
+            return slug
+    return ''
+
+
+def _related_url_slug(instance):
+    if instance is None:
+        return ''
+    value = _canonical_url_slug(instance)
+    return value or ''
 
 
 def _official_creator_uid(serializer):
@@ -284,6 +331,10 @@ class LocalizedModelSerializer(serializers.ModelSerializer):
             data[f'{output_name}_en'] = en_value
             data[output_name] = en_value if language == 'en' and en_value not in (None, '', [], {}) else fa_value
 
+        canonical_url_slug = _canonical_url_slug(instance)
+        if canonical_url_slug is not None:
+            data['url_slug'] = canonical_url_slug
+
         # Server-generated playlists must never leak Farsi or legacy Finglish
         # into English responses when an old row has missing/bad English copy.
         # This correction is O(1) and performs no relation/database access.
@@ -344,6 +395,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
             {
                 'id': a.id,
                 'unique_id': a.unique_id,
+                'url_slug': _related_url_slug(a),
                 'name': localized_value(a, 'name', request),
                 'name_fa': a.name,
                 'name_en': a.name_en or a.name,
@@ -360,7 +412,7 @@ class SongSummarySerializer(LocalizedModelSerializer):
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
-            {'id': genre.id, 'name': localized_value(genre, 'name', request)}
+            {'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)}
             for genre in self._items(obj, 'genres')
         ]
 
@@ -391,6 +443,8 @@ class SongSummarySerializer(LocalizedModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        data['artist_url_slug'] = _related_url_slug(getattr(instance, 'artist', None))
+        data['album_url_slug'] = _related_url_slug(getattr(instance, 'album', None))
         data['cover_image'] = _signed_url(data.get('cover_image'))
         return data
 
@@ -496,7 +550,7 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
         for song in self._songs(obj):
             genres.update({genre.id: genre for genre in song.genres.all()})
         return sorted(
-            ({'id': genre.id, 'name': localized_value(genre, 'name', request)} for genre in genres.values()),
+            ({'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)} for genre in genres.values()),
             key=lambda item: item['name'],
         )
 
@@ -512,6 +566,11 @@ class AlbumSummarySerializer(LocalizedModelSerializer):
     def get_is_liked(self, obj):
         request = self.context.get('request')
         return bool(_metric(obj, '_is_liked', lambda: request and request.user.is_authenticated and AlbumLike.objects.filter(user=request.user, album=obj).exists()))
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['artist_url_slug'] = _related_url_slug(getattr(instance, 'artist', None))
+        return data
 
 
 class PlaylistSummarySerializer(LocalizedModelSerializer):
@@ -554,7 +613,7 @@ class PlaylistSummarySerializer(LocalizedModelSerializer):
         request = self.context.get('request')
         genres = {genre.id: genre for song in self._songs(obj) for genre in song.genres.all()}
         return sorted(
-            ({'id': genre.id, 'name': localized_value(genre, 'name', request)} for genre in genres.values()),
+            ({'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)} for genre in genres.values()),
             key=lambda item: item['name'],
         )
 
@@ -627,7 +686,7 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
-            {'id': genre.id, 'name': localized_value(genre, 'name', request)}
+            {'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)}
             for genre in _relation_items(obj, 'genres')
         ]
 
@@ -1596,6 +1655,7 @@ class AlbumSerializer(LocalizedModelSerializer):
     def get_song_mood_names(self, obj): return sorted({localized_value(m, 'name', self.context.get('request')) for s in self._songs(obj) for m in s.moods.all()})
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        data['artist_url_slug'] = _related_url_slug(getattr(instance, 'artist', None))
         value = data.get('cover_image') or next((s.cover_image for s in self._songs(instance) if s.cover_image), None)
         data['cover_image'] = _signed_url(value)
         return data
@@ -1736,6 +1796,7 @@ class SongSerializer(LocalizedModelSerializer):
             {
                 'id': a.id,
                 'unique_id': a.unique_id,
+                'url_slug': _related_url_slug(a),
                 'name': localized_value(a, 'name', request),
                 'name_fa': a.name,
                 'name_en': a.name_en or a.name,
@@ -1748,7 +1809,7 @@ class SongSerializer(LocalizedModelSerializer):
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
-            {'id': genre.id, 'name': localized_value(genre, 'name', request)}
+            {'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)}
             for genre in _relation_items(obj, 'genres')
         ]
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
@@ -1822,6 +1883,8 @@ class SongSerializer(LocalizedModelSerializer):
 
     def to_representation(self, instance):
         data=super().to_representation(instance)
+        data['artist_url_slug'] = _related_url_slug(getattr(instance, 'artist', None))
+        data['album_url_slug'] = _related_url_slug(getattr(instance, 'album', None))
         data['cover_image']=_signed_url(data.get('cover_image'))
         request=self.context.get('request')
         if not request or not request.user.is_authenticated or not request.user.is_staff:
@@ -2015,6 +2078,7 @@ class PlaylistSerializer(LocalizedModelSerializer):
     moods = MoodSerializer(many=True, read_only=True)
     tags = TagSerializer(many=True, read_only=True)
     songs = serializers.SerializerMethodField()
+    songs_count = serializers.SerializerMethodField()
     genre_ids = serializers.PrimaryKeyRelatedField(queryset=Genre.objects.all(), many=True, source='genres', required=False)
     mood_ids = serializers.PrimaryKeyRelatedField(queryset=Mood.objects.all(), many=True, source='moods', required=False)
     tag_ids = serializers.PrimaryKeyRelatedField(queryset=Tag.objects.all(), many=True, source='tags', required=False)
@@ -2028,7 +2092,7 @@ class PlaylistSerializer(LocalizedModelSerializer):
         model = Playlist
         list_serializer_class = OrderedPlaylistListSerializer
         fields = ['id','title','title_en','description','description_en','cover_image','created_at','created_by','generated_by','creator_unique_id',
-                  'genres','moods','tags','songs','likes_count','is_liked','genre_ids','mood_ids','tag_ids','song_ids']
+                  'genres','moods','tags','songs','songs_count','likes_count','is_liked','genre_ids','mood_ids','tag_ids','song_ids']
         read_only_fields = ['id','created_at','likes_count','is_liked','generated_by','creator_unique_id']
 
     def get_creator_unique_id(self, obj):
@@ -2043,6 +2107,11 @@ class PlaylistSerializer(LocalizedModelSerializer):
     def get_likes_count(self, obj): return int(_metric(obj,'_likes_count',lambda: PlaylistLike.objects.filter(playlist=obj).count()))
     def get_songs(self, obj):
         return SongSummarySerializer(_ordered_playlist_songs(obj), many=True, context=self.context).data
+    def get_songs_count(self, obj):
+        # Match the exact visible/serialized song set. In read endpoints the songs
+        # relation is prefetched with the published-song card queryset, so this
+        # never reports deleted/unpublished rows that the client cannot display.
+        return len(_ordered_playlist_songs(obj))
     def get_is_liked(self, obj):
         request=self.context.get('request')
         return bool(_metric(obj,'_is_liked',lambda: request and request.user.is_authenticated and PlaylistLike.objects.filter(user=request.user,playlist=obj).exists()))
@@ -2113,6 +2182,7 @@ class SongStreamSerializer(LocalizedModelSerializer):
             {
                 'id': a.id,
                 'unique_id': a.unique_id,
+                'url_slug': _related_url_slug(a),
                 'name': localized_value(a, 'name', request),
                 'name_fa': a.name,
                 'name_en': a.name_en or a.name,
@@ -2125,7 +2195,7 @@ class SongStreamSerializer(LocalizedModelSerializer):
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
-            {'id': genre.id, 'name': localized_value(genre, 'name', request)}
+            {'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)}
             for genre in _relation_items(obj, 'genres')
         ]
     def get_genre_names(self, obj): return [item['name'] for item in self.get_genres(obj)]
@@ -2420,15 +2490,23 @@ class SearchResultSerializer(serializers.Serializer):
         request=self.context.get('request')
         if isinstance(obj,Song):
             return {'duration_seconds':obj.duration_seconds,'plays':int(obj.plays or 0)+int(getattr(obj,'_play_count',0)),
+                    'url_slug':_related_url_slug(obj),
                     'language':obj.language,'artist_id':obj.artist_id,'artist_name':localized_value(obj.artist, 'name', request) if obj.artist else None,
+                    'artist_url_slug':_related_url_slug(obj.artist),
                     'album_id':obj.album_id,'album_name':localized_value(obj.album, 'title', request) if obj.album else None,
+                    'album_url_slug':_related_url_slug(obj.album),
                     'stream_url':_stream_wrapper(obj,request),'preview_url':_preview_url(obj),
                     'is_preview':bool((not request or not request.user.is_authenticated) and obj.preview_audio_url),
                     'preview_duration_seconds':min(30,obj.duration_seconds or 30) if obj.preview_audio_url else 0}
         if isinstance(obj,Artist):
             bio = localized_value(obj, 'bio', request)
-            return {'unique_id':obj.unique_id,'verified':obj.verified,'bio':bio[:100] if bio else ''}
-        if isinstance(obj,Album): return {'release_date':obj.release_date,'artist_id':obj.artist_id,'artist_name':localized_value(obj.artist, 'name', request) if obj.artist else None}
+            return {'unique_id':obj.unique_id,'url_slug':_related_url_slug(obj),'verified':obj.verified,'bio':bio[:100] if bio else ''}
+        if isinstance(obj,Album):
+            return {'release_date':obj.release_date,'url_slug':_related_url_slug(obj),'artist_id':obj.artist_id,
+                    'artist_name':localized_value(obj.artist, 'name', request) if obj.artist else None,
+                    'artist_url_slug':_related_url_slug(obj.artist)}
+        if isinstance(obj,(Playlist,UserPlaylist)):
+            return {'url_slug':_related_url_slug(obj)}
         if isinstance(obj,User):
             is_official = (obj.unique_id or '').strip().casefold() == 'sedabox' or (
                 (obj.first_name or '').strip().casefold().startswith('sedabox')
