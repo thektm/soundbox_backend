@@ -82,14 +82,18 @@ def _strict_english_slug(value):
 
 
 def _canonical_url_slug(instance):
-    """Language-independent canonical slug sourced only from stored English copy.
+    """Language-independent canonical slug from verified English-safe source text.
 
     ``None`` means the model has no canonical content slug contract. ``''`` means
     the model supports canonical slugs but no real English value is stored, so
     clients must emit the numeric/id-only URL instead of transliterating Farsi.
     """
     if isinstance(instance, Artist):
-        candidates = (instance.artistic_name_en, instance.name_en)
+        # Prefer the dedicated English fields. Some legacy/admin-created artists
+        # have no *_en value even though the primary name itself is entirely
+        # English/Latin, so allow that primary name as the final safe fallback.
+        # _strict_english_slug still rejects Persian/Arabic or mixed-script text.
+        candidates = (instance.artistic_name_en, instance.name_en, instance.name)
     elif isinstance(instance, (Song, Album, Playlist, RecommendedPlaylist, EventPlaylist)):
         candidates = (instance.title_en,)
     elif isinstance(instance, (Genre, Mood, Tag, SubGenre)):
