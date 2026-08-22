@@ -1451,10 +1451,56 @@ class MyLibraryView(APIView):
         page, page_size = _page_values(request, 20, 50)
         queryset = _history_queryset(request.user)
         if content_type: queryset = queryset.filter(content_type=content_type)
-        total = queryset.count(); offset = (page - 1) * page_size
-        items = _prepare_history(queryset[offset:offset + page_size], request.user)
-        return Response({'items': UserHistorySerializer(items, many=True, context={'request': request}).data,
-                         'total': total, 'page': page, 'has_next': total > offset + page_size})
+        offset = (page - 1) * page_size
+        history_total = queryset.count()
+        history_items = list(queryset[:offset + page_size])
+
+        recommended_total = 0
+        recommended_items = []
+        if content_type in (None, UserHistory.TYPE_PLAYLIST):
+            recommended_queryset = RecommendedPlaylist.objects.filter(liked_by=request.user)
+            recommended_total = recommended_queryset.count()
+            recommended_items = list(recommended_queryset.prefetch_related('songs').order_by(
+                '-updated_at', '-created_at'
+            )[:offset + page_size])
+
+        merged = [
+            (item.updated_at, 'history', item) for item in history_items
+        ] + [
+            (item.updated_at, 'recommended', item) for item in recommended_items
+        ]
+        merged.sort(key=lambda entry: entry[0], reverse=True)
+        selected = merged[offset:offset + page_size]
+        history_selected = [item for _, kind, item in selected if kind == 'history']
+        _prepare_history(history_selected, request.user)
+        history_data = {
+            item.id: data for item, data in zip(
+                history_selected,
+                UserHistorySerializer(
+                    history_selected, many=True, context={'request': request}
+                ).data,
+            )
+        }
+        recommended_selected = [item for _, kind, item in selected if kind == 'recommended']
+        _attach_recommended_metrics(recommended_selected, request.user)
+
+        items = []
+        for _, kind, item in selected:
+            if kind == 'history':
+                items.append(history_data[item.id])
+            else:
+                items.append({
+                    'id': item.id,
+                    'type': UserHistory.TYPE_PLAYLIST,
+                    'item': PlaylistSummarySerializer(
+                        item, context={'request': request}
+                    ).data,
+                    'updated_at': item.updated_at,
+                })
+
+        total = history_total + recommended_total
+        return Response({'items': items, 'total': total, 'page': page,
+                         'has_next': total > offset + page_size})
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
