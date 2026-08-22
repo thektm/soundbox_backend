@@ -1427,8 +1427,13 @@ class LikedPlaylistsView(APIView):
                 data = PlaylistSummarySerializer(item, context={'request': request}).data
             data['liked_at'] = liked_at
             payload.append(data)
-        return Response({'count': len(merged), 'next': page + 1 if len(merged) > start + page_size else None,
-                         'previous': page - 1 if page > 1 else None, 'results': payload})
+        has_next = len(merged) > start + page_size
+        return Response({
+            'count': len(merged),
+            'next': _next_url(request, 'page', page, has_next),
+            'previous': _next_url(request, 'page', page - 2, page > 1),
+            'results': payload,
+        })
 
 
 
