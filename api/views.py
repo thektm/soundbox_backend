@@ -6444,50 +6444,18 @@ class PlaylistRecommendationLikeView(APIView):
             })
         else:
             # Like
-            if unique_id.startswith('smart_rec_'):
-                # Freeze: Create a brand new persistent record for the user
-                new_id = f"liked_rec_{user.id}_{uuid.uuid4().hex[:10]}"
-
-                # Create the copy
-                frozen_playlist = RecommendedPlaylist.objects.create(
-                    unique_id=new_id,
-                    user=user,
-                    playlist_ref=playlist.playlist_ref,
-                    title=playlist.title,
-                    title_en=playlist.title_en,
-                    description=playlist.description,
-                    description_en=playlist.description_en,
-                    playlist_type=playlist.playlist_type,
-                    song_order=playlist.song_order,
-                    relevance_score=playlist.relevance_score,
-                    match_percentage=playlist.match_percentage,
-                    expires_at=None # Persistent
-                )
-
-                # Copy songs (ManyToMany needs to be set after creation)
-                frozen_playlist.songs.set(playlist.songs.all())
-
-                # Add the user to liked_by of the NEW record (RecommendedPlaylist uses M2M)
-                frozen_playlist.liked_by.add(user)
-
-                # Also add the user to the original dynamic record's liked_by
-                playlist.liked_by.add(user)
-
-                return Response({
-                    'status': 'liked',
-                    'is_liked': True,
-                    'likes_count': frozen_playlist.liked_by.count(),
-                    'new_unique_id': new_id,
-                    'is_frozen': True
-                })
-            else:
-                # Direct like for already persistent or other types
-                playlist.liked_by.add(user)
-                return Response({
-                    'status': 'liked',
-                    'is_liked': True,
-                    'likes_count': playlist.liked_by.count(),
-                })
+            playlist.liked_by.add(user)
+            RecommendedPlaylist.objects.filter(pk=playlist.pk).update(
+                expires_at=None,
+                updated_at=timezone.now(),
+            )
+            playlist.expires_at = None
+            playlist.updated_at = timezone.now()
+            return Response({
+                'status': 'liked',
+                'is_liked': True,
+                'likes_count': playlist.liked_by.count(),
+            })
 
 
 @extend_schema(tags=['Home Page Endpoints اندپوینت های صفحه اصلی'])
