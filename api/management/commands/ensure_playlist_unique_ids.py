@@ -39,11 +39,10 @@ class Command(BaseCommand):
 
             rows = model.objects.filter(
                 Q(unique_id__isnull=True) | Q(unique_id='')
-            ).only('pk')
+            ).only('pk', 'unique_id')
             with transaction.atomic():
                 for row in rows.iterator():
-                    row.unique_id = field.default()
-                    row.save(update_fields=['unique_id'])
+                    row.save()
                     updated += 1
 
             with connection.cursor() as cursor:

@@ -752,8 +752,8 @@ class Playlist(models.Model):
     ]
 
     unique_id = models.CharField(
-        max_length=64, unique=True, db_index=True,
-        default=_new_playlist_unique_id,
+        max_length=64, unique=True, db_index=True, null=True, blank=True,
+        default=None,
         editable=False,
     )
     title = models.CharField(max_length=255)
@@ -782,6 +782,14 @@ class Playlist(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.created_at.date()})"
+
+    def save(self, *args, **kwargs):
+        if not self.unique_id:
+            self.unique_id = _new_playlist_unique_id()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'unique_id'}
+        super().save(*args, **kwargs)
 
 
 class PlaylistLike(models.Model):
@@ -836,8 +844,8 @@ class PlayConfiguration(models.Model):
 class UserPlaylist(models.Model):
     """User-created playlist model"""
     unique_id = models.CharField(
-        max_length=64, unique=True, db_index=True,
-        default=_new_user_playlist_unique_id,
+        max_length=64, unique=True, db_index=True, null=True, blank=True,
+        default=None,
         editable=False,
     )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_playlists')
@@ -855,6 +863,14 @@ class UserPlaylist(models.Model):
 
     def __str__(self):
         return f"{self.title} by {self.user.phone_number}"
+
+    def save(self, *args, **kwargs):
+        if not self.unique_id:
+            self.unique_id = _new_user_playlist_unique_id()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'unique_id'}
+        super().save(*args, **kwargs)
 
 
 class StreamAccess(models.Model):
