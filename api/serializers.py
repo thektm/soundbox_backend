@@ -416,7 +416,12 @@ class SongSummarySerializer(LocalizedModelSerializer):
     def get_genres(self, obj):
         request = self.context.get('request')
         return [
-            {'id': genre.id, 'name': localized_value(genre, 'name', request), 'url_slug': _related_url_slug(genre)}
+            {
+                'id': genre.id,
+                'name': localized_value(genre, 'name', request),
+                'name_en': genre.name_en,
+                'url_slug': _related_url_slug(genre),
+            }
             for genre in self._items(obj, 'genres')
         ]
 
