@@ -705,6 +705,15 @@ class LoginOtpRequestView(AuthAPIView):
                 return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         except User.DoesNotExist:
             return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+
+        # Audience OTP login must respect the same role isolation as password login.
+        # If this is not an explicit admin/artist login request and the account does not
+        # have audience capability, do not reveal that the account exists.
+        artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
+        if not admin_flag and not artist_flag and User.ROLE_AUDIENCE not in (user.roles or []):
+            return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+
         retry_after = otp_rate_limit_retry_after(phone, OtpCode.PURPOSE_LOGIN, user)
         if retry_after:
             return auth_error('RATE_LIMIT', status.HTTP_429_TOO_MANY_REQUESTS, retry_after_seconds=retry_after)
@@ -736,6 +745,13 @@ class LoginOtpVerifyView(AuthAPIView):
             return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
         if user.is_banned:
             return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
+
+        # OTP audience login must not authenticate non-audience-only accounts.
+        artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
+        if not admin_flag and not artist_flag and User.ROLE_AUDIENCE not in (user.roles or []):
+            return auth_error('PHONE_NOT_REGISTERED', status.HTTP_404_NOT_FOUND)
+
         otp_result = consume_otp(user, OtpCode.PURPOSE_LOGIN, otp)
         otp_error = _otp_failure_response(otp_result)
         if otp_error is not None:
