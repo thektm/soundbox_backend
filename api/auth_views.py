@@ -662,6 +662,33 @@ class LoginPasswordView(AuthAPIView):
         return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': user_data})
 
 
+@extend_schema(tags=['Admin Auth Endpoints اندپوینت های احراز ادمین'])
+class AdminLoginView(AuthAPIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        phone = normalize_phone(request.data.get('phone') or request.data.get('phone_number'))
+        password = request.data.get('password')
+        if not phone or not isinstance(password, str):
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        try:
+            user = User.objects.get(phone_number=phone)
+        except User.DoesNotExist:
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        if not user.is_active or user.is_banned:
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        if not (user.is_superuser or user.is_staff or User.ROLE_ADMIN in (user.roles or [])):
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        if not user.check_admin_password(password):
+            return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        user.last_login_at = timezone.now()
+        user.failed_login_attempts = 0
+        user.save(update_fields=['last_login_at', 'failed_login_attempts'])
+        tokens = issue_tokens_for_user(user, request)
+        from .serializers import UserSerializer
+        return Response({'accessToken': tokens['accessToken'], 'refreshToken': tokens['refreshToken'], 'user': UserSerializer(user, context={'request': request}).data})
+
+
 @extend_schema(tags=['Auth Endpoints اندپوینت های احراز'])
 class LoginOtpRequestView(AuthAPIView):
     permission_classes = [AllowAny]
