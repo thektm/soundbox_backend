@@ -6343,10 +6343,14 @@ class PlaylistRecommendationLikeView(APIView):
                 playlist.expires_at = None
             mark_generated_playlist_usage([playlist])
         except RecommendedPlaylist.DoesNotExist:
-            return Response(
-                {'error': 'Playlist not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            playlist = _dynamic_playlist_by_unique_id(request.user, unique_id)
+            if playlist is None:
+                return Response(
+                    {'error': 'Playlist not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            playlist = _materialize_dynamic_playlist(playlist)
+            mark_generated_playlist_usage([playlist])
 
         user = request.user
         requested_liked = request.data.get('liked')
