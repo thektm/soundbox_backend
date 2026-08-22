@@ -1542,23 +1542,66 @@ class UserHistoryView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
+        content_type = request.query_params.get('type')
+        page_number, page_size = _page_values(request, 20, 100)
+        offset = (page_number - 1) * page_size
+        history_total = queryset.count()
+        history_items = list(queryset[:offset + page_size])
+        recommended_items = []
+        if content_type in (None, UserHistory.TYPE_PLAYLIST):
+            recommended_items = list(
+                RecommendedPlaylist.objects.filter(liked_by=request.user)
+                .prefetch_related('songs')
+                .order_by('-updated_at', '-created_at')[:offset + page_size]
+            )
+        merged = [
+            (item.updated_at, 'history', item) for item in history_items
+        ] + [
+            (item.updated_at, 'recommended', item) for item in recommended_items
+        ]
+        merged.sort(key=lambda entry: entry[0], reverse=True)
+        selected = merged[offset:offset + page_size]
+        history_selected = [item for _, kind, item in selected if kind == 'history']
+        items = _prepare_history(history_selected, request.user)
+        history_data = {
+            item.id: data for item, data in zip(
+                history_selected,
+                UserHistorySerializer(
+                    items, many=True, context={'request': request}
+                ).data,
+            )
+        }
+        recommended_selected = [item for _, kind, item in selected if kind == 'recommended']
+        _attach_recommended_metrics(recommended_selected, request.user)
+        data = []
+        for _, kind, item in selected:
+            if kind == 'history':
+                data.append(history_data[item.id])
+            else:
+                data.append({
+                    'id': item.id,
+                    'type': UserHistory.TYPE_PLAYLIST,
+                    'item': PlaylistSummarySerializer(
+                        item, context={'request': request}
+                    ).data,
+                    'updated_at': item.updated_at,
+                })
         logger.info(
-            'profile-history request user_id=%s path=%s type=%s history_count=%s liked_recommendation_count=%s liked_recommendations=%s',
-            request.user.pk, request.path, request.query_params.get('type'),
-            queryset.count(),
-            RecommendedPlaylist.objects.filter(liked_by=request.user).count(),
-            list(RecommendedPlaylist.objects.filter(liked_by=request.user)
-                 .order_by('-updated_at', '-created_at')
-                 .values_list('unique_id', flat=True)[:20]),
+            'profile-history response user_id=%s path=%s type=%s history_count=%s liked_recommendation_count=%s selected=%s',
+            request.user.pk, request.path, content_type, queryset.count(),
+            len(recommended_items),
+            [(item.get('type'), item.get('item', {}).get('unique_id')) for item in data],
         )
-        page = self.paginate_queryset(queryset)
-        items = _prepare_history(page if page is not None else queryset, request.user)
-        data = self.get_serializer(items, many=True).data
-        logger.info(
-            'profile-history response user_id=%s response_count=%s',
-            request.user.pk, len(data),
-        )
-        return self.get_paginated_response(data) if page is not None else Response(data)
+        total = history_total + RecommendedPlaylist.objects.filter(
+            liked_by=request.user
+        ).count() if content_type in (None, UserHistory.TYPE_PLAYLIST) else history_total
+        has_next = total > offset + page_size
+        return Response({
+            'count': total,
+            'next': _next_url(request, 'page', page_number, has_next),
+            'previous': _next_url(request, 'page', page_number - 2, page_number > 1),
+            'results': data,
+        })
 
 
 @extend_schema(tags=['Library Page Endpoints اندپوینت های صفحه کتابخانه'])
