@@ -1398,9 +1398,19 @@ class LikedPlaylistsView(APIView):
         recommended = list(RecommendedPlaylist.objects.filter(liked_by=request.user).select_related('playlist_ref').prefetch_related(
             Prefetch('songs', queryset=songs)
         ).order_by('-updated_at', '-created_at')[:take])
+        logger.info(
+            'liked-playlists request user_id=%s page=%s page_size=%s recommended_count=%s recommended=%s',
+            request.user.pk, page, page_size, len(recommended),
+            [(item.pk, item.unique_id, item.songs.count()) for item in recommended],
+        )
         merged = [(x.created_at, 'admin', x) for x in admin] + [(x.created_at, 'user', x) for x in users] + [(x.updated_at, 'recommended', x) for x in recommended]
         merged.sort(key=lambda item: item[0], reverse=True)
         start = (page - 1) * page_size; selected = merged[start:start + page_size]
+        logger.info(
+            'liked-playlists response user_id=%s total=%s selected=%s',
+            request.user.pk, len(merged),
+            [(kind, getattr(item, 'unique_id', None), item.pk) for _, kind, item in selected],
+        )
         admin_playlists = [item.playlist for _, kind, item in selected if kind == 'admin']
         hydrate_playlist_metrics(admin_playlists, request.user)
         recommended_items = [item for _, kind, item in selected if kind == 'recommended']
@@ -1463,6 +1473,13 @@ class MyLibraryView(APIView):
             recommended_items = list(recommended_queryset.prefetch_related('songs').order_by(
                 '-updated_at', '-created_at'
             )[:offset + page_size])
+        logger.info(
+            'my-library request user_id=%s path=%s type=%s page=%s page_size=%s history_total=%s recommended_total=%s recommended=%s',
+            request.user.pk, request.path, content_type, page, page_size, history_total,
+            recommended_total,
+            [(item.pk, item.unique_id, item.songs.count(), item.updated_at.isoformat())
+             for item in recommended_items],
+        )
 
         merged = [
             (item.updated_at, 'history', item) for item in history_items
@@ -1499,6 +1516,11 @@ class MyLibraryView(APIView):
                 })
 
         total = history_total + recommended_total
+        logger.info(
+            'my-library response user_id=%s total=%s selected=%s items=%s',
+            request.user.pk, total, len(selected),
+            [(item.get('type'), item.get('item', {}).get('unique_id')) for item in items],
+        )
         return Response({'items': items, 'total': total, 'page': page,
                          'has_next': total > offset + page_size})
 
@@ -1520,9 +1542,22 @@ class UserHistoryView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
+        logger.info(
+            'profile-history request user_id=%s path=%s type=%s history_count=%s liked_recommendation_count=%s liked_recommendations=%s',
+            request.user.pk, request.path, request.query_params.get('type'),
+            queryset.count(),
+            RecommendedPlaylist.objects.filter(liked_by=request.user).count(),
+            list(RecommendedPlaylist.objects.filter(liked_by=request.user)
+                 .order_by('-updated_at', '-created_at')
+                 .values_list('unique_id', flat=True)[:20]),
+        )
         page = self.paginate_queryset(queryset)
         items = _prepare_history(page if page is not None else queryset, request.user)
         data = self.get_serializer(items, many=True).data
+        logger.info(
+            'profile-history response user_id=%s response_count=%s',
+            request.user.pk, len(data),
+        )
         return self.get_paginated_response(data) if page is not None else Response(data)
 
 
@@ -6390,6 +6425,11 @@ class PlaylistRecommendationLikeView(APIView):
     def post(self, request, unique_id):
         from .models import RecommendedPlaylist
 
+        logger.info(
+            'recommended-playlist like request user_id=%s unique_id=%s liked_value=%r',
+            request.user.pk, unique_id, request.data.get('liked'),
+        )
+
         try:
             playlist = RecommendedPlaylist.objects.get(unique_id=unique_id)
             if playlist.expires_at is not None:
@@ -6399,12 +6439,22 @@ class PlaylistRecommendationLikeView(APIView):
         except RecommendedPlaylist.DoesNotExist:
             playlist = _dynamic_playlist_by_unique_id(request.user, unique_id)
             if playlist is None:
+                logger.warning(
+                    'recommended-playlist like not-found user_id=%s unique_id=%s',
+                    request.user.pk, unique_id,
+                )
                 return Response(
                     {'error': 'Playlist not found'},
                     status=status.HTTP_404_NOT_FOUND
                 )
             playlist = _materialize_dynamic_playlist(playlist)
             mark_generated_playlist_usage([playlist])
+
+        logger.info(
+            'recommended-playlist like resolved user_id=%s unique_id=%s playlist_id=%s song_count=%s expires_at=%s already_liked=%s',
+            request.user.pk, playlist.unique_id, playlist.pk, playlist.songs.count(),
+            playlist.expires_at, playlist.liked_by.filter(pk=request.user.pk).exists(),
+        )
 
         user = request.user
         requested_liked = request.data.get('liked')
@@ -6448,6 +6498,11 @@ class PlaylistRecommendationLikeView(APIView):
             )
             playlist.expires_at = None
             playlist.updated_at = timezone.now()
+            logger.info(
+                'recommended-playlist like persisted user_id=%s unique_id=%s playlist_id=%s song_count=%s liked=%s updated_at=%s',
+                user.pk, playlist.unique_id, playlist.pk, playlist.songs.count(), True,
+                playlist.updated_at,
+            )
             return Response({
                 'status': 'liked',
                 'is_liked': True,
