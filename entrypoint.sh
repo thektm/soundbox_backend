@@ -96,6 +96,7 @@ PY
 case " $* " in
   *" run_daphne_cluster.py "*)
     [ "${ENSURE_SEARCH_INDEXES_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_search_indexes || true
+    [ "${ENSURE_PLAYLIST_UNIQUE_IDS_ON_STARTUP:-1}" = "1" ] && python manage.py ensure_playlist_unique_ids || true
     ;;
 esac
 

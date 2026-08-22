@@ -670,11 +670,11 @@ class AdminPlaylistSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTra
     class Meta:
         model = Playlist
         fields = [
-            'id', 'title', 'title_en', 'description', 'description_en', 'cover_image',
+            'id', 'unique_id', 'title', 'title_en', 'description', 'description_en', 'cover_image',
             'cover_image_upload', 'created_by', 'songs', 'song_ids', 'song_details', 'genres', 'moods', 'tags',
             'likes_count', 'saves_count', 'created_at'
         ]
-        read_only_fields = ['id', 'cover_image', 'created_at']
+        read_only_fields = ['id', 'unique_id', 'cover_image', 'created_at']
 
 
 class AdminSearchSectionSerializer(AdminSignedMediaSerializerMixin, RequireEnglishTranslationSerializerMixin, serializers.ModelSerializer):

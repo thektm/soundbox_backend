@@ -665,7 +665,7 @@ class SimplePlaylistSerializer(LocalizedModelSerializer):
         list_serializer_class = PlaylistMetricsListSerializer
         model = Playlist
         fields = [
-            'id', 'title', 'description', 'cover_image', 'top_three_song_covers',
+            'id', 'unique_id', 'title', 'description', 'cover_image', 'top_three_song_covers',
             'songs_count', 'is_liked', 'likes_count', 'genres', 'genre_names', 'mood_names',
             'type', 'generated_by', 'creator_unique_id',
         ]
@@ -2099,7 +2099,7 @@ class PlaylistSerializer(LocalizedModelSerializer):
     class Meta:
         model = Playlist
         list_serializer_class = OrderedPlaylistListSerializer
-        fields = ['id','title','title_en','description','description_en','cover_image','created_at','created_by','generated_by','creator_unique_id',
+        fields = ['id','unique_id','title','title_en','description','description_en','cover_image','created_at','created_by','generated_by','creator_unique_id',
                   'genres','moods','tags','songs','songs_count','likes_count','is_liked','genre_ids','mood_ids','tag_ids','song_ids']
         read_only_fields = ['id','created_at','likes_count','is_liked','generated_by','creator_unique_id']
 
@@ -2137,7 +2137,7 @@ class PlaylistForEventSerializer(LocalizedModelSerializer):
     class Meta:
         model = Playlist
         list_serializer_class = OrderedPlaylistListSerializer
-        fields = ['id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
+        fields = ['id', 'unique_id', 'title', 'title_en', 'description', 'description_en', 'cover_image', 'created_at', 'created_by', 'generated_by', 'creator_unique_id', 'genres', 'moods', 'tags', 'songs']
         read_only_fields = ['id', 'created_at']
 
     generated_by = serializers.CharField(source='created_by', read_only=True)
@@ -2270,12 +2270,12 @@ class UserPlaylistSerializer(LocalizedModelSerializer):
     class Meta:
         model = UserPlaylist
         fields = [
-            'id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
+            'id', 'unique_id', 'user', 'user_phone', 'user_unique_id', 'title', 'public', 'songs_count',
             'likes_count', 'is_liked', 'song_ids', 'songs', 'top_three_song_covers', 'order',
             'type', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name', 'is_owner', 'created_at', 'updated_at',
         ]
         read_only_fields = [
-            'id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count',
+            'id', 'unique_id', 'user', 'user_phone', 'user_unique_id', 'songs_count', 'likes_count',
             'is_liked', 'created_at', 'updated_at', 'top_three_song_covers', 'type',
             'songs', 'generated_by', 'creator_unique_id', 'creator_user_id', 'creator_name', 'is_owner',
         ]

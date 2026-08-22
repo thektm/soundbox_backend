@@ -13,6 +13,14 @@ import uuid
 from decimal import Decimal
 
 
+def _new_playlist_unique_id():
+    return f'playlist_{uuid.uuid4().hex}'
+
+
+def _new_user_playlist_unique_id():
+    return f'userplaylist_{uuid.uuid4().hex}'
+
+
 class UserManager(BaseUserManager):
     def create_user(self, phone_number, password=None, roles=None, **extra_fields):
         if not phone_number:
@@ -743,6 +751,11 @@ class Playlist(models.Model):
         (CREATED_BY_SYSTEM, 'System'),
     ]
 
+    unique_id = models.CharField(
+        max_length=64, unique=True, db_index=True,
+        default=_new_playlist_unique_id,
+        editable=False,
+    )
     title = models.CharField(max_length=255)
     title_en = models.CharField(max_length=255, blank=True, default="")
     description = models.TextField(blank=True)
@@ -822,6 +835,11 @@ class PlayConfiguration(models.Model):
 
 class UserPlaylist(models.Model):
     """User-created playlist model"""
+    unique_id = models.CharField(
+        max_length=64, unique=True, db_index=True,
+        default=_new_user_playlist_unique_id,
+        editable=False,
+    )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_playlists')
     title = models.CharField(max_length=255)
     public = models.BooleanField(default=False)

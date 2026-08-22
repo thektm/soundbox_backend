@@ -1531,16 +1531,23 @@ class UserHistoryView(generics.ListAPIView):
         history_total = queryset.count()
         history_items = list(queryset[:offset + page_size])
         recommended_items = []
+        user_playlist_items = []
         if content_type in (None, UserHistory.TYPE_PLAYLIST):
             recommended_items = list(
                 RecommendedPlaylist.objects.filter(liked_by=request.user)
                 .prefetch_related('songs')
                 .order_by('-updated_at', '-created_at')[:offset + page_size]
             )
+            user_playlist_items = list(
+                _user_playlist_queryset().filter(user=request.user)
+                .order_by('-created_at', '-id')[:offset + page_size]
+            )
         merged = [
             (item.updated_at, 'history', item) for item in history_items
         ] + [
             (item.updated_at, 'recommended', item) for item in recommended_items
+        ] + [
+            (item.created_at, 'user_playlist', item) for item in user_playlist_items
         ]
         merged.sort(key=lambda entry: entry[0], reverse=True)
         selected = merged[offset:offset + page_size]
@@ -1556,11 +1563,13 @@ class UserHistoryView(generics.ListAPIView):
         }
         recommended_selected = [item for _, kind, item in selected if kind == 'recommended']
         _attach_recommended_metrics(recommended_selected, request.user)
+        user_playlist_selected = [item for _, kind, item in selected if kind == 'user_playlist']
+        _prepare_user_playlists(user_playlist_selected, request.user)
         data = []
         for _, kind, item in selected:
             if kind == 'history':
                 data.append(history_data[item.id])
-            else:
+            elif kind == 'recommended':
                 data.append({
                     'id': item.id,
                     'type': UserHistory.TYPE_PLAYLIST,
@@ -1569,8 +1578,19 @@ class UserHistoryView(generics.ListAPIView):
                     ).data,
                     'updated_at': item.updated_at,
                 })
+            else:
+                data.append({
+                    'id': item.id,
+                    'type': UserHistory.TYPE_PLAYLIST,
+                    'item': UserPlaylistSerializer(
+                        item, context={'request': request}
+                    ).data,
+                    'updated_at': item.created_at,
+                })
         total = history_total + RecommendedPlaylist.objects.filter(
             liked_by=request.user
+        ).count() + UserPlaylist.objects.filter(
+            user=request.user
         ).count() if content_type in (None, UserHistory.TYPE_PLAYLIST) else history_total
         has_next = total > offset + page_size
         return Response({
