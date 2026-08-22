@@ -62,6 +62,7 @@ from .serializers import (
     SimplePlaylistSerializer,
     ArtistSocialAccountSerializer,
     UserHistorySerializer,
+    FollowableEntitySerializer,
     UserPublicProfileSerializer,
     UserSearchSummarySerializer,
     DownloadHistorySerializer,
@@ -4717,6 +4718,62 @@ class SedaBoxProfileView(APIView):
         user = _sedabox_user()
         if not user:
             return Response({"error": "SedaBox user not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        include_followers = request.query_params.get('followers') is not None
+        include_following = request.query_params.get('following') is not None
+        if include_followers or include_following:
+            result = {}
+
+            if include_followers:
+                try:
+                    page = int(request.query_params.get('f_page', 1))
+                    page_size = int(request.query_params.get('f_page_size', 10))
+                except (ValueError, TypeError):
+                    page, page_size = 1, 10
+                offset = (page - 1) * page_size
+                qs = Follow.objects.filter(followed_user=user).select_related(
+                    'follower_user', 'follower_user__image_profile', 'follower_artist'
+                ).order_by('-created_at')
+                total = qs.count()
+                items = [follow.follower_user or follow.follower_artist for follow in qs[offset:offset + page_size]]
+                params = request.query_params.copy()
+                params['f_page'] = str(page + 1)
+                params['f_page_size'] = str(page_size)
+                next_url = absolute_api_url(request, request.path + '?' + params.urlencode()) if total > offset + page_size else None
+                result['followers'] = {
+                    'items': FollowableEntitySerializer(items, many=True, context={'request': request}).data,
+                    'total': total,
+                    'page': page,
+                    'has_next': next_url is not None,
+                    'next': next_url,
+                }
+
+            if include_following:
+                try:
+                    page = int(request.query_params.get('fg_page', 1))
+                    page_size = int(request.query_params.get('fg_page_size', 10))
+                except (ValueError, TypeError):
+                    page, page_size = 1, 10
+                offset = (page - 1) * page_size
+                qs = Follow.objects.filter(follower_user=user).select_related(
+                    'followed_user', 'followed_user__image_profile', 'followed_artist'
+                ).order_by('-created_at')
+                total = qs.count()
+                items = [follow.followed_user or follow.followed_artist for follow in qs[offset:offset + page_size]]
+                params = request.query_params.copy()
+                params['fg_page'] = str(page + 1)
+                params['fg_page_size'] = str(page_size)
+                next_url = absolute_api_url(request, request.path + '?' + params.urlencode()) if total > offset + page_size else None
+                result['following'] = {
+                    'items': FollowableEntitySerializer(items, many=True, context={'request': request}).data,
+                    'total': total,
+                    'page': page,
+                    'has_next': next_url is not None,
+                    'next': next_url,
+                }
+
+            return Response(result)
+
         if str(request.query_params.get('preview', '')).lower() in {'1', 'true', 'yes'}:
             try:
                 page_size = max(1, min(int(request.query_params.get('page_size', 10)), 10))
