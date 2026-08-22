@@ -1192,11 +1192,14 @@ class TokenRefreshView(AuthAPIView):
             revoked_at__isnull=True,
             expires_at__gt=timezone.now(),
         ).only('id', 'token_hash')
+        claimed_session_id = rt.get('session_id')
         valid_session_id = next((
             session.id
             for session in active_sessions
             if check_refresh_token(refresh_token, session.token_hash)
         ), None)
+        if claimed_session_id is not None and str(valid_session_id) != str(claimed_session_id):
+            valid_session_id = None
         if valid_session_id is None:
             return auth_error('TOKEN_REVOKED', status.HTTP_401_UNAUTHORIZED)
 

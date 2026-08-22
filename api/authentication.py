@@ -16,17 +16,25 @@ class OptionalJWTAuthentication(JWTAuthentication):
             if authenticated is not None:
                 user, token = authenticated
                 session_id = token.get("session_id")
-                if session_id is not None:
-                    session_is_active = RefreshToken.objects.filter(
-                        pk=session_id,
-                        user_id=user.id,
-                        revoked_at__isnull=True,
-                        expires_at__gt=timezone.now(),
-                    ).exists()
-                    if not session_is_active:
-                        raise AuthenticationFailed("Token session is revoked.", code="token_revoked")
+                if session_id is None:
+                    # Access tokens issued before per-device binding cannot be
+                    # mapped safely to a session. Force one refresh so active
+                    # devices receive a bound token; revoked devices cannot.
+                    raise AuthenticationFailed("Token session is revoked.", code="token_revoked")
+                session_is_active = RefreshToken.objects.filter(
+                    pk=session_id,
+                    user_id=user.id,
+                    revoked_at__isnull=True,
+                    expires_at__gt=timezone.now(),
+                ).exists()
+                if not session_is_active:
+                    raise AuthenticationFailed("Token session is revoked.", code="token_revoked")
                 normalize_expired_premium(user)
                 return user, token
             return None
-        except (AuthenticationFailed, InvalidToken, TokenError, UnicodeError, TypeError, ValueError):
+        except AuthenticationFailed as error:
+            if getattr(error, "code", "") == "token_revoked":
+                raise
+            return None
+        except (InvalidToken, TokenError, UnicodeError, TypeError, ValueError):
             return None

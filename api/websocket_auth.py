@@ -95,7 +95,9 @@ def _authenticate_token(raw_token: str):
     if not user.is_active:
         return AnonymousUser(), "user_inactive"
     session_id = validated_token.get("session_id")
-    if session_id is not None and not RefreshToken.objects.filter(
+    if session_id is None:
+        return AnonymousUser(), "session_revoked"
+    if not RefreshToken.objects.filter(
         pk=session_id,
         user_id=user.id,
         revoked_at__isnull=True,
