@@ -503,6 +503,11 @@ class AuthRegisterView(AuthAPIView):
         # If user exists
         existing = User.objects.filter(phone_number=phone).first()
         if existing:
+            # Any normal registration/login identity must keep audience capability unless it is
+            # an explicit admin-only operation. Do not remove existing roles.
+            if not admin_flag and not artist_flag and User.ROLE_AUDIENCE not in (existing.roles or []):
+                existing.roles.append(User.ROLE_AUDIENCE)
+                existing.save(update_fields=['roles'])
             if existing.is_banned:
                 return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
             # If already verified, block registration
@@ -631,6 +636,11 @@ class LoginPasswordView(AuthAPIView):
             return auth_error('USER_BANNED', status.HTTP_403_FORBIDDEN)
         if not user.is_active:
             return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
+        # Audience authentication is only allowed for users who have the audience role.
+        # Admin and artist flows are handled separately above and remain isolated.
+        if not admin_flag and not artist_flag:
+            if User.ROLE_AUDIENCE not in (user.roles or []):
+                return auth_error('AUTH_FAILED', status.HTTP_401_UNAUTHORIZED)
         # lockout check
         if user.locked_until and user.locked_until > timezone.now():
             return auth_error('ACCOUNT_LOCKED', status.HTTP_423_LOCKED, retry_after_seconds=max(1, int((user.locked_until - timezone.now()).total_seconds())))

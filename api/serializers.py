@@ -1231,6 +1231,8 @@ class PhoneSerializer(serializers.Serializer):
 
 class RegisterRequestSerializer(PhoneSerializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False, min_length=6)
+    # Used only for privileged/admin flows. Normal registration never sets this.
+    admin_login = serializers.BooleanField(required=False, default=False)
     # `artist` flag is taken from query params now; password used as artist password when artist=true
 
 
