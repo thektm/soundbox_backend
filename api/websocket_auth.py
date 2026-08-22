@@ -6,9 +6,12 @@ from urllib.parse import parse_qs
 
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+from django.utils import timezone
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+
+from .models import RefreshToken
 
 logger = logging.getLogger(__name__)
 JWT_SUBPROTOCOL_PREFIX = "jwt."
@@ -91,6 +94,14 @@ def _authenticate_token(raw_token: str):
         return AnonymousUser(), "user_missing"
     if not user.is_active:
         return AnonymousUser(), "user_inactive"
+    session_id = validated_token.get("session_id")
+    if session_id is not None and not RefreshToken.objects.filter(
+        pk=session_id,
+        user_id=user.id,
+        revoked_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).exists():
+        return AnonymousUser(), "session_revoked"
     return user, "ok"
 
 

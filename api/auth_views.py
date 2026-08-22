@@ -420,13 +420,6 @@ def create_and_send_otp(user: User or None, phone: str, purpose: str, minutes=5)
 def issue_tokens_for_user(user: User, request) -> dict:
     if user.is_banned:
         raise PermissionDenied("Your account has been banned.")
-    refresh = SimpleRefreshToken.for_user(user)
-    if is_employee(user):
-        refresh['admin_session_version'] = employee_session_version(user)
-    access = refresh.access_token
-    # persist hashed refresh token for revocation / rotation tracking
-    token_str = str(refresh)
-    token_hash = hash_refresh_token(token_str)
     expires_at = timezone.now() + timedelta(days=30)
     
     # Extract device info
@@ -446,16 +439,12 @@ def issue_tokens_for_user(user: User, request) -> dict:
 
     # One indexed query replaces the previous exists()+first() double hit.
     session = existing_sessions.order_by('-created_at').first()
-    if session is not None:
-        session.token_hash = token_hash
-        session.expires_at = expires_at
-        session.revoked_at = None
-        session.save(update_fields=['token_hash', 'expires_at', 'revoked_at'])
-        existing_sessions.exclude(id=session.id).delete()
-    else:
-        RefreshToken.objects.create(
+    if session is None:
+        session = RefreshToken.objects.create(
             user=user,
-            token_hash=token_hash,
+            # The row is created before the token so its existing primary key
+            # can bind both access and refresh tokens to this device session.
+            token_hash='',
             user_agent=ua,
             ip=ip,
             expires_at=expires_at,
@@ -463,6 +452,19 @@ def issue_tokens_for_user(user: User, request) -> dict:
             device_type=device_type,
             os_info=os_info
         )
+    else:
+        existing_sessions.exclude(id=session.id).delete()
+
+    refresh = SimpleRefreshToken.for_user(user)
+    refresh['session_id'] = str(session.id)
+    if is_employee(user):
+        refresh['admin_session_version'] = employee_session_version(user)
+    access = refresh.access_token
+    token_str = str(refresh)
+    session.token_hash = hash_refresh_token(token_str)
+    session.expires_at = expires_at
+    session.revoked_at = None
+    session.save(update_fields=['token_hash', 'expires_at', 'revoked_at'])
 
     # update last_login
     user.last_login_at = timezone.now()
@@ -1214,6 +1216,7 @@ class TokenRefreshView(AuthAPIView):
                 return auth_error('TOKEN_REVOKED', status.HTTP_401_UNAUTHORIZED)
 
             new_refresh = SimpleRefreshToken.for_user(user)
+            new_refresh['session_id'] = str(valid_session.id)
             if is_employee(user):
                 new_refresh['admin_session_version'] = employee_session_version(user)
             new_access = new_refresh.access_token
@@ -1327,6 +1330,29 @@ class SessionRevokeView(AuthAPIView):
         session = RefreshToken.objects.filter(pk=pk, user=request.user).first()
         if session is None:
             return auth_error('SESSION_NOT_FOUND', status.HTTP_404_NOT_FOUND)
+        current_session_id = str(request.auth.get('session_id', '')) if request.auth else ''
+        current_refresh = request.data.get('refreshToken')
+        if current_refresh:
+            try:
+                refresh_payload = SimpleRefreshToken(current_refresh)
+                if int(refresh_payload['user_id']) != int(request.user.id):
+                    current_refresh = None
+            except (TokenError, KeyError, TypeError, ValueError):
+                current_refresh = None
+        if current_refresh:
+            current_session = RefreshToken.objects.filter(
+                user=request.user,
+                revoked_at__isnull=True,
+                expires_at__gt=timezone.now(),
+            ).only('id', 'token_hash')
+            matched_current = next((
+                candidate.id for candidate in current_session
+                if check_refresh_token(current_refresh, candidate.token_hash)
+            ), None)
+            if matched_current is not None:
+                current_session_id = str(matched_current)
+        if current_session_id == str(session.pk):
+            return auth_error('CURRENT_SESSION_REVOKE_FORBIDDEN', status.HTTP_400_BAD_REQUEST)
         session.revoked_at = timezone.now()
         session.save(update_fields=['revoked_at'])
         return Response({'status': 'ok'})

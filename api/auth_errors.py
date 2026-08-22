@@ -46,6 +46,7 @@ AUTH_ERROR_MESSAGES: dict[str, str] = {
     "REFRESH_TOKEN_REQUIRED": "اطلاعات تمدید نشست ارسال نشده است. دوباره وارد شوید.",
     "INVALID_PASSWORD": "رمز عبور فعلی صحیح نیست.",
     "SESSION_NOT_FOUND": "نشست موردنظر پیدا نشد.",
+    "CURRENT_SESSION_REVOKE_FORBIDDEN": "نشست فعلی شما قابل لغو نیست.",
     "CURRENT_SESSION_INVALID": "نشست فعلی معتبر نیست یا منقضی شده است. دوباره وارد شوید.",
     "ARTIST_ONLY": "این بخش فقط برای حساب هنرمند در دسترس است.",
     "SUBMISSION_EXISTS": "درخواست احراز هویت هنرمند قبلاً ثبت شده است و باید همان درخواست را ویرایش کنید.",
