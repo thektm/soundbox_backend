@@ -497,6 +497,7 @@ class AuthRegisterView(AuthAPIView):
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
         artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
         # when `artist` param is true treat provided `password` as artist password
         artist_password = password if artist_flag else None
         # If user exists
@@ -568,6 +569,7 @@ class AuthVerifyView(AuthAPIView):
         phone = normalize_phone(serializer.validated_data['phone'])
         otp = serializer.validated_data['otp']
         artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
         # No artist password is accepted in verify body. If artist flag is set,
         # only add the artist role (password should have been provided during registration).
         artist_password = None
@@ -620,6 +622,7 @@ class LoginPasswordView(AuthAPIView):
         phone = normalize_phone(serializer.validated_data['phone'])
         password = serializer.validated_data['password']
         artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
         try:
             user = User.objects.get(phone_number=phone)
         except User.DoesNotExist:
@@ -633,7 +636,11 @@ class LoginPasswordView(AuthAPIView):
             return auth_error('ACCOUNT_LOCKED', status.HTTP_423_LOCKED, retry_after_seconds=max(1, int((user.locked_until - timezone.now()).total_seconds())))
         # choose which password to validate
         password_ok = False
-        if artist_flag:
+        if admin_flag:
+            # Main admin panel uses its own isolated credential.
+            # The permission check below remains responsible for authorizing access.
+            password_ok = user.check_admin_password(password)
+        elif artist_flag:
             password_ok = user.check_artist_password(password)
         else:
             password_ok = user.check_password(password)
@@ -1075,6 +1082,7 @@ class PasswordResetView(AuthAPIView):
         otp = serializer.validated_data.get('otp')
         new_password = serializer.validated_data.get('newPassword')
         artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
         if phone:
             phone = normalize_phone(phone)
             try:
@@ -1386,6 +1394,7 @@ class ChangePasswordView(AuthAPIView):
         current_password = serializer.validated_data['currentPassword']
         new_password = serializer.validated_data['newPassword']
         artist_flag = parse_artist_flag(request)
+        admin_flag = bool(serializer.validated_data.get('admin_login', False))
         user = request.user
 
         # Validate with the correct password type

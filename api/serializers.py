@@ -1243,6 +1243,8 @@ class VerifySerializer(PhoneSerializer):
 
 class LoginPasswordSerializer(PhoneSerializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
+    # Used only by the admin panel client to select the isolated admin credential.
+    admin_login = serializers.BooleanField(required=False, default=False)
 
 
 class LoginOtpRequestSerializer(PhoneSerializer):

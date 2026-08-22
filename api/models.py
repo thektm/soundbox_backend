@@ -18,8 +18,9 @@ class UserManager(BaseUserManager):
         if not phone_number:
             raise ValueError('The phone number must be set')
         phone_number = str(phone_number)
-        # allow caller to pass artist_password in extra_fields
+        # allow caller to pass separate dashboard passwords in extra_fields
         artist_password = extra_fields.pop('artist_password', None)
+        admin_password = extra_fields.pop('admin_password', None)
         if roles is None:
             roles = [User.ROLE_AUDIENCE]
         elif isinstance(roles, str):
@@ -28,6 +29,8 @@ class UserManager(BaseUserManager):
         user.set_password(password)
         if artist_password:
             user.set_artist_password(artist_password)
+        if admin_password:
+            user.set_admin_password(admin_password)
         user.save(using=self._db)
         return user
 
@@ -96,14 +99,29 @@ class User(AbstractBaseUser, PermissionsMixin):
     permissions = models.JSONField(default=dict, blank=True)
     # Optional separate password for artist dashboard / artist-specific login
     artist_password = models.CharField(max_length=255, blank=True, null=True)
+    # Separate credential for main admin panel login. Never used by audience/artist flows.
+    admin_password = models.CharField(max_length=255, blank=True, null=True)
 
     objects = UserManager()
 
     USERNAME_FIELD = 'phone_number'
-    REQUIRED_FIELDS = []
+    REQUIRED_FIELDS = ['admin_password']
 
     def __str__(self):
         return self.phone_number
+
+    def set_admin_password(self, raw_password):
+        from django.contrib.auth.hashers import make_password
+        if raw_password:
+            self.admin_password = make_password(raw_password)
+        else:
+            self.admin_password = None
+
+    def check_admin_password(self, raw_password):
+        from django.contrib.auth.hashers import check_password
+        if not self.admin_password:
+            return False
+        return check_password(raw_password, self.admin_password)
 
     def set_artist_password(self, raw_password):
         from django.contrib.auth.hashers import make_password
