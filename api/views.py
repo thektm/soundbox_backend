@@ -1397,8 +1397,8 @@ class LikedPlaylistsView(APIView):
         ).order_by('-created_at')[:take])
         recommended = list(RecommendedPlaylist.objects.filter(liked_by=request.user).select_related('playlist_ref').prefetch_related(
             Prefetch('songs', queryset=songs)
-        ).order_by('-created_at')[:take])
-        merged = [(x.created_at, 'admin', x) for x in admin] + [(x.created_at, 'user', x) for x in users] + [(x.created_at, 'recommended', x) for x in recommended]
+        ).order_by('-updated_at', '-created_at')[:take])
+        merged = [(x.created_at, 'admin', x) for x in admin] + [(x.created_at, 'user', x) for x in users] + [(x.updated_at, 'recommended', x) for x in recommended]
         merged.sort(key=lambda item: item[0], reverse=True)
         start = (page - 1) * page_size; selected = merged[start:start + page_size]
         admin_playlists = [item.playlist for _, kind, item in selected if kind == 'admin']
@@ -5680,7 +5680,15 @@ def _attach_recommended_metrics(items, user=None):
         liked = set(RecommendedPlaylist.objects.filter(id__in=ids, liked_by=user).values_list('id', flat=True))
         saved = set(RecommendedPlaylist.objects.filter(id__in=ids, saved_by=user).values_list('id', flat=True))
     for item in items:
-        item._songs_count = getattr(item, 'songs_count_value', len(getattr(item, '_card_songs', [])))
+        songs_count = getattr(item, 'songs_count_value', None)
+        if songs_count is None:
+            card_songs = getattr(item, '_card_songs', None)
+            if card_songs is None:
+                card_songs = getattr(item, '_detail_songs', None)
+            if card_songs is None:
+                card_songs = getattr(item, '_prefetched_objects_cache', {}).get('songs')
+            songs_count = len(card_songs) if card_songs is not None else item.songs.count()
+        item._songs_count = songs_count
         item._likes_count = getattr(item, 'likes_count_value', 0)
         item._is_liked = item.id in liked
         item._is_saved = item.id in saved
@@ -6425,17 +6433,6 @@ class PlaylistRecommendationLikeView(APIView):
         should_like = (not is_liked) if requested_liked is None else requested_liked
 
         if not should_like:
-            # Unlike: remove PlaylistLike if present, otherwise fall back to M2M
-            from .models import PlaylistLike
-            pl_like_qs = PlaylistLike.objects.filter(user=user, playlist_id=playlist.id)
-            if pl_like_qs.exists():
-                pl_like_qs.delete()
-                return Response({
-                    'status': 'unliked',
-                    'is_liked': False,
-                    'likes_count': PlaylistLike.objects.filter(playlist=playlist).count(),
-                })
-            # fallback for RecommendedPlaylist M2M
             playlist.liked_by.remove(user)
             return Response({
                 'status': 'unliked',
